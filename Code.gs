@@ -1,8 +1,8 @@
 // 시험지 서버 (Google Apps Script + Google Sheets)
 //
 // 설치 순서
-// 1) Google Sheets 에서 새 스프레드시트를 만듭니다. (이름 예: "시험지 데이터")
-// 2) 메뉴 확장 프로그램 › Apps Script 를 열고, 기본 Code.gs 내용을 이 파일 전체로 바꿉니다.
+// 1) script.google.com 에서 새 프로젝트를 만들거나, Google Sheets 의 확장 프로그램 › Apps Script 를 엽니다.
+// 2) 기본 Code.gs 내용을 이 파일 전체로 바꿉니다. (독립 프로젝트면 "시험지 데이터" 시트가 내 드라이브에 자동 생성됩니다)
 // 3) 배포 › 새 배포 › 유형 선택(톱니) › 웹 앱
 //    - 설명: 시험지 서버 / 실행 주체: 나 / 액세스 권한: 모든 사용자 → 배포 (권한 허용)
 // 4) 나온 "웹 앱 URL" 을 사이트 index.html 의 SYNC_URL 에 넣습니다.
@@ -26,7 +26,17 @@ const QUIZ_MAX_CHARS = 45000;       // 시트 셀 하나의 한도(50,000자) �
 const NAME_MAX = 20;
 
 /* ── 시트 접근 ─────────────────────────────── */
-function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
+// 시트에 연결된 프로젝트면 그 시트를, 독립 프로젝트면 "시험지 데이터" 시트를 자동으로 만들어 씁니다.
+function ss() {
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active) return active;
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('ssId');
+  if (id) { try { return SpreadsheetApp.openById(id); } catch (e) {} }
+  const created = SpreadsheetApp.create('시험지 데이터');
+  props.setProperty('ssId', created.getId());
+  return created;
+}
 function sheet(name, header) {
   let s = ss().getSheetByName(name);
   if (!s) {
