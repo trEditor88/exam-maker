@@ -1,0 +1,1601 @@
+const { useState, useEffect, useRef, useMemo } = React;
+
+/* 서버 주소 (Google Apps Script 웹 앱 URL). 비어 있으면 이 기기 안에서만 동작합니다. */
+const SYNC_URL = window.EXAM_SYNC_URL || "";
+
+/* ══════════════════════════════════════════════════════════════
+   시험지 v2 — 문제를 만들어 코드로 나누고, 바로 채점 결과를 봅니다.
+
+   v1 대비 개선점
+   · Shell 을 컴포넌트 밖으로 이동 (매 렌더 리마운트 → 입력 포커스 상실 버그 수정)
+   · 저장/공유 상태 추적: 저장 안 된 변경 경고, 공유본과 달라지면 배지 표시
+   · 삭제 2단계 확인, 삭제 시 공유본·응시 기록도 함께 정리
+   · 공유 코드 충돌 검사, 불러온 데이터 형식 검증
+   · 문제별 해설, 문제 순서 이동, 시험지 복제, JSON 내보내기/가져오기
+   · 응시: 이름 입력, 진행률 표시, 소요 시간, 미답 제출 확인
+   · 결과: 해설 표시, 틀린 문제만 다시 풀기, 결과 텍스트 복사
+   · 출제자용 응시 기록 보기, 홈에 최근 푼 시험지
+   · 저장소 어댑터: claude.ai 저장소 → 브라우저 로컬 저장소 → 메모리 순으로 대체
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 색상 토큰 ───────────────────────────────── */
+const C = {
+  bg: "#EDF3FA",
+  card: "#FFFFFF",
+  ink: "#16325C",
+  inkMid: "#38527D",
+  sub: "#5C7092",
+  line: "#D5E2F2",
+  lineSoft: "#E8F0FA",
+  accent: "#2F6FD0",
+  accentSoft: "#E3EDFB",
+  good: "#1C8A5E",
+  goodSoft: "#E4F4EC",
+  warn: "#A66A00",
+  warnSoft: "#FFF4DD",
+  bad: "#C4432C",
+  badSoft: "#FBE9E5",
+};
+
+const FONT =
+  "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
+
+/* ── 저장소 어댑터 ───────────────────────────────
+   claude.ai 아티팩트의 window.storage(개인/공유)를 우선 사용하고,
+   없으면 localStorage, 그것도 안 되면 메모리에 보관합니다.
+   shared=true 인 키는 코드 공유용(다른 사람이 읽음), false 는 내 것. */
+const mem = {};
+const LS_PREFIX = "exam-maker:";
+const memKey = (k, shared) => (shared ? "s:" : "p:") + k;
+const hasClaudeStorage = () =>
+  typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
+const hasLocal = () => {
+  try {
+    return typeof localStorage !== "undefined" && !!localStorage;
+  } catch (e) {
+    return false;
+  }
+};
+
+const store = {
+  mode() {
+    return hasClaudeStorage() ? "claude" : hasLocal() ? "local" : "memory";
+  },
+  async get(key, shared = false) {
+    if (hasClaudeStorage()) {
+      try {
+        const r = await window.storage.get(key, shared);
+        return r && r.value != null ? r.value : null;
+      } catch (e) {
+        /* 아래 대체 저장소로 */
+      }
+    }
+    if (hasLocal()) {
+      try {
+        const v = localStorage.getItem(LS_PREFIX + memKey(key, shared));
+        if (v !== null) return v;
+      } catch (e) {}
+    }
+    return mem[memKey(key, shared)] ?? null;
+  },
+  async set(key, value, shared = false) {
+    mem[memKey(key, shared)] = value;
+    let ok = false;
+    if (hasClaudeStorage()) {
+      try {
+        await window.storage.set(key, value, shared);
+        ok = true;
+      } catch (e) {}
+    }
+    if (hasLocal()) {
+      try {
+        localStorage.setItem(LS_PREFIX + memKey(key, shared), value);
+        ok = true;
+      } catch (e) {}
+    }
+    return ok;
+  },
+  async del(key, shared = false) {
+    delete mem[memKey(key, shared)];
+    if (hasClaudeStorage()) {
+      try {
+        await window.storage.delete(key, shared);
+      } catch (e) {}
+    }
+    if (hasLocal()) {
+      try {
+        localStorage.removeItem(LS_PREFIX + memKey(key, shared));
+      } catch (e) {}
+    }
+  },
+};
+
+
+/* ── 서버 연동 (Apps Script) ─────────────────────
+   서버 주소가 없으면 localStorage 로 같은 API 를 흉내 내어 한 기기 안에서 동작합니다. */
+const syncUrl = () => {
+  try { return localStorage.getItem(LS_PREFIX + "sync") || SYNC_URL; } catch (e) { return SYNC_URL; }
+};
+async function apiGet(params) {
+  try {
+    const q = new URLSearchParams({ ...params, t: Date.now() });
+    const r = await fetch(syncUrl() + "?" + q, { cache: "no-store" });
+    return await r.json();
+  } catch (e) { return { ok: false, error: "network" }; }
+}
+async function apiPost(body) {
+  try {
+    const r = await fetch(syncUrl(), { method: "POST", body: JSON.stringify(body) });
+    return await r.json();
+  } catch (e) { return { ok: false, error: "network" }; }
+}
+const serverRemote = {
+  kind: "server",
+  getQuiz: (code) => apiGet({ action: "quiz", code }),
+  results: (code, key) => apiGet({ action: "results", code, key }),
+  share: (code, key, quiz) => apiPost({ action: "share", code, key, quiz }),
+  deleteQuiz: (code, key) => apiPost({ action: "delete", code, key }),
+  submit: (code, entry) => apiPost({ action: "submit", code, entry }),
+  clearResults: (code, key) => apiPost({ action: "clearResults", code, key }),
+};
+const localRemote = {
+  kind: "local",
+  async getQuiz(code) {
+    const raw = await store.get(`quiz:${code}`, true);
+    if (!raw) return { ok: false, error: "not_found" };
+    try { return { ok: true, code, quiz: JSON.parse(raw) }; } catch (e) { return { ok: false, error: "corrupt" }; }
+  },
+  async results(code) {
+    const raw = await store.get(`results:${code}`, true);
+    try { return { ok: true, items: raw ? JSON.parse(raw) : [] }; } catch (e) { return { ok: true, items: [] }; }
+  },
+  async share(code, key, quiz) {
+    if (!code) { do { code = makeCode(); } while (await store.get(`quiz:${code}`, true)); key = uid() + uid(); }
+    await store.set(`quiz:${code}`, JSON.stringify(quiz), true);
+    return { ok: true, code, key };
+  },
+  async deleteQuiz(code) { await store.del(`quiz:${code}`, true); await store.del(`results:${code}`, true); return { ok: true }; },
+  async submit(code, entry) {
+    const r = await this.results(code);
+    await store.set(`results:${code}`, JSON.stringify([{ id: uid(), ...entry, at: Date.now() }, ...r.items].slice(0, 300)), true);
+    return { ok: true };
+  },
+  async clearResults(code) { await store.del(`results:${code}`, true); return { ok: true }; },
+};
+const remote = () => (syncUrl() ? serverRemote : localRemote);
+const ERR = {
+  network: "서버에 연결할 수 없습니다. 인터넷 연결을 확인해 주세요.",
+  not_found: "그 코드로 등록된 시험지가 없습니다. 코드를 다시 확인해 주세요.",
+  bad_key: "이 시험지를 고칠 권한이 없습니다. (다른 기기에서 만든 코드)",
+  too_big: "시험지가 너무 큽니다. 문제 수를 줄여 주세요.",
+  busy: "서버가 바쁩니다. 잠시 후 다시 시도해 주세요.",
+};
+const errMsg = (r) => ERR[r && r.error] || "요청에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+
+/* ── 유틸 ────────────────────────────────────── */
+const uid = () => Math.random().toString(36).slice(2, 10);
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const makeCode = () =>
+  Array.from({ length: 5 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join("");
+const cleanCode = (v) => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
+const range = (n) => [...Array(n).keys()];
+
+function shuffled(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const sameSet = (a, b) => {
+  if (a.length !== b.length) return false;
+  const s = new Set(b);
+  return a.every((x) => s.has(x));
+};
+
+const fmtDate = (t) => {
+  try {
+    return new Date(t).toLocaleDateString("ko-KR", { year: "numeric", month: "short", day: "numeric" });
+  } catch (e) {
+    return "";
+  }
+};
+const fmtDateTime = (t) => {
+  try {
+    return new Date(t).toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch (e) {
+    return "";
+  }
+};
+const fmtSec = (s) => {
+  s = Math.max(0, Math.round(s));
+  const m = Math.floor(s / 60);
+  return m ? `${m}분 ${s % 60}초` : `${s}초`;
+};
+
+const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫"];
+const mark = (i) => CIRCLED[i] || `(${i + 1})`;
+
+/* ── 데이터 정규화 ───────────────────────────── */
+const asStr = (v) => (typeof v === "string" ? v : "");
+const asIntList = (v, max) =>
+  Array.isArray(v)
+    ? [...new Set(v.filter((x) => Number.isInteger(x) && x >= 0 && x < max))].sort((a, b) => a - b)
+    : [];
+
+function normalizeQuestion(q, nOpt) {
+  const src = q && typeof q === "object" ? q : {};
+  return {
+    id: asStr(src.id) || uid(),
+    text: asStr(src.text),
+    explain: asStr(src.explain),
+    answers: asIntList(src.answers, nOpt),
+  };
+}
+
+function normalizeExam(x) {
+  const src = x && typeof x === "object" ? x : {};
+  const options = Array.isArray(src.options) ? src.options.map(asStr) : [];
+  while (options.length < 2) options.push("");
+  const questionsRaw = Array.isArray(src.questions) && src.questions.length ? src.questions : [{}];
+  return {
+    id: asStr(src.id) || uid(),
+    title: asStr(src.title),
+    desc: asStr(src.desc),
+    options,
+    questions: questionsRaw.map((q) => normalizeQuestion(q, options.length)),
+    shuffle: !!src.shuffle,
+    code: asStr(src.code) || null,
+    ownerKey: asStr(src.ownerKey) || null,
+    sharedHash: asStr(src.sharedHash) || null,
+    sharedAt: Number(src.sharedAt) || null,
+    createdAt: Number(src.createdAt) || Date.now(),
+    updatedAt: Number(src.updatedAt) || Date.now(),
+  };
+}
+
+/* 공유 페이로드: 응시자가 받는 데이터 */
+function payloadOf(exam) {
+  return {
+    v: 2,
+    title: exam.title.trim(),
+    desc: exam.desc.trim(),
+    options: exam.options.map((o) => o.trim()),
+    questions: exam.questions.map((q) => ({
+      id: q.id,
+      text: q.text.trim(),
+      explain: q.explain.trim(),
+      answers: q.answers,
+    })),
+    shuffle: !!exam.shuffle,
+  };
+}
+const hashOf = (exam) => JSON.stringify(payloadOf(exam));
+
+function parsePayload(raw) {
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!data || typeof data !== "object") return null;
+  const options = Array.isArray(data.options) ? data.options.map(asStr) : [];
+  if (options.length < 2) return null;
+  const questions = Array.isArray(data.questions) ? data.questions.map((q) => normalizeQuestion(q, options.length)) : [];
+  if (!questions.length) return null;
+  return {
+    title: asStr(data.title) || "제목 없음",
+    desc: asStr(data.desc),
+    options,
+    questions,
+    shuffle: !!data.shuffle,
+  };
+}
+
+function problemsOf(draft) {
+  const out = [];
+  if (!draft.title.trim()) out.push("시험지 제목을 적어 주세요.");
+  if (draft.options.some((o) => !o.trim())) out.push("비어 있는 보기가 있습니다.");
+  const seen = new Set();
+  draft.options.forEach((o) => {
+    const k = o.trim();
+    if (k && seen.has(k)) out.push(`보기 “${k}”가 두 번 이상 있습니다.`);
+    seen.add(k);
+  });
+  draft.questions.forEach((q, i) => {
+    if (!q.text.trim()) out.push(`${i + 1}번 문제의 내용이 비어 있습니다.`);
+    else if (q.answers.length === 0) out.push(`${i + 1}번 문제의 정답을 하나 이상 골라 주세요.`);
+  });
+  return out;
+}
+
+/* 응시 런타임 만들기: 셔플이 켜져 있으면 보기·문제 순서를 섞고 정답 위치를 재계산 */
+function buildRun(src, code, onlyIds) {
+  const n = src.options.length;
+  const perm = src.shuffle ? shuffled(range(n)) : range(n);
+  const pos = {};
+  perm.forEach((orig, disp) => (pos[orig] = disp));
+  let qs = src.questions.map((q) => ({ ...q, answers: q.answers.map((a) => pos[a]).sort((x, y) => x - y) }));
+  if (onlyIds) qs = qs.filter((q) => onlyIds.has(q.id));
+  if (src.shuffle) qs = shuffled(qs);
+  return {
+    code,
+    src,
+    title: src.title,
+    desc: src.desc,
+    options: perm.map((i) => src.options[i]),
+    questions: qs,
+    partial: !!onlyIds,
+    startedAt: Date.now(),
+  };
+}
+
+/* ── 공용 UI ─────────────────────────────────── */
+function Btn({ children, onClick, kind = "primary", disabled, style, ariaLabel }) {
+  const base = {
+    fontFamily: FONT,
+    fontSize: 16,
+    fontWeight: 600,
+    borderRadius: 12,
+    padding: "13px 18px",
+    cursor: disabled ? "default" : "pointer",
+    border: "1px solid transparent",
+    transition: "background .15s, border-color .15s",
+    opacity: disabled ? 0.45 : 1,
+    width: "100%",
+  };
+  const kinds = {
+    primary: { background: C.accent, color: "#fff" },
+    soft: { background: C.accentSoft, color: C.accent, border: `1px solid ${C.line}` },
+    ghost: { background: "transparent", color: C.sub, border: `1px solid ${C.line}` },
+    danger: { background: C.badSoft, color: C.bad, border: `1px solid ${C.badSoft}` },
+  };
+  return (
+    <button
+      className="em-btn"
+      aria-label={ariaLabel}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      style={{ ...base, ...kinds[kind], ...style }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* 테두리 없는 텍스트 버튼 */
+function TextBtn({ children, onClick, disabled, style, ariaLabel, tone = "accent" }) {
+  const color = disabled ? C.line : tone === "sub" ? C.sub : tone === "bad" ? C.bad : C.accent;
+  return (
+    <button
+      className="em-btn"
+      aria-label={ariaLabel}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      style={{
+        background: "none",
+        border: "none",
+        color,
+        fontFamily: FONT,
+        fontSize: 14.5,
+        fontWeight: 600,
+        cursor: disabled ? "default" : "pointer",
+        padding: 4,
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Field({ value, onChange, placeholder, multiline, style, maxLength, onEnter, ariaLabel, rows = 2, autoFocus }) {
+  const s = {
+    width: "100%",
+    boxSizing: "border-box",
+    fontFamily: FONT,
+    fontSize: 16,
+    color: C.ink,
+    background: "#fff",
+    border: `1px solid ${C.line}`,
+    borderRadius: 10,
+    padding: "12px 13px",
+    outline: "none",
+    resize: "vertical",
+    lineHeight: 1.5,
+    ...style,
+  };
+  const common = {
+    className: "em-in",
+    value,
+    placeholder,
+    maxLength,
+    autoFocus,
+    "aria-label": ariaLabel || placeholder,
+    onChange: (e) => onChange(e.target.value),
+    style: s,
+  };
+  if (multiline) return <textarea {...common} rows={rows} />;
+  return (
+    <input
+      {...common}
+      onKeyDown={(e) => {
+        if (onEnter && e.key === "Enter") {
+          e.preventDefault();
+          onEnter();
+        }
+      }}
+    />
+  );
+}
+
+function Check({ on, size = 22 }) {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: size,
+        height: size,
+        flex: `0 0 ${size}px`,
+        borderRadius: 6,
+        border: `1.5px solid ${on ? C.accent : C.line}`,
+        background: on ? C.accent : "#fff",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#fff",
+        fontSize: size * 0.62,
+        fontWeight: 700,
+        lineHeight: 1,
+      }}
+    >
+      {on ? "✓" : ""}
+    </span>
+  );
+}
+
+/* 체크박스처럼 동작하는 행 (키보드 접근 가능) */
+function CheckRow({ on, onToggle, children, padding = "10px 12px", style }) {
+  return (
+    <div
+      className="em-row"
+      role="checkbox"
+      aria-checked={on}
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding,
+        border: `1px solid ${on ? C.accent : C.line}`,
+        background: on ? C.accentSoft : "#fff",
+        borderRadius: 10,
+        cursor: "pointer",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Card({ children, style }) {
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, padding: 18, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function Badge({ tone = "neutral", children }) {
+  const tones = {
+    neutral: { bg: C.lineSoft, fg: C.sub },
+    accent: { bg: C.accentSoft, fg: C.accent },
+    good: { bg: C.goodSoft, fg: C.good },
+    warn: { bg: C.warnSoft, fg: C.warn },
+    bad: { bg: C.badSoft, fg: C.bad },
+  };
+  const t = tones[tone];
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        fontSize: 12.5,
+        fontWeight: 700,
+        padding: "3px 9px",
+        borderRadius: 999,
+        background: t.bg,
+        color: t.fg,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Modal({ title, children, onClose, wide }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(22,50,92,.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+        zIndex: 60,
+      }}
+    >
+      <div role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: wide ? 520 : 400 }}>
+        <Card style={{ maxHeight: "86vh", overflowY: "auto" }}>
+          {title && <h3 style={{ fontSize: 20, fontWeight: 800, margin: "0 0 10px" }}>{title}</h3>}
+          {children}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ProgressBar({ value, max }) {
+  const pct = max ? Math.round((value / max) * 100) : 0;
+  return (
+    <div aria-label={`진행률 ${pct}%`} role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: C.lineSoft, borderRadius: 999, overflow: "hidden" }}>
+      <div style={{ width: `${pct}%`, height: "100%", background: C.accent, transition: "width .2s" }} />
+    </div>
+  );
+}
+
+/* 화면 껍데기 — 반드시 컴포넌트 밖에 정의 (안에 두면 매 렌더마다 리마운트되어 입력 포커스가 사라짐) */
+function Shell({ children, back, backTo, toast }) {
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, color: C.ink }}>
+      <style>{`
+        .em-in:focus{border-color:${C.accent} !important;box-shadow:0 0 0 3px ${C.accentSoft};}
+        .em-btn:focus-visible{outline:2px solid ${C.accent};outline-offset:2px;}
+        .em-row:focus-visible{outline:2px solid ${C.accent};outline-offset:2px;}
+        .em-row:hover{border-color:${C.accent};}
+        @media (prefers-reduced-motion: reduce){*{transition:none !important;}}
+      `}</style>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "22px 18px 60px" }}>
+        {back && (
+          <button
+            className="em-btn"
+            onClick={backTo}
+            style={{ background: "none", border: "none", color: C.accent, fontFamily: FONT, fontSize: 15, fontWeight: 600, padding: "4px 0 14px", cursor: "pointer" }}
+          >
+            ← {back}
+          </button>
+        )}
+        {children}
+      </div>
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: "fixed",
+            left: "50%",
+            bottom: 24,
+            transform: "translateX(-50%)",
+            background: C.ink,
+            color: "#fff",
+            padding: "12px 18px",
+            borderRadius: 12,
+            fontSize: 14.5,
+            maxWidth: "88vw",
+            textAlign: "center",
+            zIndex: 70,
+          }}
+        >
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* ── 화면: 홈 ────────────────────────────────── */
+function HomeScreen({ exams, recent, onNew, onList, onCode, onOpenRecent, onSettings, mode, toast }) {
+  const items = [
+    { t: "새 시험지 만들기", d: "보기를 정하고 문제를 하나씩 추가합니다.", go: onNew },
+    { t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList },
+    { t: "코드로 문제 풀기", d: "받은 코드를 입력해 친구가 낸 문제를 풉니다.", go: onCode },
+  ];
+  return (
+    <Shell toast={toast}>
+      <h1 style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em", margin: "16px 0 10px" }}>시험지</h1>
+      <p style={{ fontSize: 16.5, lineHeight: 1.6, color: C.sub, margin: "0 0 6px" }}>
+        문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.
+      </p>
+      <div style={{ height: 1, background: C.line, margin: "22px 0 24px" }} />
+      <div style={{ display: "grid", gap: 12 }}>
+        {items.map((it) => (
+          <button
+            key={it.t}
+            className="em-btn em-row"
+            onClick={it.go}
+            style={{
+              textAlign: "left",
+              background: C.card,
+              border: `1px solid ${C.line}`,
+              borderRadius: 16,
+              padding: "18px 18px",
+              cursor: "pointer",
+              fontFamily: FONT,
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.ink, marginBottom: 5 }}>{it.t}</div>
+            <div style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.5 }}>{it.d}</div>
+          </button>
+        ))}
+      </div>
+
+      {recent.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 16, fontWeight: 700, margin: "28px 0 10px", color: C.inkMid }}>최근 푼 시험지</h3>
+          <Card style={{ padding: 6 }}>
+            {recent.map((r) => (
+              <button
+                key={r.code}
+                className="em-btn"
+                onClick={() => onOpenRecent(r.code)}
+                style={{
+                  display: "flex",
+                  width: "100%",
+                  alignItems: "center",
+                  gap: 12,
+                  textAlign: "left",
+                  background: "none",
+                  border: "none",
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  cursor: "pointer",
+                  fontFamily: FONT,
+                }}
+              >
+                <span style={{ fontWeight: 800, letterSpacing: "0.08em", color: C.accent, fontSize: 14, flex: "0 0 auto" }}>{r.code}</span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 15, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                <span style={{ fontSize: 13.5, color: C.sub, flex: "0 0 auto" }}>
+                  {r.score}/{r.total}
+                </span>
+              </button>
+            ))}
+          </Card>
+        </>
+      )}
+
+      <p style={{ fontSize: 12.5, color: C.sub, textAlign: "center", marginTop: 34, lineHeight: 1.6 }}>
+        {mode === "server"
+          ? "내 시험지는 이 브라우저에 저장되고, 공유 코드는 서버를 통해 누구나 열 수 있습니다."
+          : "서버가 설정되지 않아 이 기기 안에서만 동작합니다. 코드 공유는 서버 연결 후 가능합니다."}
+        <br />
+        <TextBtn tone="sub" onClick={onSettings} style={{ fontSize: 12.5 }}>서버 설정</TextBtn>
+      </p>
+    </Shell>
+  );
+}
+
+/* ── 화면: 내 시험지 목록 ────────────────────── */
+function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onExportAll, onBack, toast }) {
+  const [confirmId, setConfirmId] = useState(null);
+  return (
+    <Shell back="처음으로" backTo={onBack} toast={toast}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <h2 style={{ fontSize: 25, fontWeight: 800, margin: 0 }}>내 시험지</h2>
+        <div style={{ display: "flex", gap: 2 }}>
+          <TextBtn onClick={onImport}>가져오기</TextBtn>
+          {exams.length > 0 && <TextBtn onClick={onExportAll}>내보내기</TextBtn>}
+        </div>
+      </div>
+      {exams.length === 0 ? (
+        <Card>
+          <p style={{ margin: "0 0 16px", color: C.sub, fontSize: 15.5, lineHeight: 1.6 }}>
+            아직 만든 시험지가 없습니다. 새로 하나 만들거나, 내보낸 파일을 가져오세요.
+          </p>
+          <Btn onClick={onNew}>새 시험지 만들기</Btn>
+        </Card>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          {exams.map((e) => {
+            const stale = e.code && e.sharedHash !== hashOf(e);
+            const confirming = confirmId === e.id;
+            return (
+              <Card key={e.id} style={{ padding: 16 }}>
+                <button
+                  className="em-btn"
+                  onClick={() => onOpen(e.id)}
+                  style={{ background: "none", border: "none", padding: 0, textAlign: "left", cursor: "pointer", fontFamily: FONT, width: "100%" }}
+                >
+                  <div style={{ fontSize: 17.5, fontWeight: 700, color: C.ink, marginBottom: 6 }}>{e.title || "제목 없음"}</div>
+                  <div style={{ fontSize: 13.5, color: C.sub, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                    <span>
+                      문제 {e.questions.length}개 · 보기 {e.options.length}개 · {fmtDate(e.updatedAt)} 수정
+                    </span>
+                    {e.code && <Badge tone={stale ? "warn" : "good"}>{stale ? `코드 ${e.code} · 다시 공유 필요` : `코드 ${e.code}`}</Badge>}
+                  </div>
+                </button>
+                <div style={{ display: "flex", gap: 4, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  {confirming ? (
+                    <>
+                      <span style={{ fontSize: 14, color: C.bad, marginRight: 4 }}>
+                        정말 삭제할까요?{e.code ? " 공유 코드도 사라집니다." : ""}
+                      </span>
+                      <TextBtn tone="bad" onClick={() => { setConfirmId(null); onDelete(e.id); }}>삭제</TextBtn>
+                      <TextBtn tone="sub" onClick={() => setConfirmId(null)}>취소</TextBtn>
+                    </>
+                  ) : (
+                    <>
+                      <TextBtn onClick={() => onOpen(e.id)}>편집</TextBtn>
+                      <TextBtn onClick={() => onDuplicate(e.id)}>복제</TextBtn>
+                      <TextBtn tone="sub" onClick={() => setConfirmId(e.id)}>삭제</TextBtn>
+                    </>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+          <Btn kind="soft" onClick={onNew}>새 시험지 만들기</Btn>
+        </div>
+      )}
+    </Shell>
+  );
+}
+
+/* ── 응시 기록 모달 (출제자용) ───────────────── */
+function ResultsModal({ code, ownerKey, onClose, flash }) {
+  const [items, setItems] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setBusy(true);
+    const r = await remote().results(code, ownerKey);
+    if (!r.ok) flash(errMsg(r));
+    setItems(r.ok && Array.isArray(r.items) ? r.items : []);
+    setBusy(false);
+  };
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
+  const clear = async () => {
+    const r = await remote().clearResults(code, ownerKey);
+    if (!r.ok) return flash(errMsg(r));
+    setItems([]);
+    flash("응시 기록을 비웠습니다.");
+  };
+
+  const avg = items && items.length ? Math.round((items.reduce((s, r) => s + r.score / r.total, 0) / items.length) * 100) : 0;
+
+  return (
+    <Modal title={`응시 기록 · ${code}`} onClose={onClose} wide>
+      {items === null ? (
+        <p style={{ color: C.sub, fontSize: 15 }}>불러오는 중…</p>
+      ) : items.length === 0 ? (
+        <p style={{ color: C.sub, fontSize: 15, lineHeight: 1.6, margin: "0 0 14px" }}>
+          아직 제출된 결과가 없습니다. 응시자가 문제를 제출하면 여기에 쌓입니다.
+        </p>
+      ) : (
+        <>
+          <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 12px" }}>
+            {items.length}명 응시 · 평균 {avg}점
+          </p>
+          <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+            {items.map((r) => (
+              <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5 }}>
+                <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name || "이름 없음"}</span>
+                <span style={{ color: C.inkMid, fontWeight: 700 }}>
+                  {r.score}/{r.total}
+                </span>
+                <span style={{ color: C.sub, fontSize: 13 }}>{r.sec != null ? fmtSec(r.sec) : ""}</span>
+                <span style={{ color: C.sub, fontSize: 13 }}>{fmtDateTime(r.at)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <div style={{ display: "grid", gap: 8 }}>
+        <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
+        {items && items.length > 0 && <Btn kind="danger" onClick={clear}>기록 비우기</Btn>}
+        <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── 텍스트 보기/복사 모달 (내보내기) ────────── */
+function ExportModal({ title, text, onClose, flash }) {
+  return (
+    <Modal title={title} onClose={onClose} wide>
+      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
+        아래 내용을 복사해 메모나 파일로 보관하세요. 다른 기기에서 “가져오기”에 붙여 넣으면 복원됩니다.
+      </p>
+      <textarea readOnly value={text} rows={8} className="em-in" aria-label="내보내기 데이터" style={{ width: "100%", boxSizing: "border-box", fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 12.5, border: `1px solid ${C.line}`, borderRadius: 10, padding: 10, color: C.inkMid, resize: "vertical" }} />
+      <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+        <Btn kind="soft" onClick={async () => flash((await copyText(text)) ? "복사했습니다." : "복사가 안 돼요. 직접 선택해서 복사해 주세요.")}>복사</Btn>
+        <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function ImportModal({ onImport, onClose }) {
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const go = () => {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      setErr("JSON 형식이 아닙니다. 내보내기로 만든 내용을 그대로 붙여 넣어 주세요.");
+      return;
+    }
+    const list = Array.isArray(data) ? data : Array.isArray(data?.exams) ? data.exams : [data];
+    const exams = list.filter((x) => x && typeof x === "object").map((x) => normalizeExam({ ...x, id: undefined }));
+    if (!exams.length) {
+      setErr("가져올 시험지를 찾지 못했습니다.");
+      return;
+    }
+    onImport(exams);
+  };
+  return (
+    <Modal title="시험지 가져오기" onClose={onClose} wide>
+      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
+        내보내기로 만든 내용을 붙여 넣으세요. 가져온 시험지는 새 항목으로 추가됩니다. 공유 코드와 수정 권한도 함께 옮겨집니다.
+      </p>
+      <Field multiline rows={7} value={text} onChange={(v) => { setText(v); setErr(""); }} placeholder='{"exams":[...]} 또는 시험지 하나' style={{ fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 12.5 }} />
+      {err && <p style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
+      <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+        <Btn onClick={go} disabled={!text.trim()}>가져오기</Btn>
+        <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+
+function SettingsModal({ onClose, flash }) {
+  const [url, setUrl] = useState(() => { try { return localStorage.getItem(LS_PREFIX + "sync") || ""; } catch (e) { return ""; } });
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const u = url.trim();
+    if (u) {
+      setBusy(true);
+      const r = await fetch(u + "?action=ping", { cache: "no-store" }).then((x) => x.json()).catch(() => null);
+      setBusy(false);
+      if (!r || !r.ok) return flash("서버에 연결하지 못했습니다. 주소를 확인해 주세요.");
+    }
+    try { u ? localStorage.setItem(LS_PREFIX + "sync", u) : localStorage.removeItem(LS_PREFIX + "sync"); } catch (e) {}
+    flash(u ? "서버를 연결했습니다." : "기본 서버 설정으로 돌아갑니다.");
+    onClose();
+  };
+  return (
+    <Modal title="서버 설정" onClose={onClose}>
+      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
+        {SYNC_URL ? "기본 서버가 이미 설정되어 있습니다. 다른 서버를 쓰려면 주소를 넣으세요." : "Apps Script 웹 앱 URL 을 넣으면 코드 공유가 켜집니다."}
+      </p>
+      <Field value={url} onChange={setUrl} placeholder="https://script.google.com/macros/s/…/exec" style={{ fontSize: 13 }} />
+      <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+        <Btn onClick={save} disabled={busy}>{busy ? "확인 중…" : "저장"}</Btn>
+        <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── 화면: 편집 ──────────────────────────────── */
+function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast }) {
+  const [shareCode, setShareCode] = useState(null);
+  const [showProblems, setShowProblems] = useState(false);
+  const [leaveAsk, setLeaveAsk] = useState(false);
+  const [resultsOpen, setResultsOpen] = useState(false);
+
+  const upd = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  const problems = useMemo(() => problemsOf(draft), [draft]);
+  const stale = draft.code && draft.sharedHash !== hashOf(draft);
+
+  const setOpt = (i, v) => {
+    const options = [...draft.options];
+    options[i] = v;
+    upd({ options });
+  };
+  const addOpt = () => upd({ options: [...draft.options, ""] });
+  const delOpt = (i) => {
+    if (draft.options.length <= 2) return;
+    const options = draft.options.filter((_, k) => k !== i);
+    const questions = draft.questions.map((q) => ({
+      ...q,
+      answers: q.answers.filter((a) => a !== i).map((a) => (a > i ? a - 1 : a)),
+    }));
+    upd({ options, questions });
+  };
+
+  const setQ = (qi, patch) => upd({ questions: draft.questions.map((q, k) => (k === qi ? { ...q, ...patch } : q)) });
+  const toggleAns = (qi, oi) => {
+    const q = draft.questions[qi];
+    const answers = q.answers.includes(oi) ? q.answers.filter((a) => a !== oi) : [...q.answers, oi].sort((a, b) => a - b);
+    setQ(qi, { answers });
+  };
+  const addQ = () => upd({ questions: [...draft.questions, { id: uid(), text: "", explain: "", answers: [] }] });
+  const delQ = (qi) => {
+    if (draft.questions.length <= 1) return;
+    upd({ questions: draft.questions.filter((_, k) => k !== qi) });
+  };
+  const moveQ = (qi, dir) => {
+    const to = qi + dir;
+    if (to < 0 || to >= draft.questions.length) return;
+    const qs = [...draft.questions];
+    [qs[qi], qs[to]] = [qs[to], qs[qi]];
+    upd({ questions: qs });
+  };
+
+  const tryShare = async () => {
+    if (problems.length) {
+      setShowProblems(true);
+      flash(problems[0]);
+      return;
+    }
+    const code = await onShare();
+    if (code) setShareCode(code);
+  };
+
+  const back = () => (dirty ? setLeaveAsk(true) : onBack());
+
+  return (
+    <Shell back="처음으로" backTo={back} toast={toast}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          {draft.code ? (
+            <Badge tone={stale ? "warn" : "good"}>{stale ? `코드 ${draft.code} · 공유본과 다름` : `코드 ${draft.code} · 공유 중`}</Badge>
+          ) : (
+            <Badge>아직 공유 안 함</Badge>
+          )}
+          {dirty && <Badge tone="warn">저장 안 됨</Badge>}
+        </div>
+        <div style={{ display: "flex", gap: 2 }}>
+          {draft.code && <TextBtn onClick={() => setResultsOpen(true)}>응시 기록</TextBtn>}
+          <TextBtn onClick={onExport}>내보내기</TextBtn>
+        </div>
+      </div>
+
+      <Field value={draft.title} onChange={(v) => upd({ title: v })} placeholder="시험지 제목" maxLength={80} style={{ fontSize: 21, fontWeight: 700, padding: "14px 15px", marginBottom: 10 }} />
+      <Field value={draft.desc} onChange={(v) => upd({ desc: v })} placeholder="안내문 (선택) — 응시자에게 첫 화면에서 보여줍니다" maxLength={300} multiline rows={2} style={{ marginBottom: 22, fontSize: 15 }} />
+
+      <h3 style={{ fontSize: 17, fontWeight: 700, margin: "0 0 4px" }}>보기</h3>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 12px", lineHeight: 1.5 }}>여기서 정한 보기가 모든 문제에 똑같이 쓰입니다.</p>
+      <Card style={{ padding: 16, marginBottom: 26 }}>
+        <div style={{ display: "grid", gap: 10 }}>
+          {draft.options.map((o, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span aria-hidden="true" style={{ width: 22, color: C.accent, fontSize: 18, flex: "0 0 22px" }}>{mark(i)}</span>
+              <Field value={o} onChange={(v) => setOpt(i, v)} placeholder={`보기 ${i + 1}`} maxLength={120} />
+              <TextBtn tone="sub" ariaLabel={`보기 ${i + 1} 삭제`} onClick={() => delOpt(i)} disabled={draft.options.length <= 2} style={{ fontSize: 19, padding: "0 2px" }}>
+                ×
+              </TextBtn>
+            </div>
+          ))}
+        </div>
+        <TextBtn onClick={addOpt} disabled={draft.options.length >= 12} style={{ marginTop: 12, padding: 0, fontSize: 15 }}>
+          + 보기 추가
+        </TextBtn>
+      </Card>
+
+      <h3 style={{ fontSize: 17, fontWeight: 700, margin: "0 0 4px" }}>문제</h3>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 12px", lineHeight: 1.5 }}>정답은 여러 개 고를 수 있습니다. 해설을 적으면 채점 결과에서 보여줍니다.</p>
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {draft.questions.map((q, qi) => (
+          <Card key={q.id} style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span>
+              <div style={{ display: "flex", gap: 0 }}>
+                <TextBtn tone="sub" ariaLabel="위로" onClick={() => moveQ(qi, -1)} disabled={qi === 0} style={{ fontSize: 15 }}>▲</TextBtn>
+                <TextBtn tone="sub" ariaLabel="아래로" onClick={() => moveQ(qi, 1)} disabled={qi === draft.questions.length - 1} style={{ fontSize: 15 }}>▼</TextBtn>
+                <TextBtn tone="sub" onClick={() => delQ(qi)} disabled={draft.questions.length <= 1} style={{ fontSize: 13.5 }}>삭제</TextBtn>
+              </div>
+            </div>
+            <Field value={q.text} onChange={(v) => setQ(qi, { text: v })} placeholder="문제를 입력하세요" multiline />
+            <div style={{ fontSize: 13.5, color: C.sub, margin: "14px 0 8px" }}>정답 고르기</div>
+            <div style={{ display: "grid", gap: 7 }}>
+              {draft.options.map((o, oi) => {
+                const on = q.answers.includes(oi);
+                return (
+                  <CheckRow key={oi} on={on} onToggle={() => toggleAns(qi, oi)}>
+                    <Check on={on} size={20} />
+                    <span style={{ color: C.accent, fontSize: 16 }}>{mark(oi)}</span>
+                    <span style={{ fontSize: 15.5, color: o.trim() ? C.ink : C.sub, lineHeight: 1.45 }}>{o.trim() || "(보기가 비어 있음)"}</span>
+                  </CheckRow>
+                );
+              })}
+            </div>
+            <Field value={q.explain} onChange={(v) => setQ(qi, { explain: v })} placeholder="해설 (선택)" multiline rows={1} maxLength={500} style={{ marginTop: 12, fontSize: 14.5, background: C.lineSoft }} />
+          </Card>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <Btn kind="soft" onClick={addQ}>+ 문제 추가</Btn>
+      </div>
+
+      <CheckRow on={draft.shuffle} onToggle={() => upd({ shuffle: !draft.shuffle })} padding={16} style={{ alignItems: "flex-start", gap: 12, marginTop: 24, borderRadius: 14, background: C.card }}>
+        <Check on={draft.shuffle} />
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>문제와 보기 순서 섞기</div>
+          <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5 }}>푸는 사람마다 순서가 달라집니다. 답을 외워서 찍는 것을 막고 싶을 때 켜세요.</div>
+        </div>
+      </CheckRow>
+
+      {showProblems && problems.length > 0 && (
+        <div style={{ marginTop: 18, padding: "12px 14px", background: C.warnSoft, border: `1px solid #F3DFB0`, borderRadius: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.warn, marginBottom: 6 }}>공유하기 전에 고쳐 주세요</div>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, color: C.inkMid, lineHeight: 1.7 }}>
+            {problems.map((p, i) => (
+              <li key={i}>{p}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gap: 10, marginTop: 26 }}>
+        <Btn kind="ghost" onClick={onSave} disabled={!dirty || busy}>{dirty ? "저장하기" : "저장됨"}</Btn>
+        <Btn onClick={tryShare} disabled={busy}>
+          {busy ? "공유 코드 만드는 중…" : draft.code ? (stale ? "변경 내용 다시 공유하기" : "공유 코드 보기") : "공유하기"}
+        </Btn>
+      </div>
+
+      {shareCode && (
+        <Modal title="공유 코드" onClose={() => setShareCode(null)}>
+          <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 16px" }}>
+            친구에게 이 페이지 주소와 아래 코드를 함께 보내세요. 친구는 “코드로 문제 풀기”에 코드를 넣으면 됩니다. 나중에 문제를 고치면 “다시 공유하기”를 눌러야 반영됩니다.
+          </p>
+          <div style={{ textAlign: "center", background: C.accentSoft, border: `1px solid ${C.line}`, borderRadius: 12, padding: "18px 12px", fontSize: 34, fontWeight: 800, letterSpacing: "0.14em", color: C.accent, marginBottom: 16 }}>
+            {shareCode}
+          </div>
+          <div style={{ display: "grid", gap: 9 }}>
+            <Btn kind="soft" onClick={async () => flash((await copyText(shareCode)) ? "코드를 복사했습니다." : "복사가 안 돼요. 코드를 직접 적어 주세요.")}>코드 복사</Btn>
+            <Btn kind="ghost" onClick={() => setShareCode(null)}>닫기</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {leaveAsk && (
+        <Modal title="저장하지 않은 변경이 있습니다" onClose={() => setLeaveAsk(false)}>
+          <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 16px" }}>이대로 나가면 변경 내용이 사라집니다.</p>
+          <div style={{ display: "grid", gap: 9 }}>
+            <Btn onClick={async () => { const ok = await onSave(); if (ok) onBack(); }}>저장하고 나가기</Btn>
+            <Btn kind="danger" onClick={onBack}>저장하지 않고 나가기</Btn>
+            <Btn kind="ghost" onClick={() => setLeaveAsk(false)}>계속 편집</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
+    </Shell>
+  );
+}
+
+/* ── 화면: 코드 입력 ─────────────────────────── */
+function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, toast }) {
+  return (
+    <Shell back="처음으로" backTo={onBack} toast={toast}>
+      <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 8px" }}>코드로 문제 풀기</h2>
+      <p style={{ fontSize: 15.5, color: C.sub, lineHeight: 1.6, margin: "0 0 20px" }}>받은 다섯 자리 코드를 넣으면 시험지가 열립니다.</p>
+      <Card>
+        <Field
+          value={codeInput}
+          onChange={(v) => setCodeInput(cleanCode(v))}
+          onEnter={() => codeInput.length === 5 && !busy && onLoad()}
+          placeholder="예: 7F3KM"
+          maxLength={5}
+          autoFocus
+          ariaLabel="공유 코드"
+          style={{ fontSize: 26, fontWeight: 700, letterSpacing: "0.16em", textAlign: "center", padding: "16px 12px", textTransform: "uppercase" }}
+        />
+        {codeErr && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "12px 0 0", lineHeight: 1.5 }}>{codeErr}</p>}
+        <div style={{ marginTop: 14 }}>
+          <Btn onClick={onLoad} disabled={busy || codeInput.length !== 5}>
+            {busy ? "여는 중…" : "시험지 열기"}
+          </Btn>
+        </div>
+      </Card>
+    </Shell>
+  );
+}
+
+/* ── 화면: 응시 ──────────────────────────────── */
+function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, toast }) {
+  const [confirm, setConfirm] = useState(false);
+  const answered = run.questions.filter((q) => (picked[q.id] || []).length).length;
+  const unanswered = run.questions.length - answered;
+
+  const submit = () => (unanswered > 0 ? setConfirm(true) : onSubmit());
+
+  return (
+    <Shell back="나가기" backTo={onExit} toast={toast}>
+      <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 6px" }}>{run.title}</h2>
+      {run.desc && <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{run.desc}</p>}
+      <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
+        {run.partial ? "틀린 문제만 다시 풉니다 · " : ""}문제 {run.questions.length}개 · 정답이 여러 개일 수 있습니다
+      </p>
+
+      <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, color: C.sub, marginBottom: 6 }}>
+          <span>답한 문제</span>
+          <span style={{ fontWeight: 700, color: C.inkMid }}>
+            {answered} / {run.questions.length}
+          </span>
+        </div>
+        <ProgressBar value={answered} max={run.questions.length} />
+      </div>
+
+      {!run.partial && (
+        <Field value={name} onChange={(v) => setName(v)} placeholder="이름 (선택) — 출제자에게 결과가 전달됩니다" maxLength={20} style={{ marginBottom: 14, fontSize: 15 }} />
+      )}
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {run.questions.map((q, qi) => {
+          const mine = picked[q.id] || [];
+          return (
+            <Card key={q.id} style={{ padding: 16 }}>
+              <div style={{ fontSize: 14.5, fontWeight: 700, color: C.accent, marginBottom: 8 }}>{qi + 1}번</div>
+              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}</p>
+              <div style={{ display: "grid", gap: 7 }} role="group" aria-label={`${qi + 1}번 보기`}>
+                {run.options.map((o, oi) => {
+                  const on = mine.includes(oi);
+                  return (
+                    <CheckRow key={oi} on={on} onToggle={() => togglePick(q.id, oi)} padding="12px 13px">
+                      <Check on={on} size={20} />
+                      <span style={{ color: C.accent, fontSize: 16 }}>{mark(oi)}</span>
+                      <span style={{ fontSize: 15.5, lineHeight: 1.45 }}>{o}</span>
+                    </CheckRow>
+                  );
+                })}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+      <p style={{ fontSize: 14, color: unanswered ? C.bad : C.good, textAlign: "center", margin: "20px 0 10px" }}>
+        {unanswered ? `아직 답을 고르지 않은 문제가 ${unanswered}개 있습니다.` : "모든 문제에 답했습니다."}
+      </p>
+      <Btn onClick={submit}>제출하고 채점 보기</Btn>
+
+      {confirm && (
+        <Modal title="그대로 제출할까요?" onClose={() => setConfirm(false)}>
+          <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 16px" }}>답하지 않은 문제 {unanswered}개는 오답으로 채점됩니다.</p>
+          <div style={{ display: "grid", gap: 9 }}>
+            <Btn onClick={() => { setConfirm(false); onSubmit(); }}>제출하기</Btn>
+            <Btn kind="ghost" onClick={() => setConfirm(false)}>더 풀기</Btn>
+          </div>
+        </Modal>
+      )}
+    </Shell>
+  );
+}
+
+/* ── 화면: 결과 ──────────────────────────────── */
+function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, toast }) {
+  const [showAll, setShowAll] = useState(false);
+  const wrong = result.rows.filter((r) => !r.ok);
+  const rows = showAll || wrong.length === 0 ? result.rows : wrong;
+  const pct = Math.round((result.score / result.total) * 100);
+  const msg = pct === 100 ? "모두 맞혔습니다. 완벽해요!" : pct >= 80 ? "잘했어요. 조금만 더 다듬으면 만점입니다." : pct >= 50 ? "절반 이상 맞혔어요. 틀린 문제를 한 번 더 봐요." : "아직 익숙하지 않네요. 해설을 보고 다시 도전해요.";
+
+  const copyResult = async () => {
+    const text = `[${run.title}] ${result.score}/${result.total} (${pct}점) · ${fmtSec(result.sec)}${run.partial ? " · 틀린 문제만" : ""}`;
+    flash((await copyText(text)) ? "결과를 복사했습니다." : "복사가 안 돼요.");
+  };
+
+  return (
+    <Shell toast={toast}>
+      <Card style={{ textAlign: "center", padding: 26, marginBottom: 22 }}>
+        <div style={{ fontSize: 14.5, color: C.sub, marginBottom: 8 }}>
+          {run.title}
+          {run.partial ? " · 틀린 문제만" : ""}
+        </div>
+        <div style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
+          {result.score}
+          <span style={{ color: C.sub, fontSize: 26, fontWeight: 700 }}> / {result.total}</span>
+        </div>
+        <div style={{ fontSize: 15.5, color: C.sub, marginTop: 8 }}>
+          {pct}점 · 틀린 문제 {wrong.length}개 · {fmtSec(result.sec)}
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <ProgressBar value={result.score} max={result.total} />
+        </div>
+        <p style={{ fontSize: 15, color: C.inkMid, margin: "14px 0 0", lineHeight: 1.6 }}>{msg}</p>
+      </Card>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>{showAll || wrong.length === 0 ? "전체 문제" : "틀린 문제"}</h3>
+        {wrong.length > 0 && <TextBtn onClick={() => setShowAll((v) => !v)}>{showAll ? "틀린 것만 보기" : "전체 보기"}</TextBtn>}
+      </div>
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {rows.map(({ q, mine, ok }) => {
+          const qi = result.rows.findIndex((r) => r.q.id === q.id);
+          return (
+            <Card key={q.id} style={{ padding: 16, borderColor: ok ? C.line : C.badSoft }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span>
+                <Badge tone={ok ? "good" : "bad"}>{ok ? "정답" : "오답"}</Badge>
+              </div>
+              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}</p>
+              <div style={{ display: "grid", gap: 7 }}>
+                {run.options.map((o, oi) => {
+                  const isAns = q.answers.includes(oi);
+                  const isMine = mine.includes(oi);
+                  let bd = C.line, bg = "#fff", tx = C.inkMid, tag = null;
+                  if (isAns) {
+                    bd = C.good; bg = C.goodSoft; tx = C.ink;
+                    tag = <span style={{ color: C.good, fontSize: 13, fontWeight: 700 }}>정답</span>;
+                  }
+                  if (isMine && !isAns) {
+                    bd = C.bad; bg = C.badSoft; tx = C.ink;
+                    tag = <span style={{ color: C.bad, fontSize: 13, fontWeight: 700 }}>내가 고름</span>;
+                  }
+                  if (isMine && isAns) tag = <span style={{ color: C.good, fontSize: 13, fontWeight: 700 }}>정답 · 내가 고름</span>;
+                  return (
+                    <div key={oi} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", border: `1px solid ${bd}`, background: bg, borderRadius: 10 }}>
+                      <span style={{ color: C.accent, fontSize: 16 }}>{mark(oi)}</span>
+                      <span style={{ fontSize: 15.5, color: tx, lineHeight: 1.45, flex: 1 }}>{o}</span>
+                      {tag}
+                    </div>
+                  );
+                })}
+              </div>
+              {mine.length === 0 && <p style={{ fontSize: 13.5, color: C.bad, margin: "10px 0 0" }}>답을 고르지 않았습니다.</p>}
+              {q.explain && (
+                <div style={{ marginTop: 12, padding: "10px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5, lineHeight: 1.6, color: C.inkMid, whiteSpace: "pre-wrap" }}>
+                  <span style={{ fontWeight: 700, color: C.ink }}>해설 </span>
+                  {q.explain}
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "grid", gap: 10, marginTop: 22 }}>
+        {wrong.length > 0 && <Btn onClick={() => onRetryWrong(wrong.map((r) => r.q.id))}>틀린 문제만 다시 풀기</Btn>}
+        <Btn kind="soft" onClick={onRetryAll}>처음부터 다시 풀기</Btn>
+        <Btn kind="ghost" onClick={copyResult}>결과 복사</Btn>
+        <Btn kind="ghost" onClick={onHome}>처음으로</Btn>
+      </div>
+    </Shell>
+  );
+}
+
+/* ── 앱 ──────────────────────────────────────── */
+function ExamMaker() {
+  const [screen, setScreen] = useState("home");
+  const [exams, setExams] = useState([]);
+  const [recent, setRecent] = useState([]);
+  const [ready, setReady] = useState(false);
+  const [toast, setToast] = useState("");
+  const toastTimer = useRef(null);
+  const [busy, setBusy] = useState(false);
+
+  const [draft, setDraft] = useState(null);
+  const [savedSnap, setSavedSnap] = useState(null);
+  const [exportText, setExportText] = useState(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const [codeInput, setCodeInput] = useState("");
+  const [codeErr, setCodeErr] = useState("");
+
+  const [run, setRun] = useState(null);
+  const [picked, setPicked] = useState({});
+  const [name, setName] = useState("");
+  const [result, setResult] = useState(null);
+
+  /* 초기 로드 */
+  useEffect(() => {
+    (async () => {
+      const [rawExams, rawRecent, rawName] = await Promise.all([store.get("exams"), store.get("recent"), store.get("name")]);
+      try {
+        const list = rawExams ? JSON.parse(rawExams) : [];
+        setExams(Array.isArray(list) ? list.map(normalizeExam) : []);
+      } catch (e) {
+        setExams([]);
+      }
+      try {
+        const list = rawRecent ? JSON.parse(rawRecent) : [];
+        setRecent(Array.isArray(list) ? list : []);
+      } catch (e) {
+        setRecent([]);
+      }
+      if (rawName) setName(rawName);
+      setReady(true);
+    })();
+  }, []);
+
+  const flash = (m) => {
+    setToast(m);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 2400);
+  };
+
+  const persist = async (list) => {
+    setExams(list);
+    const ok = await store.set("exams", JSON.stringify(list));
+    if (!ok) flash("저장에 실패했어요. 잠시 후 다시 시도해 주세요.");
+    return ok;
+  };
+
+  const snapOf = (e) => JSON.stringify({ ...e, updatedAt: 0 });
+  const dirty = draft ? snapOf(draft) !== savedSnap : false;
+
+  /* 편집 */
+  const openEditor = (exam, isNew) => {
+    setDraft(exam);
+    setSavedSnap(isNew ? null : snapOf(exam));
+    setScreen("editor");
+  };
+  const newExam = () => openEditor(normalizeExam({ id: uid() }), true);
+  const openExam = (id) => {
+    const e = exams.find((x) => x.id === id);
+    if (e) openEditor(JSON.parse(JSON.stringify(e)), false);
+  };
+
+  const upsert = (list, item) => (list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [item, ...list]);
+
+  const saveDraft = async (silent) => {
+    if (!draft) return false;
+    const next = { ...draft, updatedAt: Date.now() };
+    setDraft(next);
+    const ok = await persist(upsert(exams, next));
+    if (ok) {
+      setSavedSnap(snapOf(next));
+      if (!silent) flash("저장했습니다.");
+    }
+    return ok;
+  };
+
+  const shareDraft = async () => {
+    if (!draft) return null;
+    setBusy(true);
+    const payload = { ...payloadOf(draft), sharedAt: Date.now() };
+    let r = await remote().share(draft.code, draft.ownerKey, payload);
+    if (!r.ok && r.error === "bad_key") {
+      flash("수정 권한이 없어 새 코드로 공유합니다.");
+      r = await remote().share(null, null, payload);
+    }
+    if (!r.ok) {
+      setBusy(false);
+      flash(errMsg(r));
+      return null;
+    }
+    const next = { ...draft, code: r.code, ownerKey: r.key || draft.ownerKey, sharedHash: hashOf(draft), sharedAt: payload.sharedAt, updatedAt: Date.now() };
+    setDraft(next);
+    await persist(upsert(exams, next));
+    setSavedSnap(snapOf(next));
+    setBusy(false);
+    return r.code;
+  };
+
+  const removeExam = async (id) => {
+    const e = exams.find((x) => x.id === id);
+    await persist(exams.filter((x) => x.id !== id));
+    if (e && e.code) remote().deleteQuiz(e.code, e.ownerKey);
+    flash("삭제했습니다.");
+  };
+
+  const duplicateExam = async (id) => {
+    const e = exams.find((x) => x.id === id);
+    if (!e) return;
+    const copy = normalizeExam({ ...JSON.parse(JSON.stringify(e)), id: uid(), title: `${e.title || "제목 없음"} (복사본)`, code: null, ownerKey: null, sharedHash: null, sharedAt: null, createdAt: Date.now(), updatedAt: Date.now() });
+    copy.questions = copy.questions.map((q) => ({ ...q, id: uid() }));
+    await persist([copy, ...exams]);
+    flash("복제했습니다.");
+  };
+
+  const importExams = async (list) => {
+    await persist([...list, ...exams]);
+    setImportOpen(false);
+    flash(`시험지 ${list.length}개를 가져왔습니다.`);
+  };
+
+  const exportOne = () => draft && setExportText(JSON.stringify({ exams: [draft] }, null, 2));
+  const exportAll = () => setExportText(JSON.stringify({ exams }, null, 2));
+
+  /* 응시 */
+  const loadByCode = async (codeArg) => {
+    const code = cleanCode(codeArg || codeInput);
+    if (code.length !== 5) return;
+    setBusy(true);
+    setCodeErr("");
+    const r = await remote().getQuiz(code);
+    setBusy(false);
+    if (!r.ok) {
+      setCodeErr(errMsg(r));
+      return;
+    }
+    const src = parsePayload(JSON.stringify(r.quiz));
+    if (!src) {
+      setCodeErr("시험지 데이터가 손상되어 열 수 없습니다. 출제자에게 다시 공유해 달라고 해 주세요.");
+      return;
+    }
+    setRun(buildRun(src, code));
+    setPicked({});
+    setResult(null);
+    setScreen("take");
+    window.scrollTo(0, 0);
+  };
+
+  const togglePick = (qid, oi) =>
+    setPicked((p) => {
+      const cur = p[qid] || [];
+      const next = cur.includes(oi) ? cur.filter((x) => x !== oi) : [...cur, oi].sort((a, b) => a - b);
+      return { ...p, [qid]: next };
+    });
+
+  const submit = async () => {
+    const rows = run.questions.map((q) => {
+      const mine = picked[q.id] || [];
+      return { q, mine, ok: mine.length > 0 && sameSet(mine, q.answers) };
+    });
+    const score = rows.filter((r) => r.ok).length;
+    const total = rows.length;
+    const sec = (Date.now() - run.startedAt) / 1000;
+    setResult({ rows, score, total, sec });
+    setScreen("result");
+    window.scrollTo(0, 0);
+
+    if (run.partial) return;
+    const trimmed = name.trim().slice(0, 20);
+    /* 최근 목록 + 이름 기억 (내 저장소) */
+    const nextRecent = [{ code: run.code, title: run.title, score, total, at: Date.now() }, ...recent.filter((r) => r.code !== run.code)].slice(0, 8);
+    setRecent(nextRecent);
+    store.set("recent", JSON.stringify(nextRecent));
+    if (trimmed) store.set("name", trimmed);
+    /* 출제자에게 결과 전달 */
+    remote().submit(run.code, { name: trimmed, score, total, sec: Math.round(sec) });
+  };
+
+  const retryWrong = (ids) => {
+    setRun(buildRun(run.src, run.code, new Set(ids)));
+    setPicked({});
+    setResult(null);
+    setScreen("take");
+    window.scrollTo(0, 0);
+  };
+  const retryAll = () => {
+    setRun(buildRun(run.src, run.code));
+    setPicked({});
+    setResult(null);
+    setScreen("take");
+    window.scrollTo(0, 0);
+  };
+
+  const goHome = () => {
+    setDraft(null);
+    setSavedSnap(null);
+    setScreen("home");
+  };
+
+  /* ── 렌더 ──────────────────────────────────── */
+  if (!ready)
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, color: C.sub, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        불러오는 중…
+      </div>
+    );
+
+  const overlays = (
+    <>
+      {exportText !== null && <ExportModal title="내보내기" text={exportText} onClose={() => setExportText(null)} flash={flash} />}
+      {importOpen && <ImportModal onImport={importExams} onClose={() => setImportOpen(false)} />}
+    </>
+  );
+
+  if (screen === "home")
+    return (
+      <>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} flash={flash} />}
+      <HomeScreen
+        exams={exams}
+        recent={recent}
+        mode={remote().kind}
+        toast={toast}
+        onSettings={() => setSettingsOpen(true)}
+        onNew={newExam}
+        onList={() => setScreen("list")}
+        onCode={() => {
+          setCodeInput("");
+          setCodeErr("");
+          setScreen("code");
+        }}
+        onOpenRecent={(code) => {
+          setCodeInput(code);
+          setCodeErr("");
+          setScreen("code");
+          loadByCode(code);
+        }}
+      />
+      </>
+    );
+
+  if (screen === "list")
+    return (
+      <>
+        <ListScreen
+          exams={exams}
+          toast={toast}
+          onOpen={openExam}
+          onNew={newExam}
+          onDelete={removeExam}
+          onDuplicate={duplicateExam}
+          onImport={() => setImportOpen(true)}
+          onExportAll={exportAll}
+          onBack={goHome}
+        />
+        {overlays}
+      </>
+    );
+
+  if (screen === "editor" && draft)
+    return (
+      <>
+        <EditorScreen
+          draft={draft}
+          setDraft={setDraft}
+          dirty={dirty}
+          busy={busy}
+          onSave={() => saveDraft(false)}
+          onShare={shareDraft}
+          onBack={goHome}
+          onExport={exportOne}
+          flash={flash}
+          toast={toast}
+        />
+        {overlays}
+      </>
+    );
+
+  if (screen === "code")
+    return <CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} />;
+
+  if (screen === "take" && run)
+    return <TakeScreen run={run} picked={picked} togglePick={togglePick} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} />;
+
+  if (screen === "result" && result && run)
+    return <ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} />;
+
+  return (
+    <Shell back="처음으로" backTo={goHome} toast={toast}>
+      <Card>화면을 불러오지 못했습니다. 처음으로 돌아가 주세요.</Card>
+    </Shell>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ExamMaker />);
