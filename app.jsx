@@ -137,6 +137,7 @@ const serverRemote = {
   deleteQuiz: (code, key) => apiPost({ action: "delete", code, key }),
   submit: (code, entry) => apiPost({ action: "submit", code, entry }),
   clearResults: (code, key) => apiPost({ action: "clearResults", code, key }),
+  generate: (params) => apiPost({ action: "generate", ...params }),
 };
 const localRemote = {
   kind: "local",
@@ -161,6 +162,7 @@ const localRemote = {
     return { ok: true };
   },
   async clearResults(code) { await store.del(`results:${code}`, true); return { ok: true }; },
+  async generate() { return { ok: false, error: "gen_local" }; },
 };
 const remote = () => (syncUrl() ? serverRemote : localRemote);
 const ERR = {
@@ -169,8 +171,14 @@ const ERR = {
   bad_key: "이 시험지를 고칠 권한이 없습니다. (다른 기기에서 만든 코드)",
   too_big: "시험지가 너무 큽니다. 문제 수를 줄여 주세요.",
   busy: "서버가 바쁩니다. 잠시 후 다시 시도해 주세요.",
+  gen_not_configured: "서버에 AI 생성 설정(API 키·비밀번호)이 없습니다. 관리자에게 문의하세요.",
+  bad_pw: "생성 비밀번호가 맞지 않습니다.",
+  gen_limit: "오늘 AI 생성 한도를 모두 썼습니다. 내일 다시 시도해 주세요.",
+  refused: "이 범위로는 문제를 만들 수 없었습니다. 범위를 바꿔 보세요.",
+  truncated: "결과가 너무 길어 잘렸습니다. 문제 수를 줄여 주세요.",
+  gen_local: "서버가 연결되어 있어야 AI 생성을 쓸 수 있습니다.",
 };
-const errMsg = (r) => ERR[r && r.error] || "요청에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+const errMsg = (r) => ERR[r && r.error] || (r && r.message ? `서버 오류: ${r.message}` : "요청에 실패했습니다. 잠시 후 다시 시도해 주세요.");
 
 /* ── 유틸 ────────────────────────────────────── */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -227,11 +235,14 @@ const asIntList = (v, max) =>
 
 function normalizeQuestion(q, nOpt) {
   const src = q && typeof q === "object" ? q : {};
+  const ownRaw = Array.isArray(src.options) ? src.options.map(asStr) : null;
+  const own = ownRaw && ownRaw.length >= 2 ? ownRaw : null; // 문제별 보기 (없으면 공용 보기 사용)
   return {
     id: asStr(src.id) || uid(),
     text: asStr(src.text),
     explain: asStr(src.explain),
-    answers: asIntList(src.answers, nOpt),
+    options: own,
+    answers: asIntList(src.answers, own ? own.length : nOpt),
   };
 }
 
@@ -267,6 +278,7 @@ function payloadOf(exam) {
       id: q.id,
       text: q.text.trim(),
       explain: q.explain.trim(),
+      ...(q.options ? { options: q.options.map((o) => o.trim()) } : {}),
       answers: q.answers,
     })),
     shuffle: !!exam.shuffle,
@@ -298,27 +310,39 @@ function parsePayload(raw) {
 function problemsOf(draft) {
   const out = [];
   if (!draft.title.trim()) out.push("시험지 제목을 적어 주세요.");
-  if (draft.options.some((o) => !o.trim())) out.push("비어 있는 보기가 있습니다.");
+  const usesShared = draft.questions.some((q) => !q.options);
+  if (usesShared && draft.options.some((o) => !o.trim())) out.push("비어 있는 보기가 있습니다.");
   const seen = new Set();
-  draft.options.forEach((o) => {
+  if (usesShared) draft.options.forEach((o) => {
     const k = o.trim();
     if (k && seen.has(k)) out.push(`보기 “${k}”가 두 번 이상 있습니다.`);
     seen.add(k);
   });
   draft.questions.forEach((q, i) => {
+    if (q.options && q.options.some((o) => !o.trim())) out.push(`${i + 1}번 문제의 보기 중 비어 있는 것이 있습니다.`);
     if (!q.text.trim()) out.push(`${i + 1}번 문제의 내용이 비어 있습니다.`);
     else if (q.answers.length === 0) out.push(`${i + 1}번 문제의 정답을 하나 이상 골라 주세요.`);
   });
   return out;
 }
 
-/* 응시 런타임 만들기: 셔플이 켜져 있으면 보기·문제 순서를 섞고 정답 위치를 재계산 */
+/* 응시 런타임 만들기: 문제마다 쓰는 보기를 확정하고(문제별 보기 또는 공용 보기),
+   셔플이 켜져 있으면 보기·문제 순서를 섞은 뒤 정답 위치를 재계산합니다. */
 function buildRun(src, code, onlyIds) {
-  const n = src.options.length;
-  const perm = src.shuffle ? shuffled(range(n)) : range(n);
-  const pos = {};
-  perm.forEach((orig, disp) => (pos[orig] = disp));
-  let qs = src.questions.map((q) => ({ ...q, answers: q.answers.map((a) => pos[a]).sort((x, y) => x - y) }));
+  const shared = src.options;
+  const sharedPerm = src.shuffle ? shuffled(range(shared.length)) : range(shared.length);
+  let qs = src.questions.map((q) => {
+    const own = Array.isArray(q.options) && q.options.length >= 2 ? q.options : null;
+    const base = own || shared;
+    const perm = own ? (src.shuffle ? shuffled(range(base.length)) : range(base.length)) : sharedPerm;
+    const pos = {};
+    perm.forEach((orig, disp) => (pos[orig] = disp));
+    return {
+      ...q,
+      options: perm.map((i) => base[i]),
+      answers: q.answers.map((a) => pos[a]).filter((x) => x != null).sort((x, y) => x - y),
+    };
+  });
   if (onlyIds) qs = qs.filter((q) => onlyIds.has(q.id));
   if (src.shuffle) qs = shuffled(qs);
   return {
@@ -326,7 +350,7 @@ function buildRun(src, code, onlyIds) {
     src,
     title: src.title,
     desc: src.desc,
-    options: perm.map((i) => src.options[i]),
+    options: sharedPerm.map((i) => shared[i]),
     questions: qs,
     partial: !!onlyIds,
     startedAt: Date.now(),
@@ -392,7 +416,7 @@ function TextBtn({ children, onClick, disabled, style, ariaLabel, tone = "accent
   );
 }
 
-function Field({ value, onChange, placeholder, multiline, style, maxLength, onEnter, ariaLabel, rows = 2, autoFocus }) {
+function Field({ value, onChange, placeholder, multiline, style, maxLength, onEnter, ariaLabel, rows = 2, autoFocus, type = "text" }) {
   const s = {
     width: "100%",
     boxSizing: "border-box",
@@ -422,6 +446,7 @@ function Field({ value, onChange, placeholder, multiline, style, maxLength, onEn
   return (
     <input
       {...common}
+      type={type}
       onKeyDown={(e) => {
         if (onEnter && e.key === "Enter") {
           e.preventDefault();
@@ -911,12 +936,131 @@ function SettingsModal({ onClose, flash }) {
   );
 }
 
+
+function Seg({ value, onChange, items }) {
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {items.map(([v, label]) => {
+        const on = value === v;
+        return (
+          <button
+            key={v}
+            className="em-btn"
+            onClick={() => onChange(v)}
+            aria-pressed={on}
+            style={{ fontFamily: FONT, fontSize: 14, fontWeight: 600, padding: "7px 12px", borderRadius: 999, border: `1px solid ${on ? C.accent : C.line}`, background: on ? C.accentSoft : "#fff", color: on ? C.accent : C.sub, cursor: "pointer" }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── AI 문제 생성 모달 ───────────────────────── */
+function GenerateModal({ onClose, onAdd }) {
+  const lsGet = (k) => { try { return localStorage.getItem(LS_PREFIX + k) || ""; } catch (e) { return ""; } };
+  const [scope, setScope] = useState("");
+  const [material, setMaterial] = useState("");
+  const [count, setCount] = useState(10);
+  const [difficulty, setDifficulty] = useState("중");
+  const [kind, setKind] = useState("single");
+  const [pw, setPw] = useState(() => lsGet("genpw"));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [sel, setSel] = useState({});
+
+  const run = async () => {
+    if (!scope.trim() || !pw || busy) return;
+    setBusy(true);
+    setErr("");
+    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, pw });
+    setBusy(false);
+    if (!r.ok) {
+      setErr(errMsg(r));
+      return;
+    }
+    try { localStorage.setItem(LS_PREFIX + "genpw", pw); } catch (e) {}
+    const qs = (r.questions || []).map((q) => normalizeQuestion(q, 0)).filter((q) => q.text && q.options && q.answers.length);
+    if (!qs.length) {
+      setErr("만들어진 문제가 없습니다. 범위를 조금 더 구체적으로 적어 보세요.");
+      return;
+    }
+    setResult({ title: asStr(r.title), questions: qs, remaining: r.remaining });
+    setSel(Object.fromEntries(qs.map((q) => [q.id, true])));
+  };
+  const chosen = result ? result.questions.filter((q) => sel[q.id]) : [];
+  const label = (t) => <div style={{ fontSize: 13.5, color: C.sub, margin: "14px 0 6px" }}>{t}</div>;
+
+  return (
+    <Modal title="AI로 문제 만들기" onClose={onClose} wide>
+      {!result ? (
+        <>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
+            범위를 적으면 그에 맞는 문제를 만들어 드립니다. 만든 문제는 편집 화면에서 자유롭게 고칠 수 있습니다.
+          </p>
+          <Field multiline rows={2} value={scope} onChange={setScope} placeholder="범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)" maxLength={500} autoFocus />
+          <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
+          {label("문제 수")}
+          <Seg value={count} onChange={setCount} items={[[5, "5개"], [10, "10개"], [15, "15개"], [20, "20개"]]} />
+          {label("난이도")}
+          <Seg value={difficulty} onChange={setDifficulty} items={[["하", "쉬움"], ["중", "보통"], ["상", "어려움"]]} />
+          {label("유형")}
+          <Seg value={kind} onChange={setKind} items={[["single", "객관식 (정답 1개)"], ["multi", "객관식 (복수 정답)"], ["tf", "참·거짓"]]} />
+          <Field type="password" value={pw} onChange={setPw} placeholder="생성 비밀번호" onEnter={run} ariaLabel="생성 비밀번호" style={{ marginTop: 16 }} />
+          {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
+          <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+            <Btn onClick={run} disabled={busy || !scope.trim() || !pw}>{busy ? "문제를 만드는 중… (최대 1분)" : "문제 만들기"}</Btn>
+            <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
+            문제 {result.questions.length}개를 만들었습니다. 추가할 문제를 고르세요. 정답은 초록색으로 표시됩니다.
+          </p>
+          <div style={{ display: "grid", gap: 8 }}>
+            {result.questions.map((q, i) => {
+              const on = !!sel[q.id];
+              return (
+                <CheckRow key={q.id} on={on} onToggle={() => setSel((x) => ({ ...x, [q.id]: !x[q.id] }))} style={{ alignItems: "flex-start" }}>
+                  <Check on={on} size={20} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{i + 1}. {q.text}</div>
+                    {q.options.map((o, oi) => {
+                      const ans = q.answers.includes(oi);
+                      return (
+                        <div key={oi} style={{ fontSize: 14, color: ans ? C.good : C.inkMid, fontWeight: ans ? 700 : 400, lineHeight: 1.5 }}>
+                          {mark(oi)} {o}
+                        </div>
+                      );
+                    })}
+                    {q.explain && <div style={{ fontSize: 13, color: C.sub, marginTop: 4, lineHeight: 1.5 }}>해설 · {q.explain}</div>}
+                  </div>
+                </CheckRow>
+              );
+            })}
+          </div>
+          <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+            <Btn onClick={() => onAdd(chosen, result.title)} disabled={!chosen.length}>선택한 문제 {chosen.length}개 추가</Btn>
+            <Btn kind="soft" onClick={() => setResult(null)}>다시 만들기</Btn>
+            <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 /* ── 화면: 편집 ──────────────────────────────── */
 function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast }) {
   const [shareCode, setShareCode] = useState(null);
   const [showProblems, setShowProblems] = useState(false);
   const [leaveAsk, setLeaveAsk] = useState(false);
   const [resultsOpen, setResultsOpen] = useState(false);
+  const [genOpen, setGenOpen] = useState(false);
 
   const upd = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const problems = useMemo(() => problemsOf(draft), [draft]);
@@ -931,10 +1075,9 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   const delOpt = (i) => {
     if (draft.options.length <= 2) return;
     const options = draft.options.filter((_, k) => k !== i);
-    const questions = draft.questions.map((q) => ({
-      ...q,
-      answers: q.answers.filter((a) => a !== i).map((a) => (a > i ? a - 1 : a)),
-    }));
+    const questions = draft.questions.map((q) =>
+      q.options ? q : { ...q, answers: q.answers.filter((a) => a !== i).map((a) => (a > i ? a - 1 : a)) }
+    );
     upd({ options, questions });
   };
 
@@ -944,7 +1087,32 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
     const answers = q.answers.includes(oi) ? q.answers.filter((a) => a !== oi) : [...q.answers, oi].sort((a, b) => a - b);
     setQ(qi, { answers });
   };
-  const addQ = () => upd({ questions: [...draft.questions, { id: uid(), text: "", explain: "", answers: [] }] });
+  const addQ = () => upd({ questions: [...draft.questions, { id: uid(), text: "", explain: "", options: null, answers: [] }] });
+  /* 문제별 보기 */
+  const useOwnOpts = (qi, on) => {
+    const q = draft.questions[qi];
+    if (on) setQ(qi, { options: [...draft.options] });
+    else setQ(qi, { options: null, answers: q.answers.filter((a) => a < draft.options.length) });
+  };
+  const setQOpt = (qi, oi, v) => {
+    const options = [...draft.questions[qi].options];
+    options[oi] = v;
+    setQ(qi, { options });
+  };
+  const addQOpt = (qi) => setQ(qi, { options: [...draft.questions[qi].options, ""] });
+  const delQOpt = (qi, oi) => {
+    const q = draft.questions[qi];
+    if (q.options.length <= 2) return;
+    setQ(qi, { options: q.options.filter((_, k) => k !== oi), answers: q.answers.filter((a) => a !== oi).map((a) => (a > oi ? a - 1 : a)) });
+  };
+  /* AI 생성 결과 병합 */
+  const addGenerated = (qs, title) => {
+    const fresh = qs.map((q) => ({ id: uid(), text: q.text, explain: q.explain || "", options: q.options, answers: q.answers }));
+    const existing = draft.questions.filter((q) => q.text.trim() || q.answers.length);
+    upd({ questions: [...existing, ...fresh], title: draft.title.trim() ? draft.title : title || "" });
+    setGenOpen(false);
+    flash(`문제 ${fresh.length}개를 추가했습니다.`);
+  };
   const delQ = (qi) => {
     if (draft.questions.length <= 1) return;
     upd({ questions: draft.questions.filter((_, k) => k !== qi) });
@@ -981,6 +1149,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           {dirty && <Badge tone="warn">저장 안 됨</Badge>}
         </div>
         <div style={{ display: "flex", gap: 2 }}>
+          <TextBtn onClick={() => setGenOpen(true)}>AI로 문제 만들기</TextBtn>
           {draft.code && <TextBtn onClick={() => setResultsOpen(true)}>응시 기록</TextBtn>}
           <TextBtn onClick={onExport}>내보내기</TextBtn>
         </div>
@@ -990,7 +1159,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
       <Field value={draft.desc} onChange={(v) => upd({ desc: v })} placeholder="안내문 (선택) — 응시자에게 첫 화면에서 보여줍니다" maxLength={300} multiline rows={2} style={{ marginBottom: 22, fontSize: 15 }} />
 
       <h3 style={{ fontSize: 17, fontWeight: 700, margin: "0 0 4px" }}>보기</h3>
-      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 12px", lineHeight: 1.5 }}>여기서 정한 보기가 모든 문제에 똑같이 쓰입니다.</p>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 12px", lineHeight: 1.5 }}>여기서 정한 보기가 모든 문제에 똑같이 쓰입니다. 문제마다 다른 보기가 필요하면 문제 카드에서 따로 정할 수 있습니다.</p>
       <Card style={{ padding: 16, marginBottom: 26 }}>
         <div style={{ display: "grid", gap: 10 }}>
           {draft.options.map((o, i) => (
@@ -1023,9 +1192,29 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
               </div>
             </div>
             <Field value={q.text} onChange={(v) => setQ(qi, { text: v })} placeholder="문제를 입력하세요" multiline />
+            {q.options ? (
+              <div style={{ marginTop: 12, padding: 12, background: C.lineSoft, borderRadius: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 700, color: C.inkMid }}>이 문제만의 보기</span>
+                  <TextBtn tone="sub" onClick={() => useOwnOpts(qi, false)} style={{ fontSize: 13, padding: 0 }}>공용 보기로 되돌리기</TextBtn>
+                </div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {q.options.map((o, oi) => (
+                    <div key={oi} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span aria-hidden="true" style={{ width: 20, color: C.accent, fontSize: 16, flex: "0 0 20px" }}>{mark(oi)}</span>
+                      <Field value={o} onChange={(v) => setQOpt(qi, oi, v)} placeholder={`보기 ${oi + 1}`} maxLength={200} style={{ padding: "9px 11px", fontSize: 15 }} />
+                      <TextBtn tone="sub" ariaLabel={`보기 ${oi + 1} 삭제`} onClick={() => delQOpt(qi, oi)} disabled={q.options.length <= 2} style={{ fontSize: 18, padding: "0 2px" }}>×</TextBtn>
+                    </div>
+                  ))}
+                </div>
+                <TextBtn onClick={() => addQOpt(qi)} disabled={q.options.length >= 12} style={{ marginTop: 8, padding: 0, fontSize: 14 }}>+ 보기 추가</TextBtn>
+              </div>
+            ) : (
+              <TextBtn tone="sub" onClick={() => useOwnOpts(qi, true)} style={{ marginTop: 10, padding: 0, fontSize: 13 }}>이 문제만 다른 보기 쓰기</TextBtn>
+            )}
             <div style={{ fontSize: 13.5, color: C.sub, margin: "14px 0 8px" }}>정답 고르기</div>
             <div style={{ display: "grid", gap: 7 }}>
-              {draft.options.map((o, oi) => {
+              {(q.options || draft.options).map((o, oi) => {
                 const on = q.answers.includes(oi);
                 return (
                   <CheckRow key={oi} on={on} onToggle={() => toggleAns(qi, oi)}>
@@ -1098,6 +1287,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
       )}
 
       {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
+      {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} />}
     </Shell>
   );
 }
@@ -1168,7 +1358,7 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
               <div style={{ fontSize: 14.5, fontWeight: 700, color: C.accent, marginBottom: 8 }}>{qi + 1}번</div>
               <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}</p>
               <div style={{ display: "grid", gap: 7 }} role="group" aria-label={`${qi + 1}번 보기`}>
-                {run.options.map((o, oi) => {
+                {q.options.map((o, oi) => {
                   const on = mine.includes(oi);
                   return (
                     <CheckRow key={oi} on={on} onToggle={() => togglePick(q.id, oi)} padding="12px 13px">
@@ -1250,7 +1440,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
               </div>
               <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}</p>
               <div style={{ display: "grid", gap: 7 }}>
-                {run.options.map((o, oi) => {
+                {q.options.map((o, oi) => {
                   const isAns = q.answers.includes(oi);
                   const isMine = mine.includes(oi);
                   let bd = C.line, bg = "#fff", tx = C.inkMid, tag = null;
