@@ -138,6 +138,7 @@ const serverRemote = {
   submit: (code, entry) => apiPost({ action: "submit", code, entry }),
   clearResults: (code, key) => apiPost({ action: "clearResults", code, key }),
   generate: (params) => apiPost({ action: "generate", ...params }),
+  genAvailable: async () => { const r = await apiGet({ action: "ping" }); return !!(r && r.ok && r.gen); },
 };
 const localRemote = {
   kind: "local",
@@ -163,6 +164,7 @@ const localRemote = {
   },
   async clearResults(code) { await store.del(`results:${code}`, true); return { ok: true }; },
   async generate() { return { ok: false, error: "gen_local" }; },
+  async genAvailable() { return false; },
 };
 const remote = () => (syncUrl() ? serverRemote : localRemote);
 const ERR = {
@@ -171,6 +173,7 @@ const ERR = {
   bad_key: "이 시험지를 고칠 권한이 없습니다. (다른 기기에서 만든 코드)",
   too_big: "시험지가 너무 큽니다. 문제 수를 줄여 주세요.",
   busy: "서버가 바쁩니다. 잠시 후 다시 시도해 주세요.",
+  gen_disabled: "AI 생성 기능이 꺼져 있습니다. 관리자에게 문의하세요.",
   gen_not_configured: "서버에 AI 생성 설정(API 키·비밀번호)이 없습니다. 관리자에게 문의하세요.",
   bad_pw: "생성 비밀번호가 맞지 않습니다.",
   gen_limit: "오늘 AI 생성 한도를 모두 썼습니다. 내일 다시 시도해 주세요.",
@@ -1061,6 +1064,8 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   const [leaveAsk, setLeaveAsk] = useState(false);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [genOpen, setGenOpen] = useState(false);
+  const [genAvail, setGenAvail] = useState(false); // 서버가 생성 기능을 켰을 때만 버튼 표시(기본 숨김 = 비용 0)
+  useEffect(() => { let alive = true; remote().genAvailable().then((v) => { if (alive) setGenAvail(v); }); return () => { alive = false; }; }, []);
 
   const upd = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const problems = useMemo(() => problemsOf(draft), [draft]);
@@ -1149,7 +1154,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           {dirty && <Badge tone="warn">저장 안 됨</Badge>}
         </div>
         <div style={{ display: "flex", gap: 2 }}>
-          <TextBtn onClick={() => setGenOpen(true)}>AI로 문제 만들기</TextBtn>
+          {genAvail && <TextBtn onClick={() => setGenOpen(true)}>AI로 문제 만들기</TextBtn>}
           {draft.code && <TextBtn onClick={() => setResultsOpen(true)}>응시 기록</TextBtn>}
           <TextBtn onClick={onExport}>내보내기</TextBtn>
         </div>

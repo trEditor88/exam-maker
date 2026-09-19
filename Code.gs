@@ -118,6 +118,7 @@ function validQuiz(q) {
 
 /* ── AI 문제 생성 (Claude API) ─────────────────
    프로젝트 설정(왼쪽 톱니) › 스크립트 속성에 아래를 추가한 뒤, 배포 › 배포 관리 › 새 버전으로 다시 배포합니다.
+     GEN_ENABLED        'true' 일 때만 생성 기능이 켜짐 (없거나 다른 값이면 API 호출 자체를 하지 않음 = 비용 0)
      ANTHROPIC_API_KEY  Anthropic API 키 (console.anthropic.com 에서 발급)
      GEN_PW             생성 비밀번호 (출제자만 아는 값. 학생이 생성 기능을 쓰지 못하게 막음)
      GEN_DAILY_LIMIT    하루 생성 횟수 상한 (선택, 기본 50)
@@ -152,7 +153,36 @@ function logUsage(scope, count, model, inTok, outTok, ms, status) {
   try { usageSheet().appendRow([new Date(), safeText(scope, 200), count, model, inTok, outTok, ms, status]); } catch (e) {}
 }
 
+/* 사용량 요약(GET action=usage&pw=생성비밀번호). 모델별 호출 수·토큰 합계와 추정 비용(USD).
+   단가는 100만 토큰당 입력/출력 달러. 키·개인정보는 내보내지 않는다. */
+const PRICE_PER_M = { 'claude-opus-5': [5, 25], 'claude-sonnet-5': [2, 10], 'claude-haiku-4-5': [1, 5], 'claude-opus-4-8': [5, 25] };
+function usageSummary(pw) {
+  const props = PropertiesService.getScriptProperties();
+  const want = props.getProperty('GEN_PW');
+  if (!want) return { ok: false, error: 'gen_not_configured' };
+  if (String(pw || '') !== want) return { ok: false, error: 'bad_pw' };
+  const rows = usageSheet().getDataRange().getValues().slice(1);
+  const byModel = {};
+  let first = null, last = null;
+  rows.forEach(function (r) {
+    const at = r[0], model = String(r[3] || '?'), inTok = Number(r[4]) || 0, outTok = Number(r[5]) || 0, status = String(r[7] || '');
+    if (at instanceof Date) { if (!first || at < first) first = at; if (!last || at > last) last = at; }
+    const m = byModel[model] || (byModel[model] = { calls: 0, ok: 0, inputTokens: 0, outputTokens: 0, usd: 0 });
+    m.calls++; if (status === 'ok') m.ok++;
+    m.inputTokens += inTok; m.outputTokens += outTok;
+    const price = PRICE_PER_M[model] || [5, 25];
+    m.usd += inTok / 1e6 * price[0] + outTok / 1e6 * price[1];
+  });
+  let total = 0; Object.keys(byModel).forEach(function (k) { byModel[k].usd = Math.round(byModel[k].usd * 10000) / 10000; total += byModel[k].usd; });
+  return { ok: true, rows: rows.length, first: first, last: last, byModel: byModel, totalUsd: Math.round(total * 10000) / 10000 };
+}
+
+/* 비용 차단 스위치: 스크립트 속성 GEN_ENABLED 가 정확히 'true' 일 때만 Claude API 를 호출한다.
+   기본(속성 없음)은 꺼짐 → 키가 등록돼 있어도 요금이 발생하지 않는다. */
+function genEnabled() { return PropertiesService.getScriptProperties().getProperty('GEN_ENABLED') === 'true'; }
+
 function generate(body) {
+  if (!genEnabled()) return { ok: false, error: 'gen_disabled' };
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('ANTHROPIC_API_KEY');
   const pw = props.getProperty('GEN_PW');
@@ -250,7 +280,7 @@ function doGet(e) {
   const p = (e && e.parameter) || {};
   const a = p.action;
   try {
-    if (a === 'ping') return out({ ok: true, v: 1 });
+    if (a === 'ping') return out({ ok: true, v: 1, gen: genEnabled() });
 
     if (a === 'quiz') {
       const code = cleanCode(p.code);
@@ -269,6 +299,8 @@ function doGet(e) {
       if (sha(p.key || '') !== String(quizSheet().getRange(row, 2).getValue())) return out({ ok: false, error: 'bad_key' });
       return out({ ok: true, items: resultsFor(code) });
     }
+
+    if (a === 'usage') return out(usageSummary(p.pw));
 
     return out({ ok: false, error: 'bad_action' });
   } catch (err) {
