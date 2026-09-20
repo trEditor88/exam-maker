@@ -1422,8 +1422,8 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
         <ProgressBar value={answered} max={run.questions.length} />
       </div>
 
-      {!run.partial && (
-        {!(authGet() && authGet().token) && <Field value={name} onChange={(v) => setName(v)} placeholder="이름 (선택) — 출제자에게 결과가 전달됩니다" maxLength={20} style={{ marginBottom: 14, fontSize: 15 }} />}
+      {!run.partial && !(authGet() && authGet().token) && (
+        <Field value={name} onChange={(v) => setName(v)} placeholder="이름 (선택) — 출제자에게 결과가 전달됩니다" maxLength={20} style={{ marginBottom: 14, fontSize: 15 }} />
       )}
 
       <div style={{ display: "grid", gap: 12 }}>
