@@ -139,6 +139,11 @@ const serverRemote = {
   clearResults: (code, key) => apiPost({ action: "clearResults", code, key }),
   generate: (params) => apiPost({ action: "generate", ...params }),
   genAvailable: async () => { const r = await apiGet({ action: "ping" }); return !!(r && r.ok && r.gen); },
+  shList: (key) => apiGet({ action: "sh_list", key }),
+  shDetail: (key, ws) => apiGet({ action: "sh_detail", key, ws }),
+  shNote: (key, ws) => apiGet({ action: "sh_note", key, ws }),
+  shUpload: (params) => apiPost({ action: "sh_upload", ...params }),
+  shConfirm: (params) => apiPost({ action: "sh_confirm", ...params }),
 };
 const localRemote = {
   kind: "local",
@@ -165,6 +170,11 @@ const localRemote = {
   async clearResults(code) { await store.del(`results:${code}`, true); return { ok: true }; },
   async generate() { return { ok: false, error: "gen_local" }; },
   async genAvailable() { return false; },
+  async shList() { return { ok: false, error: "sh_local" }; },
+  async shDetail() { return { ok: false, error: "sh_local" }; },
+  async shNote() { return { ok: false, error: "sh_local" }; },
+  async shUpload() { return { ok: false, error: "sh_local" }; },
+  async shConfirm() { return { ok: false, error: "sh_local" }; },
 };
 const remote = () => (syncUrl() ? serverRemote : localRemote);
 const ERR = {
@@ -180,6 +190,9 @@ const ERR = {
   refused: "이 범위로는 문제를 만들 수 없었습니다. 범위를 바꿔 보세요.",
   truncated: "결과가 너무 길어 잘렸습니다. 문제 수를 줄여 주세요.",
   gen_local: "서버가 연결되어 있어야 AI 생성을 쓸 수 있습니다.",
+  sh_local: "서버가 연결되어 있어야 오답노트를 쓸 수 있습니다.",
+  bad_key: "연결 코드가 올바르지 않습니다.",
+  too_big: "사진이 너무 큽니다(9MB 이하).",
 };
 const errMsg = (r) => ERR[r && r.error] || (r && r.message ? `서버 오류: ${r.message}` : "요청에 실패했습니다. 잠시 후 다시 시도해 주세요.");
 
@@ -651,11 +664,12 @@ async function copyText(text) {
 }
 
 /* ── 화면: 홈 ────────────────────────────────── */
-function HomeScreen({ exams, recent, onNew, onList, onCode, onOpenRecent, onSettings, mode, toast }) {
+function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast }) {
   const items = [
     { t: "새 시험지 만들기", d: "보기를 정하고 문제를 하나씩 추가합니다.", go: onNew },
     { t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList },
     { t: "코드로 문제 풀기", d: "받은 코드를 입력해 친구가 낸 문제를 풉니다.", go: onCode },
+    { t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy },
   ];
   return (
     <Shell toast={toast}>
@@ -1490,6 +1504,210 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
 }
 
 /* ── 앱 ──────────────────────────────────────── */
+/* ── 화면: 오답노트(학습 도우미) ─────────────────
+   사진을 서버(드라이브)에 올리면 PC 의 워커(Claude 예약 작업)가 가져가 분석하고 결과를 다시 올린다.
+   연결 코드는 PC 의 study-helper\sync.json 에 있는 값. 이 브라우저에 저장된다. */
+const SH_STATUS = { uploaded: ["대기 중", "neutral"], extracting: ["처리 중", "accent"], in_progress: ["처리 중", "accent"], needs_confirm: ["확인 필요", "warn"], done: ["완료", "good"] };
+const shKeyGet = () => { try { return localStorage.getItem(LS_PREFIX + "sh_key") || ""; } catch (e) { return ""; } };
+const shKeySet = (k) => { try { k ? localStorage.setItem(LS_PREFIX + "sh_key", k) : localStorage.removeItem(LS_PREFIX + "sh_key"); } catch (e) {} };
+const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(file); });
+
+function StudyScreen({ onBack, flash, toast }) {
+  const [key, setKey] = useState(shKeyGet);
+  const [keyInput, setKeyInput] = useState("");
+  const [list, setList] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [wsName, setWsName] = useState("");
+  const [files, setFiles] = useState([]);
+  const [progress, setProgress] = useState("");
+  const [detail, setDetail] = useState(null);      // 상세 화면 데이터
+  const [answers, setAnswers] = useState({});
+  const [noteHtml, setNoteHtml] = useState(null);  // 오답노트 HTML(iframe)
+  const fileRef = useRef(null);
+  const r = remote();
+
+  const load = async () => {
+    if (!key) return;
+    setBusy(true);
+    const res = await r.shList(key);
+    setBusy(false);
+    if (!res.ok) { flash(ERR[res.error] || "목록을 불러오지 못했습니다."); setList([]); return; }
+    setList(res.worksheets);
+  };
+  useEffect(() => { load(); }, [key]);
+
+  const connect = () => {
+    const k = keyInput.trim();
+    if (k.length < 8) return flash("연결 코드는 8자 이상입니다. PC 의 study-helper\\sync.json 에 있는 값을 넣으세요.");
+    shKeySet(k); setKey(k);
+  };
+  const disconnect = () => { shKeySet(""); setKey(""); setList(null); setDetail(null); };
+
+  const upload = async () => {
+    const name = wsName.trim();
+    if (!name) return flash("문제지 이름을 넣어 주세요.");
+    if (!files.length) return flash("사진을 골라 주세요.");
+    setBusy(true);
+    let done = 0;
+    for (const f of files) {
+      setProgress(`${done + 1}/${files.length} 올리는 중…`);
+      const data = await fileToBase64(f);
+      const res = await r.shUpload({ key, worksheet: name, filename: f.name, mime: f.type, data });
+      if (!res.ok) { setBusy(false); setProgress(""); return flash(ERR[res.error] || `업로드 실패(${res.error || "network"})`); }
+      done++;
+    }
+    setBusy(false); setProgress("");
+    setFiles([]); setWsName(""); if (fileRef.current) fileRef.current.value = "";
+    flash(`사진 ${done}장을 올렸습니다. PC 가 켜져 있으면 10분 안에 처리됩니다.`);
+    load();
+  };
+
+  const openDetail = async (name) => {
+    setBusy(true);
+    const res = await r.shDetail(key, name);
+    setBusy(false);
+    if (!res.ok) return flash(ERR[res.error] || "상세를 불러오지 못했습니다.");
+    setAnswers({}); setNoteHtml(null); setDetail(res);
+  };
+  const openNote = async () => {
+    setBusy(true);
+    const res = await r.shNote(key, detail.name);
+    setBusy(false);
+    if (!res.ok) return flash(res.error === "no_note" ? "아직 오답노트가 만들어지지 않았습니다." : "오답노트를 불러오지 못했습니다.");
+    setNoteHtml(res.html);
+  };
+  const saveConfirm = async () => {
+    const filled = Object.fromEntries(Object.entries(answers).filter(([, v]) => v && v.trim()));
+    if (!Object.keys(filled).length) return flash("적은 답이 없습니다.");
+    setBusy(true);
+    const res = await r.shConfirm({ key, worksheet: detail.name, answers: filled });
+    setBusy(false);
+    if (!res.ok) return flash("저장하지 못했습니다.");
+    flash(`답 ${res.saved}개를 저장했습니다. 다음 자동 처리 때 반영됩니다.`);
+    openDetail(detail.name);
+  };
+
+  const statusBadge = (s) => { const [t, tone] = SH_STATUS[s] || [s || "대기 중", "neutral"]; return <Badge tone={tone}>{t}</Badge>; };
+
+  /* 연결 전 */
+  if (!key)
+    return (
+      <Shell back="처음으로" backTo={onBack} toast={toast}>
+        <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 8px" }}>오답노트</h2>
+        <p style={{ fontSize: 15, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>
+          시험지 사진을 올리면 정답·해설·검증과 손글씨 메모를 반영한 오답노트가 만들어집니다. 처리는 내 PC 의 Claude 가 하므로 PC 가 켜져 있어야 합니다.
+        </p>
+        <Card>
+          <div style={{ fontSize: 14, color: C.sub, marginBottom: 8 }}>연결 코드 (PC 의 study-helper\sync.json 에 있는 key)</div>
+          <Field value={keyInput} onChange={setKeyInput} placeholder="연결 코드" onEnter={connect} ariaLabel="연결 코드" />
+          <div style={{ marginTop: 10 }}><Btn onClick={connect}>연결</Btn></div>
+        </Card>
+      </Shell>
+    );
+
+  /* 오답노트 보기 */
+  if (detail && noteHtml !== null)
+    return (
+      <Shell back={detail.name} backTo={() => setNoteHtml(null)} toast={toast}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <Btn kind="soft" onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(noteHtml); w.document.close(); } }}>새 창에서 열기(인쇄·PDF)</Btn>
+        </div>
+        <iframe title="오답노트" srcDoc={noteHtml} style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
+      </Shell>
+    );
+
+  /* 상세 */
+  if (detail) {
+    const pending = (detail.confirm || []).filter((c) => !c.answer);
+    const answered = (detail.confirm || []).filter((c) => c.answer);
+    return (
+      <Shell back="오답노트 목록" backTo={() => setDetail(null)} toast={toast}>
+        <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 6px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>{detail.name} {statusBadge(detail.status)}</h2>
+        {detail.summary && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, margin: "10px 0 14px" }}>
+            {[["문항", detail.summary.questions], ["틀림", detail.summary.wrong], ["오류 의심", detail.summary.suspect], ["확인 필요", detail.summary.confirm]].map(([t, v]) => (
+              <Card key={t} style={{ padding: "10px 12px" }}><div style={{ fontSize: 20, fontWeight: 800 }}>{v ?? 0}</div><div style={{ fontSize: 12.5, color: C.sub }}>{t}</div></Card>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          {detail.hasNote && <Btn onClick={openNote} disabled={busy}>오답노트 보기</Btn>}
+          <Btn kind="soft" onClick={() => openDetail(detail.name)} disabled={busy}>새로고침</Btn>
+        </div>
+        {pending.length > 0 && (
+          <Card style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>확인 질문 {pending.length}개</div>
+            <div style={{ fontSize: 13.5, color: C.sub, marginBottom: 10 }}>답을 저장하면 다음 자동 처리 때 오답노트에 반영됩니다. 모르면 비워 두세요.</div>
+            {pending.map((c) => (
+              <div key={c.id} style={{ borderTop: `1px solid ${C.line}`, padding: "10px 0" }}>
+                <div style={{ fontSize: 14.5, marginBottom: 6 }}><Badge>{c.no}번</Badge> {c.question}</div>
+                <Field value={answers[c.id] || ""} onChange={(v) => setAnswers({ ...answers, [c.id]: v })} placeholder={`추정: ${c.guess || ""}`} ariaLabel={`${c.no}번 확인 답`} />
+              </div>
+            ))}
+            <div style={{ marginTop: 10 }}><Btn onClick={saveConfirm} disabled={busy}>답 저장</Btn></div>
+          </Card>
+        )}
+        {answered.length > 0 && (
+          <Card style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>확인 완료</div>
+            {answered.map((c) => <div key={c.id} style={{ fontSize: 14, padding: "4px 0", color: C.inkMid }}>{c.no}번 · {c.answer} <span style={{ color: C.sub }}>({c.applied ? "반영됨" : "반영 대기"})</span></div>)}
+          </Card>
+        )}
+        {(detail.questions || []).length > 0 && (
+          <Card style={{ padding: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead><tr>{["번호", "정답", "내 답", "결과", "검증"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+              <tbody>{detail.questions.map((q) => (
+                <tr key={q.no}>
+                  <td style={{ padding: "6px 8px" }}>{q.no}</td><td style={{ padding: "6px 8px" }}>{q.answer}</td><td style={{ padding: "6px 8px" }}>{q.mine || "?"}</td>
+                  <td style={{ padding: "6px 8px", color: q.mine && q.mine !== q.answer ? C.bad : C.ink, fontWeight: q.mine && q.mine !== q.answer ? 700 : 400 }}>{q.mine ? (q.mine === q.answer ? "정답" : "오답") : "-"}</td>
+                  <td style={{ padding: "6px 8px" }}>{q.verify === "ok" ? "일치" : q.verify === "suspect" ? "⚠ 의심" : "-"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </Card>
+        )}
+      </Shell>
+    );
+  }
+
+  /* 목록 + 업로드 */
+  return (
+    <Shell back="처음으로" backTo={onBack} toast={toast}>
+      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 8px" }}>오답노트</h2>
+      <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>사진을 올리면 PC 가 켜져 있을 때 10분 안에 정답·해설·오답노트가 만들어집니다.</p>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 14, color: C.sub, marginBottom: 6 }}>문제지 이름 (예: 통합과학_2학기_2차)</div>
+        <Field value={wsName} onChange={setWsName} placeholder="과목_학기_회차" ariaLabel="문제지 이름" />
+        <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>사진 (여러 장, 페이지 순서대로)</div>
+        <input ref={fileRef} type="file" accept="image/*" multiple onChange={(e) => setFiles(Array.from(e.target.files || []))} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
+        {files.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{files.map((f, i) => <img key={i} src={URL.createObjectURL(f)} alt={f.name} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}` }} />)}</div>}
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
+          <Btn onClick={upload} disabled={busy}>{progress || "올리기"}</Btn>
+          <TextBtn tone="sub" onClick={disconnect} style={{ fontSize: 12.5 }}>연결 해제</TextBtn>
+        </div>
+      </Card>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 8px" }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: C.inkMid }}>문제지 목록</h3>
+        <TextBtn onClick={load} disabled={busy}>새로고침</TextBtn>
+      </div>
+      {list === null && <p style={{ color: C.sub, fontSize: 14 }}>불러오는 중…</p>}
+      {list && list.length === 0 && <p style={{ color: C.sub, fontSize: 14 }}>아직 올린 문제지가 없습니다.</p>}
+      {(list || []).map((w) => (
+        <button key={w.name} className="em-btn em-row" onClick={() => openDetail(w.name)}
+          style={{ display: "block", width: "100%", textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer", fontFamily: FONT }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 16, fontWeight: 700, color: C.ink }}>{w.name}</span>{statusBadge(w.status)}{w.pending > 0 && <Badge tone="warn">확인 질문 {w.pending}</Badge>}
+          </div>
+          <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>
+            사진 {w.photos}장{w.summary ? ` · ${w.summary.questions}문항 · 틀림 ${w.summary.wrong} · 의심 ${w.summary.suspect}` : ""}{w.hasNote ? " · 오답노트 있음" : ""}
+          </div>
+        </button>
+      ))}
+    </Shell>
+  );
+}
+
 function ExamMaker() {
   const [screen, setScreen] = useState("home");
   const [exams, setExams] = useState([]);
@@ -1725,6 +1943,7 @@ function ExamMaker() {
         onSettings={() => setSettingsOpen(true)}
         onNew={newExam}
         onList={() => setScreen("list")}
+        onStudy={() => setScreen("study")}
         onCode={() => {
           setCodeInput("");
           setCodeErr("");
@@ -1739,6 +1958,8 @@ function ExamMaker() {
       />
       </>
     );
+
+  if (screen === "study") return <StudyScreen onBack={() => setScreen("home")} flash={flash} toast={toast} />;
 
   if (screen === "list")
     return (

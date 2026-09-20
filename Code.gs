@@ -302,6 +302,12 @@ function doGet(e) {
 
     if (a === 'usage') return out(usageSummary(p.pw));
 
+    if (a === 'sh_list') return out(shList(p));
+    if (a === 'sh_detail') return out(shDetail(p));
+    if (a === 'sh_note') return out(shNote(p));
+    if (a === 'sh_pending') return out(shPending(p));
+    if (a === 'sh_file') return out(shFile(p));
+
     return out({ ok: false, error: 'bad_action' });
   } catch (err) {
     return out({ ok: false, error: 'server', message: String(err) });
@@ -316,6 +322,15 @@ function doPost(e) {
   // AI 생성은 오래 걸리므로 잠금 없이 처리 (시트에는 사용 기록만 추가)
   if (a === 'generate') {
     try { return out(generate(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
+  }
+  // 학습 도우미: 사진 업로드·결과 저장은 드라이브 쓰기라 오래 걸릴 수 있어 잠금 없이 처리
+  if (a === 'sh_upload' || a === 'sh_result' || a === 'sh_fetched' || a === 'sh_confirm') {
+    try {
+      if (a === 'sh_upload') return out(shUpload(body));
+      if (a === 'sh_result') return out(shResult(body));
+      if (a === 'sh_fetched') return out(shFetched(body));
+      return out(shConfirm(body));
+    } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
   }
   const lock = LockService.getScriptLock();
   try {
@@ -400,4 +415,188 @@ function clearResults(body) {
 
 function out(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+
+/* ── 학습 도우미 (오답노트) ─────────────────────
+   사이트에서 올린 문제지 사진을 드라이브에 보관하고, PC 워커(Claude 예약 작업)가 가져가 처리한 뒤
+   결과(오답노트 HTML·정답표·확인 질문)를 다시 올리면 사이트가 보여 준다.
+   연결 코드(key): PC 의 study-helper\sync.json 이 만든 임의 문자열. 서버는 sha(key) 로 공간을 나눈다.
+   시트  sh_files : id | kh | worksheet | filename | driveId | at | fetched
+         sh_ws    : kh | worksheet | status | summary | noteDriveId | confirm | questions | createdAt | updatedAt
+   드라이브 폴더 "학습도우미/<kh 앞 12자>" 에 사진과 note.html 저장 */
+const SH_FOLDER = '학습도우미';
+const SH_FILE_MAX = 12 * 1024 * 1024;   // 사진 1장 base64 상한(약 9MB 원본)
+const SH_CELL_MAX = 45000;
+
+// 최초 1회: Apps Script 편집기에서 이 함수를 실행해 드라이브 권한을 승인한다(웹 앱 배포 뒤에도 필요).
+function shAuthorize() { shFolder('setup'); shFilesSheet(); shWsSheet(); return 'ok'; }
+
+function shFilesSheet() { return sheet('sh_files', ['id', 'kh', 'worksheet', 'filename', 'driveId', 'at', 'fetched']); }
+function shWsSheet() { return sheet('sh_ws', ['kh', 'worksheet', 'status', 'summary', 'noteDriveId', 'confirm', 'questions', 'createdAt', 'updatedAt']); }
+function shKh(key) {
+  const k = String(key || '').trim();
+  if (k.length < 8 || k.length > 64) return null;
+  return sha(k);
+}
+function shWsName(v) { return safeText(String(v || '').replace(/[\\/:*?"<>|]+/g, ''), 60).replace(/\s+/g, '_'); }
+function shFolder(kh) {
+  const root = DriveApp.getRootFolder();
+  let top = root.getFoldersByName(SH_FOLDER);
+  top = top.hasNext() ? top.next() : root.createFolder(SH_FOLDER);
+  const name = kh.slice(0, 12);
+  let sub = top.getFoldersByName(name);
+  return sub.hasNext() ? sub.next() : top.createFolder(name);
+}
+function shFindWsRow(kh, ws) {
+  const s = shWsSheet();
+  const n = s.getLastRow();
+  if (n < 2) return 0;
+  const vals = s.getRange(2, 1, n - 1, 2).getValues();
+  for (let i = 0; i < vals.length; i++) if (vals[i][0] === kh && vals[i][1] === ws) return i + 2;
+  return 0;
+}
+function shEnsureWs(kh, ws, status) {
+  const s = shWsSheet();
+  const row = shFindWsRow(kh, ws);
+  const now = Date.now();
+  if (row) return row;
+  s.appendRow([kh, ws, status || 'uploaded', '', '', '', '', now, now]);
+  return s.getLastRow();
+}
+function shParse(v, dflt) { try { return v ? JSON.parse(v) : dflt; } catch (e) { return dflt; } }
+
+// 사진 업로드: {key, worksheet, filename, data(base64), mime}
+function shUpload(body) {
+  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const ws = shWsName(body.worksheet); if (!ws) return { ok: false, error: 'bad_worksheet' };
+  const data = String(body.data || '');
+  if (!data || data.length > SH_FILE_MAX) return { ok: false, error: 'too_big' };
+  const mime = /png/i.test(body.mime || '') ? 'image/png' : 'image/jpeg';
+  const ext = mime === 'image/png' ? '.png' : '.jpg';
+  const filename = safeText(String(body.filename || 'photo').replace(/[\\/:*?"<>|]+/g, ''), 60) || 'photo';
+  const stamp = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd_HHmmss');
+  const name = ws + '__' + stamp + '_' + filename.replace(/\.(jpe?g|png)$/i, '') + ext;
+  const blob = Utilities.newBlob(Utilities.base64Decode(data), mime, name);
+  const file = shFolder(kh).createFile(blob);
+  const id = randomKey(10);
+  shFilesSheet().appendRow([id, kh, ws, name, file.getId(), Date.now(), '']);
+  shEnsureWs(kh, ws, 'uploaded');
+  return { ok: true, id: id, worksheet: ws };
+}
+
+// 사이트 목록: {key}
+function shList(p) {
+  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const photos = {};
+  const fs = shFilesSheet(); const fn = fs.getLastRow();
+  if (fn >= 2) fs.getRange(2, 1, fn - 1, 7).getValues().forEach(r => { if (r[1] === kh) photos[r[2]] = (photos[r[2]] || 0) + 1; });
+  const s = shWsSheet(); const n = s.getLastRow();
+  const list = [];
+  if (n >= 2) s.getRange(2, 1, n - 1, 9).getValues().forEach(r => {
+    if (r[0] !== kh) return;
+    const confirm = shParse(r[5], []);
+    list.push({ name: r[1], status: r[2] || 'uploaded', summary: shParse(r[3], null), hasNote: !!r[4],
+      pending: confirm.filter(c => !c.answer).length, photos: photos[r[1]] || 0, updatedAt: r[8] || r[7] });
+  });
+  list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return { ok: true, worksheets: list };
+}
+
+// 사이트 상세: {key, ws}
+function shDetail(p) {
+  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const ws = shWsName(p.ws);
+  const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
+  const r = shWsSheet().getRange(row, 1, 1, 9).getValues()[0];
+  return { ok: true, name: ws, status: r[2], summary: shParse(r[3], null), hasNote: !!r[4], confirm: shParse(r[5], []), questions: shParse(r[6], []), updatedAt: r[8] };
+}
+
+// 오답노트 HTML: {key, ws}
+function shNote(p) {
+  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const row = shFindWsRow(kh, shWsName(p.ws)); if (!row) return { ok: false, error: 'not_found' };
+  const id = shWsSheet().getRange(row, 5).getValue();
+  if (!id) return { ok: false, error: 'no_note' };
+  return { ok: true, html: DriveApp.getFileById(id).getBlob().getDataAsString('UTF-8') };
+}
+
+// 확인 질문 답 저장: {key, worksheet, answers:{id: text}}
+function shConfirm(body) {
+  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const ws = shWsName(body.worksheet);
+  const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
+  const s = shWsSheet();
+  const items = shParse(s.getRange(row, 6).getValue(), []);
+  const answers = body.answers || {};
+  let n = 0;
+  items.forEach(c => { const v = safeText(answers[c.id], 300); if (v && !c.answer) { c.answer = v; c.answeredAt = Date.now(); n++; } });
+  s.getRange(row, 6).setValue(JSON.stringify(items));
+  s.getRange(row, 9).setValue(Date.now());
+  return { ok: true, saved: n };
+}
+
+// 워커: 아직 안 가져간 사진 + 답이 채워진 확인 질문: {key}
+function shPending(p) {
+  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const files = [];
+  const fs = shFilesSheet(); const fn = fs.getLastRow();
+  if (fn >= 2) fs.getRange(2, 1, fn - 1, 7).getValues().forEach(r => { if (r[1] === kh && !r[6]) files.push({ id: r[0], worksheet: r[2], filename: r[3] }); });
+  const confirms = [];
+  const s = shWsSheet(); const n = s.getLastRow();
+  if (n >= 2) s.getRange(2, 1, n - 1, 9).getValues().forEach(r => {
+    if (r[0] !== kh) return;
+    const items = shParse(r[5], []).filter(c => c.answer);
+    if (items.length) confirms.push({ worksheet: r[1], items: items });
+  });
+  return { ok: true, files: files, confirms: confirms };
+}
+
+// 워커: 사진 내려받기: {key, id}
+function shFile(p) {
+  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const fs = shFilesSheet(); const fn = fs.getLastRow();
+  if (fn < 2) return { ok: false, error: 'not_found' };
+  const rows = fs.getRange(2, 1, fn - 1, 7).getValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i][0] === String(p.id) && rows[i][1] === kh) {
+      const blob = DriveApp.getFileById(rows[i][4]).getBlob();
+      return { ok: true, worksheet: rows[i][2], filename: rows[i][3], data: Utilities.base64Encode(blob.getBytes()) };
+    }
+  }
+  return { ok: false, error: 'not_found' };
+}
+
+// 워커: 가져간 사진 표시: {key, ids:[...]}
+function shFetched(body) {
+  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const ids = (body.ids || []).map(String);
+  const fs = shFilesSheet(); const fn = fs.getLastRow();
+  let n = 0;
+  if (fn >= 2) {
+    const rows = fs.getRange(2, 1, fn - 1, 7).getValues();
+    for (let i = 0; i < rows.length; i++) if (rows[i][1] === kh && ids.indexOf(String(rows[i][0])) >= 0) { fs.getRange(i + 2, 7).setValue(Date.now()); n++; }
+  }
+  return { ok: true, marked: n };
+}
+
+// 워커: 결과 올리기: {key, worksheet, status, summary, questions(간단 정답표), confirm(항목), note(html, 선택)}
+function shResult(body) {
+  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const ws = shWsName(body.worksheet); if (!ws) return { ok: false, error: 'bad_worksheet' };
+  const s = shWsSheet();
+  const row = shEnsureWs(kh, ws, body.status || 'in_progress');
+  const summary = JSON.stringify(body.summary || {}).slice(0, SH_CELL_MAX);
+  const questions = JSON.stringify(body.questions || []).slice(0, SH_CELL_MAX);
+  // 확인 질문: 서버에 이미 답이 있으면 유지
+  const prev = shParse(s.getRange(row, 6).getValue(), []);
+  const merged = (body.confirm || []).map(c => { const o = prev.find(x => x.id === c.id); return (o && o.answer && !c.answer) ? Object.assign({}, c, { answer: o.answer, answeredAt: o.answeredAt }) : c; });
+  let noteId = s.getRange(row, 5).getValue();
+  if (body.note) {
+    const blob = Utilities.newBlob(String(body.note), 'text/html', ws + '__note.html');
+    if (noteId) { try { DriveApp.getFileById(noteId).setContent(String(body.note)); } catch (e) { noteId = shFolder(kh).createFile(blob).getId(); } }
+    else noteId = shFolder(kh).createFile(blob).getId();
+  }
+  s.getRange(row, 3, 1, 7).setValues([[String(body.status || 'in_progress'), summary, noteId || '', JSON.stringify(merged).slice(0, SH_CELL_MAX), questions, s.getRange(row, 8).getValue() || Date.now(), Date.now()]]);
+  return { ok: true, worksheet: ws };
 }
