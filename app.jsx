@@ -236,7 +236,7 @@ const ERR = {
   sh_local: "서버가 연결되어 있어야 오답노트를 쓸 수 있습니다.",
   bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
   locked: "로그인 실패가 많아 15분 동안 잠겼습니다. 잠시 뒤 다시 시도해 주세요.",
-  bad_pw: "비밀번호는 6자 이상이어야 합니다.",
+  bad_pw: "비밀번호는 4자 이상이어야 합니다.",
   bad_token: "로그인이 풀렸습니다. 다시 들어와 주세요.",
   forbidden: "이 계정에는 권한이 없습니다.",
   bad_id: "아이디는 한글·영문·숫자·_ . - 로 2~30자입니다.",
@@ -1810,7 +1810,7 @@ function AccountModal({ user, onClose, onLogout, flash }) {
   const [newPw, setNewPw] = useState("");
   const [busy, setBusy] = useState(false);
   const change = async () => {
-    if (newPw.length < 6) return flash("새 비밀번호는 6자 이상입니다.");
+    if (newPw.length < 4) return flash("새 비밀번호는 4자 이상입니다.");
     setBusy(true);
     const r = await remote().changePw({ oldPw, newPw });
     setBusy(false);
@@ -1822,7 +1822,7 @@ function AccountModal({ user, onClose, onLogout, flash }) {
       <p style={{ fontSize: 15, margin: "0 0 12px" }}><b>{user.name}</b> <Badge tone="accent">{ROLE_KO[user.role] || user.role}</Badge> <span style={{ color: C.sub, fontSize: 13.5 }}>· {user.id}</span></p>
       <div style={{ display: "grid", gap: 8 }}>
         <Field type="password" value={oldPw} onChange={setOldPw} placeholder="현재 비밀번호" ariaLabel="현재 비밀번호" />
-        <Field type="password" value={newPw} onChange={setNewPw} placeholder="새 비밀번호 (6자 이상)" ariaLabel="새 비밀번호" onEnter={change} />
+        <Field type="password" value={newPw} onChange={setNewPw} placeholder="새 비밀번호 (4자 이상)" ariaLabel="새 비밀번호" onEnter={change} />
         <Btn kind="soft" onClick={change} disabled={busy}>비밀번호 변경</Btn>
         <Btn kind="ghost" onClick={onLogout}>로그아웃</Btn>
       </div>
@@ -1846,7 +1846,7 @@ function AdminScreen({ onBack, toast, flash }) {
   const loadResults = async () => { const r = await remote().allResults(); if (!r.ok) return flash(errMsg(r)); setResults(r.items); };
 
   const create = async () => {
-    if (!form.id.trim() || form.pw.length < 6) return flash("아이디와 6자 이상 비밀번호를 넣어 주세요.");
+    if (!form.id.trim() || form.pw.length < 4) return flash("아이디와 4자 이상 비밀번호를 넣어 주세요.");
     setBusy(true);
     const r = await remote().userCreate({ ...form, id: form.id.trim(), name: form.name.trim() });
     setBusy(false);
@@ -1900,7 +1900,7 @@ function AdminScreen({ onBack, toast, flash }) {
                 <Field value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="이름" ariaLabel="이름" />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <Field type="password" value={form.pw} onChange={(v) => setForm({ ...form, pw: v })} placeholder="비밀번호 (6자 이상)" ariaLabel="비밀번호" />
+                <Field type="password" value={form.pw} onChange={(v) => setForm({ ...form, pw: v })} placeholder="비밀번호 (4자 이상)" ariaLabel="비밀번호" />
                 <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} style={sel} aria-label="역할">
                   <option value="student">학생</option><option value="teacher">선생</option><option value="admin">관리자</option>
                 </select>

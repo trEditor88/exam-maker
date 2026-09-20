@@ -722,7 +722,7 @@ function setup(body) {
   if (usersCount() > 0) return { ok: false, error: 'already_setup' };
   const id = cleanId(body.id); const pw = String(body.pw || '');
   if (!id) return { ok: false, error: 'bad_id' };
-  if (pw.length < 6) return { ok: false, error: 'bad_pw' };
+  if (pw.length < 4) return { ok: false, error: 'bad_pw' };
   const salt = randomKey(16);
   usersSheet().appendRow([id, 'admin', safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, '', Date.now(), true]);
   return login({ id: id, pw: pw });
@@ -768,7 +768,7 @@ function userCreate(body) {
   const id = cleanId(body.id); const pw = String(body.pw || '');
   const role = ['admin', 'teacher', 'student'].indexOf(body.role) >= 0 ? body.role : 'student';
   if (!id) return { ok: false, error: 'bad_id' };
-  if (pw.length < 6) return { ok: false, error: 'bad_pw' };
+  if (pw.length < 4) return { ok: false, error: 'bad_pw' };
   if (findUser(id)) return { ok: false, error: 'dup_id' };
   const teacherId = role === 'student' ? cleanId(body.teacherId) : '';
   if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
@@ -792,7 +792,7 @@ function userUpdate(body) {
     s.getRange(t.row, 6).setValue(tid);
   }
   if (body.pw) {
-    if (String(body.pw).length < 6) return { ok: false, error: 'bad_pw' };
+    if (String(body.pw).length < 4) return { ok: false, error: 'bad_pw' };
     const salt = randomKey(16);
     s.getRange(t.row, 4, 1, 2).setValues([[hashPw(body.pw, salt), salt]]);
   }
@@ -817,7 +817,7 @@ function userDelete(body) {
 function changePw(body) {
   const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
   if (!pwMatches(body.oldPw, u)) return { ok: false, error: 'bad_login' };
-  if (String(body.newPw || '').length < 6) return { ok: false, error: 'bad_pw' };
+  if (String(body.newPw || '').length < 4) return { ok: false, error: 'bad_pw' };
   const salt = randomKey(16);
   usersSheet().getRange(u.row, 4, 1, 2).setValues([[hashPw(body.newPw, salt), salt]]);
   return { ok: true };
