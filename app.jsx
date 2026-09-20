@@ -2103,8 +2103,16 @@ function ExamMaker() {
   useEffect(() => { examsRef.current = exams; }, [exams]);
   const loadServerExams = async () => {
     const r = await remote().examList();
-    if (r.ok) { setExams(r.exams.map(normalizeExam)); return true; }
-    return false;
+    if (!r.ok) return false;
+    const local = examsRef.current;
+    if (r.exams.length === 0 && local.length > 0) {
+      /* 계정 도입 전 이 브라우저에만 저장돼 있던 시험지를 서버로 한 번 옮긴다 */
+      for (const e of local) await remote().examSave(e);
+      setExams(local);
+      return true;
+    }
+    setExams(r.exams.map(normalizeExam));
+    return true;
   };
   const afterLogin = async (u) => {
     setNeedSetup(false);
