@@ -156,11 +156,11 @@ function logUsage(scope, count, model, inTok, outTok, ms, status) {
 /* 사용량 요약(GET action=usage&pw=생성비밀번호). 모델별 호출 수·토큰 합계와 추정 비용(USD).
    단가는 100만 토큰당 입력/출력 달러. 키·개인정보는 내보내지 않는다. */
 const PRICE_PER_M = { 'claude-opus-5': [5, 25], 'claude-sonnet-5': [2, 10], 'claude-haiku-4-5': [1, 5], 'claude-opus-4-8': [5, 25] };
-function usageSummary(pw) {
+function usageSummary(pw, token) {
   const props = PropertiesService.getScriptProperties();
   const want = props.getProperty('GEN_PW');
-  if (!want) return { ok: false, error: 'gen_not_configured' };
-  if (String(pw || '') !== want) return { ok: false, error: 'bad_pw' };
+  const admin = auth(token);
+  if (!isAdmin(admin) && !(want && String(pw || '') === want)) return { ok: false, error: 'forbidden' };
   const rows = usageSheet().getDataRange().getValues().slice(1);
   const byModel = {};
   let first = null, last = null;
@@ -304,7 +304,7 @@ function doGet(e) {
       return out({ ok: true, items: resultsWithDetail(r => String(r[0]) === code, RESULTS_MAX_PER_CODE) });
     }
 
-    if (a === 'usage') return out(usageSummary(p.pw));
+    if (a === 'usage') return out(usageSummary(p.pw, p.token));
 
     if (a === 'me') return out(me(p));
     if (a === 'userList') return out(userList(p));
@@ -407,9 +407,10 @@ function share(body) {
     }
     // 코드가 서버에 없으면(예: 지워짐) 새 코드로 발급
   }
+  if (!user) return { ok: false, error: 'bad_token' };   // 새 코드 발급은 로그인 계정만
   const newC = newCode();
   const key = randomKey(24);
-  s.appendRow([newC, sha(key), title, json, now, now, 0, user ? user.id : '']);
+  s.appendRow([newC, sha(key), title, json, now, now, 0, user.id]);
   return { ok: true, code: newC, key: key, updated: false };
 }
 
@@ -438,6 +439,7 @@ function submit(body) {
   const total = Math.max(1, Math.floor(Number(en.total) || 0));
   if (score > total) return { ok: false, error: 'bad_entry' };
   const user = auth(body.token);
+  if (!user) return { ok: false, error: 'bad_token' };   // 결과 제출은 로그인 계정만(이름 위조·익명 기록 방지)
   let detail = '';
   if (Array.isArray(en.detail)) { detail = JSON.stringify(en.detail.slice(0, 200).map(d => ({ q: String(d.q || '').slice(0, 40), m: Array.isArray(d.m) ? d.m.slice(0, 12) : [], ok: !!d.ok }))); if (detail.length > SH_CELL_MAX) detail = ''; }
   resSheet().appendRow([code, safeText(user ? user.name : en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now(), user ? user.id : '', detail]);
@@ -739,7 +741,12 @@ function login(body) {
     usersSheet().getRange(u.row, 4, 1, 2).setValues([[hashPw(body.pw, salt), salt]]);
   }
   const token = randomKey(40);
-  sessionsSheet().appendRow([token, u.id, Date.now(), Date.now()]);
+  const ss2 = sessionsSheet();
+  if (ss2.getLastRow() > 200) {   // 만료 세션 정리
+    const rows = ss2.getRange(2, 1, ss2.getLastRow() - 1, 4).getValues();
+    for (let i = rows.length - 1; i >= 0; i--) if (Date.now() - (Number(rows[i][2]) || 0) > SESSION_DAYS * 86400000) ss2.deleteRow(i + 2);
+  }
+  ss2.appendRow([token, u.id, Date.now(), Date.now()]);
   return { ok: true, token: token, user: pubUser(u) };
 }
 function logout(body) {
@@ -933,14 +940,18 @@ function reportPending(p) {
   if (!workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
   const students = allUsers().filter(u => u.active);   // 학생·선생·관리자 모두 자기 응시 기록으로 리포트를 받는다
   const out = [];
+  const all = resultsWithDetail(r => !!r[6], 5000);        // 시트를 한 번만 읽고 계정별로 나눈다
+  const byUser = {};
+  all.forEach(it => { (byUser[it.userId] = byUser[it.userId] || []).push(it); });
+  const quizCache = {};
   students.forEach(st => {
-    const items = resultsWithDetail(r => String(r[6] || '') === st.id, 60);
+    const items = (byUser[st.id] || []).slice(0, 60);
     if (!items.length) return;
     const rep = reportRow(st.id);
     const latest = Math.max.apply(null, items.map(i => i.at));
     if (rep && rep.updatedAt >= latest && rep.basis === items.length) return;
     const quizzes = {};
-    items.forEach(it => { if (!(it.code in quizzes)) { const row = findQuizRow(it.code); quizzes[it.code] = row ? shParse(quizSheet().getRange(row, 4).getValue(), null) : null; } });
+    items.forEach(it => { if (!(it.code in quizzes)) { if (!(it.code in quizCache)) { const row = findQuizRow(it.code); quizCache[it.code] = row ? shParse(quizSheet().getRange(row, 4).getValue(), null) : null; } quizzes[it.code] = quizCache[it.code]; } });
     const teacher = st.teacherId ? findUser(st.teacherId) : null;
     out.push({ studentId: st.id, name: st.name, role: st.role, teacher: teacher ? teacher.name : '', results: items, quizzes: quizzes });
   });

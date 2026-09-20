@@ -1671,7 +1671,7 @@ function StudyScreen({ onBack, flash, toast }) {
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <Btn kind="soft" onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(noteHtml); w.document.close(); } }}>새 창에서 열기(인쇄·PDF)</Btn>
         </div>
-        <iframe title="오답노트" srcDoc={noteHtml} style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
+        <iframe title="오답노트" srcDoc={noteHtml} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
     );
 
@@ -2024,7 +2024,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
     return (
       <Shell back={detail.student.name} backTo={() => setReport(null)} toast={toast}>
         <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(report); w.document.close(); } }}>새 창에서 열기(인쇄·PDF)</Btn></div>
-        <iframe title="분석 리포트" srcDoc={report} style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
+        <iframe title="분석 리포트" srcDoc={report} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
     );
   if (detail)
@@ -2079,7 +2079,7 @@ function MyResultsScreen({ user, onBack, toast, flash }) {
     return (
       <Shell back="내 결과" backTo={() => setReport(null)} toast={toast}>
         <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(report); w.document.close(); } }}>새 창에서 열기(인쇄·PDF)</Btn></div>
-        <iframe title="분석 리포트" srcDoc={report} style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
+        <iframe title="분석 리포트" srcDoc={report} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
     );
   return (
@@ -2139,6 +2139,7 @@ function ExamMaker() {
       /* 계정 도입 전 이 브라우저에만 저장돼 있던 시험지를 서버로 한 번 옮긴다 */
       for (const e of local) await remote().examSave(e);
       setExams(local);
+      await store.del("exams");   // 옮긴 뒤 브라우저 사본은 지운다(다른 계정에 섞이지 않게)
       return true;
     }
     setExams(r.exams.map(normalizeExam));
@@ -2196,7 +2197,8 @@ function ExamMaker() {
   const persist = async (list) => {
     const prev = examsRef.current;
     setExams(list);
-    let ok = await store.set("exams", JSON.stringify(list));
+    let ok = true;
+    if (remote().kind !== "server") ok = await store.set("exams", JSON.stringify(list));
     if (remote().kind === "server" && user) {
       for (const e of list) {
         const p = prev.find((x) => x.id === e.id);
