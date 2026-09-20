@@ -724,10 +724,8 @@ async function copyText(text) {
 function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount }) {
   const role = (user && user.role) || "admin";
   const items = [];
-  if (role !== "student") {
-    items.push({ t: "새 시험지 만들기", d: "보기를 정하고 문제를 하나씩 추가합니다.", go: onNew });
-    items.push({ t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
-  }
+  items.push({ t: "새 시험지 만들기", d: "보기를 정하고 문제를 하나씩 추가합니다. AI로 만들 수도 있습니다.", go: onNew });
+  items.push({ t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
   items.push({ t: "코드로 문제 풀기", d: role === "student" ? "선생님이 준 코드를 입력해 문제를 풉니다." : "받은 코드를 입력해 문제를 풉니다.", go: onCode });
   items.push({ t: "내 결과·리포트", d: "내가 푼 시험지의 점수·기록과 나의 분석 리포트를 봅니다.", go: onMyResults });
   if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
@@ -2150,7 +2148,7 @@ function ExamMaker() {
     setNeedSetup(false);
     setUser(u);
     if (u.name) setName(u.name);
-    if (u.role !== "student") await loadServerExams();
+    await loadServerExams();
     setScreen("home");
   };
   const logoutNow = async () => {
@@ -2180,7 +2178,7 @@ function ExamMaker() {
       if (remote().kind === "server") {
         const a = authGet();
         const meR = a && a.token ? await remote().me() : { ok: false };
-        if (meR.ok) { authSet({ token: a.token, user: meR.user }); setUser(meR.user); if (meR.user.name) setName(meR.user.name); if (meR.user.role !== "student") await loadServerExams(); }
+        if (meR.ok) { authSet({ token: a.token, user: meR.user }); setUser(meR.user); if (meR.user.name) setName(meR.user.name); await loadServerExams(); }
         else { authSet(null); const pg = await remote().ping(); setNeedSetup(!!(pg && pg.setup)); }
       } else {
         setUser({ id: "local", role: "admin", name: "로컬" });
@@ -2199,7 +2197,7 @@ function ExamMaker() {
     const prev = examsRef.current;
     setExams(list);
     let ok = await store.set("exams", JSON.stringify(list));
-    if (remote().kind === "server" && user && user.role !== "student") {
+    if (remote().kind === "server" && user) {
       for (const e of list) {
         const p = prev.find((x) => x.id === e.id);
         if (!p || p.updatedAt !== e.updatedAt || p.code !== e.code) { const r = await remote().examSave(e); if (!r.ok) { ok = false; flash(errMsg(r)); } }

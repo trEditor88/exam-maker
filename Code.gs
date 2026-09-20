@@ -393,7 +393,6 @@ function share(body) {
   const s = quizSheet();
 
   const user = auth(body.token);
-  if (user && user.role === 'student') return { ok: false, error: 'forbidden' };
   const code = cleanCode(body.code);
   if (code) {
     const row = findQuizRow(code);
@@ -832,7 +831,6 @@ function examRows() {
 }
 function examList(p) {
   const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
-  if (u.role === 'student') return { ok: false, error: 'forbidden' };
   const mine = examRows().filter(e => u.role === 'admin' && p.all === '1' ? true : e.ownerId === u.id);
   const exams = [];
   mine.forEach(e => { try { const x = JSON.parse(e.json); x.ownerId = e.ownerId; exams.push(x); } catch (err) {} });
@@ -841,7 +839,6 @@ function examList(p) {
 }
 function examSave(body) {
   const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
-  if (u.role === 'student') return { ok: false, error: 'forbidden' };
   const ex = body.exam; if (!ex || typeof ex !== 'object' || !ex.id) return { ok: false, error: 'bad_exam' };
   delete ex.ownerKey; delete ex.ownerId;
   const json = JSON.stringify(ex);
@@ -1002,7 +999,6 @@ function generateGemini(body) {
   const u = auth(body.token);
   const worker = !u && body.key && workerKeyOk(shKh(body.key));   // 워커 키로도 시험 호출 가능(진단용)
   if (!u && !worker) return { ok: false, error: 'bad_token' };
-  if (u && u.role === 'student') return { ok: false, error: 'forbidden' };
   const props = PropertiesService.getScriptProperties();
   const key = geminiKey(); if (!key) return { ok: false, error: 'gen_not_configured' };
   const model = props.getProperty('GEMINI_MODEL') || 'gemini-3.5-flash-lite';
