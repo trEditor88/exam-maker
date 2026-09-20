@@ -958,19 +958,21 @@ function workerKeySet(body) {
 }
 
 /* ── AI 문제 생성 (Gemini API, 무료 등급) ──
-   스크립트 속성 GEMINI_API_KEY (aistudio.google.com 에서 발급), GEMINI_MODEL(선택, 기본 gemini-2.5-flash-lite),
+   스크립트 속성 GEMINI_API_KEY (aistudio.google.com 에서 발급), GEMINI_MODEL(선택, 기본 gemini-3.5-flash-lite),
    GEN_DAILY_LIMIT(선택, 기본 100). 선생·관리자 계정만 호출 가능. */
 function geminiKey() { return PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || ''; }
 function generateGemini(body) {
-  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
-  if (u.role === 'student') return { ok: false, error: 'forbidden' };
+  const u = auth(body.token);
+  const worker = !u && body.key && workerKeyOk(shKh(body.key));   // 워커 키로도 시험 호출 가능(진단용)
+  if (!u && !worker) return { ok: false, error: 'bad_token' };
+  if (u && u.role === 'student') return { ok: false, error: 'forbidden' };
   const props = PropertiesService.getScriptProperties();
   const key = geminiKey(); if (!key) return { ok: false, error: 'gen_not_configured' };
-  const model = props.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash-lite';
-  const limit = Number(props.getProperty('GEN_DAILY_LIMIT')) || 100;
+  const model = props.getProperty('GEMINI_MODEL') || 'gemini-3.5-flash-lite';
+  const limit = Number(props.getProperty('GEN_DAILY_LIMIT')) || 0;   // 0 = 자체 제한 없음(구글 무료 한도까지)
   const dayKey = 'gen:' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
   const used = Number(props.getProperty(dayKey)) || 0;
-  if (used >= limit) return { ok: false, error: 'gen_limit' };
+  if (limit && used >= limit) return { ok: false, error: 'gen_limit' };
   const scope = String(body.scope || '').trim().slice(0, 500);
   if (!scope) return { ok: false, error: 'bad_scope' };
   const material = String(body.material || '').trim().slice(0, 20000);
@@ -1002,6 +1004,7 @@ function generateGemini(body) {
   let data = {}; try { data = JSON.parse(res.getContentText()); } catch (err) {}
   const um = data.usageMetadata || {};
   const ms = Date.now() - t0;
+  if (code === 429) { logUsage(scope, count, model, 0, 0, ms, 'http_429'); return { ok: false, error: 'gen_quota' }; }
   if (code !== 200) { logUsage(scope, count, model, 0, 0, ms, 'http_' + code); return { ok: false, error: 'api', message: (data.error && data.error.message) || ('HTTP ' + code) }; }
   let text = '';
   try { text = data.candidates[0].content.parts.map(p => p.text || '').join(''); } catch (err) {}
@@ -1013,5 +1016,5 @@ function generateGemini(body) {
     .slice(0, count);
   props.setProperty(dayKey, String(used + 1));
   logUsage(scope, questions.length, model, um.promptTokenCount || 0, um.candidatesTokenCount || 0, ms, 'ok');
-  return { ok: true, title: String(parsed.title || scope).slice(0, 80), questions: questions, remaining: limit - used - 1 };
+  return { ok: true, title: String(parsed.title || scope).slice(0, 80), questions: questions, remaining: limit ? limit - used - 1 : null, model: model };
 }
