@@ -515,6 +515,7 @@ function shParse(v, dflt) { try { return v ? JSON.parse(v) : dflt; } catch (e) {
 
 // 사진 업로드: {key, worksheet, filename, data(base64), mime}
 function shUpload(body) {
+  if (!auth(body.token)) return { ok: false, error: 'bad_token' };
   const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
   const ws = shWsName(body.worksheet); if (!ws) return { ok: false, error: 'bad_worksheet' };
   const data = String(body.data || '');
@@ -534,6 +535,7 @@ function shUpload(body) {
 
 // 사이트 목록: {key}
 function shList(p) {
+  if (!auth(p.token)) return { ok: false, error: 'bad_token' };
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   const photos = {};
   const fs = shFilesSheet(); const fn = fs.getLastRow();
@@ -552,6 +554,7 @@ function shList(p) {
 
 // 사이트 상세: {key, ws}
 function shDetail(p) {
+  if (!auth(p.token)) return { ok: false, error: 'bad_token' };
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   const ws = shWsName(p.ws);
   const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
@@ -561,6 +564,7 @@ function shDetail(p) {
 
 // 오답노트 HTML: {key, ws}
 function shNote(p) {
+  if (!auth(p.token)) return { ok: false, error: 'bad_token' };
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   const row = shFindWsRow(kh, shWsName(p.ws)); if (!row) return { ok: false, error: 'not_found' };
   const id = shWsSheet().getRange(row, 5).getValue();
@@ -570,6 +574,7 @@ function shNote(p) {
 
 // 확인 질문 답 저장: {key, worksheet, answers:{id: text}}
 function shConfirm(body) {
+  if (!auth(body.token)) return { ok: false, error: 'bad_token' };
   const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
   const ws = shWsName(body.worksheet);
   const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
@@ -665,7 +670,19 @@ function sessionsSheet() { return sheet('sessions', ['token', 'userId', 'created
 function examsSheet() { return sheet('exams', ['id', 'ownerId', 'title', 'json', 'code', 'updatedAt']); }
 function reportsSheet() { return sheet('reports', ['userId', 'driveId', 'summary', 'basis', 'updatedAt']); }
 
-function hashPw(pw, salt) { return sha(salt + ':' + String(pw || '')); }
+const PW_ROUNDS = 3000;   // 해시 반복 횟수(역산 비용을 키움). 저장 형식 'v2:' + 해시
+function hashPw(pw, salt) {
+  let h = sha(salt + ':' + String(pw || ''));
+  for (let i = 0; i < PW_ROUNDS; i++) h = sha(h + salt);
+  return 'v2:' + h;
+}
+function hashPwLegacy(pw, salt) { return sha(salt + ':' + String(pw || '')); }
+function pwMatches(pw, u) { return u.pwHash.indexOf('v2:') === 0 ? hashPw(pw, u.salt) === u.pwHash : hashPwLegacy(pw, u.salt) === u.pwHash; }
+// 로그인 실패 잠금: 아이디당 10회 실패 → 15분
+function lockKey(id) { return 'lock:' + id; }
+function isLocked(id) { return Number(CacheService.getScriptCache().get(lockKey(id)) || 0) >= 10; }
+function noteFail(id) { const c = CacheService.getScriptCache(); const n = Number(c.get(lockKey(id)) || 0) + 1; c.put(lockKey(id), String(n), 900); return n; }
+function clearFail(id) { CacheService.getScriptCache().remove(lockKey(id)); }
 function cleanId(v) { const s = String(v || '').trim().normalize('NFC').toLowerCase(); return ID_RE.test(s) ? s : ''; }
 function usersCount() { return Math.max(0, usersSheet().getLastRow() - 1); }
 function allUsers() {
@@ -705,15 +722,22 @@ function setup(body) {
   if (usersCount() > 0) return { ok: false, error: 'already_setup' };
   const id = cleanId(body.id); const pw = String(body.pw || '');
   if (!id) return { ok: false, error: 'bad_id' };
-  if (pw.length < 4) return { ok: false, error: 'bad_pw' };
+  if (pw.length < 6) return { ok: false, error: 'bad_pw' };
   const salt = randomKey(16);
   usersSheet().appendRow([id, 'admin', safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, '', Date.now(), true]);
   return login({ id: id, pw: pw });
 }
 
 function login(body) {
-  const u = findUser(body.id);
-  if (!u || !u.active || hashPw(body.pw, u.salt) !== u.pwHash) return { ok: false, error: 'bad_login' };
+  const id = cleanId(body.id);
+  if (id && isLocked(id)) return { ok: false, error: 'locked' };
+  const u = findUser(id);
+  if (!u || !u.active || !pwMatches(body.pw, u)) { if (id) noteFail(id); return { ok: false, error: 'bad_login' }; }
+  clearFail(id);
+  if (u.pwHash.indexOf('v2:') !== 0) { // 예전 방식 해시는 로그인 성공 때 새 방식으로 바꿔 저장
+    const salt = randomKey(16);
+    usersSheet().getRange(u.row, 4, 1, 2).setValues([[hashPw(body.pw, salt), salt]]);
+  }
   const token = randomKey(40);
   sessionsSheet().appendRow([token, u.id, Date.now(), Date.now()]);
   return { ok: true, token: token, user: pubUser(u) };
@@ -744,7 +768,7 @@ function userCreate(body) {
   const id = cleanId(body.id); const pw = String(body.pw || '');
   const role = ['admin', 'teacher', 'student'].indexOf(body.role) >= 0 ? body.role : 'student';
   if (!id) return { ok: false, error: 'bad_id' };
-  if (pw.length < 4) return { ok: false, error: 'bad_pw' };
+  if (pw.length < 6) return { ok: false, error: 'bad_pw' };
   if (findUser(id)) return { ok: false, error: 'dup_id' };
   const teacherId = role === 'student' ? cleanId(body.teacherId) : '';
   if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
@@ -768,7 +792,7 @@ function userUpdate(body) {
     s.getRange(t.row, 6).setValue(tid);
   }
   if (body.pw) {
-    if (String(body.pw).length < 4) return { ok: false, error: 'bad_pw' };
+    if (String(body.pw).length < 6) return { ok: false, error: 'bad_pw' };
     const salt = randomKey(16);
     s.getRange(t.row, 4, 1, 2).setValues([[hashPw(body.pw, salt), salt]]);
   }
@@ -792,8 +816,8 @@ function userDelete(body) {
 // 본인 비밀번호 변경
 function changePw(body) {
   const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
-  if (hashPw(body.oldPw, u.salt) !== u.pwHash) return { ok: false, error: 'bad_login' };
-  if (String(body.newPw || '').length < 4) return { ok: false, error: 'bad_pw' };
+  if (!pwMatches(body.oldPw, u)) return { ok: false, error: 'bad_login' };
+  if (String(body.newPw || '').length < 6) return { ok: false, error: 'bad_pw' };
   const salt = randomKey(16);
   usersSheet().getRange(u.row, 4, 1, 2).setValues([[hashPw(body.newPw, salt), salt]]);
   return { ok: true };
