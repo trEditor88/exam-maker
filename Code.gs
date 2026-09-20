@@ -658,7 +658,7 @@ function shResult(body) {
    비밀번호는 salt+SHA-256 해시로만 저장. 토큰은 60일 유효. 첫 관리자는 users 가 비어 있을 때 setup 으로 만든다. */
 const SESSION_DAYS = 60;
 const EXAM_MAX_CHARS = 45000;
-const ID_RE = /^[a-z0-9_.-]{3,30}$/i;
+const ID_RE = /^[\p{L}\p{N}_.-]{2,30}$/u;   // 한글·영문·숫자·_ . - (2~30자)
 
 function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active']); }
 function sessionsSheet() { return sheet('sessions', ['token', 'userId', 'createdAt', 'lastAt']); }
@@ -666,7 +666,7 @@ function examsSheet() { return sheet('exams', ['id', 'ownerId', 'title', 'json',
 function reportsSheet() { return sheet('reports', ['userId', 'driveId', 'summary', 'basis', 'updatedAt']); }
 
 function hashPw(pw, salt) { return sha(salt + ':' + String(pw || '')); }
-function cleanId(v) { const s = String(v || '').trim().toLowerCase(); return ID_RE.test(s) ? s : ''; }
+function cleanId(v) { const s = String(v || '').trim().normalize('NFC').toLowerCase(); return ID_RE.test(s) ? s : ''; }
 function usersCount() { return Math.max(0, usersSheet().getLastRow() - 1); }
 function allUsers() {
   const s = usersSheet(); const n = s.getLastRow();

@@ -236,7 +236,7 @@ const ERR = {
   bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
   bad_token: "로그인이 풀렸습니다. 다시 들어와 주세요.",
   forbidden: "이 계정에는 권한이 없습니다.",
-  bad_id: "아이디는 영문·숫자·_ . - 로 3~30자입니다.",
+  bad_id: "아이디는 한글·영문·숫자·_ . - 로 2~30자입니다.",
   dup_id: "이미 있는 아이디입니다.",
   bad_teacher: "담당 선생 아이디가 없습니다.",
   self_delete: "자기 계정은 지울 수 없습니다(다른 관리자가 지워야 합니다).",
@@ -1798,7 +1798,7 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
       <Card>
         <div style={{ display: "grid", gap: 10 }}>
           {needSetup && <Field value={name} onChange={setName} placeholder="이름 (표시용)" ariaLabel="이름" />}
-          <Field value={id} onChange={setId} placeholder="아이디 (영문·숫자 3~30자)" ariaLabel="아이디" autoFocus />
+          <Field value={id} onChange={setId} placeholder="아이디 (한글·영문·숫자 2~30자)" ariaLabel="아이디" autoFocus />
           <Field type="password" value={pw} onChange={setPw} placeholder="비밀번호" onEnter={go} ariaLabel="비밀번호" />
           <Btn onClick={go} disabled={busy}>{busy ? "확인 중…" : needSetup ? "관리자 계정 만들기" : "들어가기"}</Btn>
         </div>
