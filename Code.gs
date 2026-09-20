@@ -48,8 +48,8 @@ function sheet(name, header) {
   }
   return s;
 }
-function quizSheet() { return sheet(SHEET_QUIZ, ['code', 'keyHash', 'title', 'json', 'createdAt', 'updatedAt', 'attempts']); }
-function resSheet() { return sheet(SHEET_RES, ['code', 'name', 'score', 'total', 'sec', 'at']); }
+function quizSheet() { return sheet(SHEET_QUIZ, ['code', 'keyHash', 'title', 'json', 'createdAt', 'updatedAt', 'attempts', 'ownerId']); }
+function resSheet() { return sheet(SHEET_RES, ['code', 'name', 'score', 'total', 'sec', 'at', 'userId', 'detail']); }
 
 function sha(s) {
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s), Utilities.Charset.UTF_8)
@@ -280,7 +280,7 @@ function doGet(e) {
   const p = (e && e.parameter) || {};
   const a = p.action;
   try {
-    if (a === 'ping') return out({ ok: true, v: 1, gen: genEnabled() });
+    if (a === 'ping') return out({ ok: true, v: 2, gen: !!geminiKey(), setup: usersCount() === 0 });
 
     if (a === 'quiz') {
       const code = cleanCode(p.code);
@@ -296,11 +296,24 @@ function doGet(e) {
       const code = cleanCode(p.code);
       const row = findQuizRow(code);
       if (!row) return out({ ok: false, error: 'not_found' });
-      if (sha(p.key || '') !== String(quizSheet().getRange(row, 2).getValue())) return out({ ok: false, error: 'bad_key' });
-      return out({ ok: true, items: resultsFor(code) });
+      const viewer = auth(p.token);
+      const owner = String(quizSheet().getRange(row, 8).getValue() || '');
+      const okKey = p.key && sha(p.key) === String(quizSheet().getRange(row, 2).getValue());
+      const okUser = viewer && (viewer.role === 'admin' || (owner && owner === viewer.id));
+      if (!okKey && !okUser) return out({ ok: false, error: 'bad_key' });
+      return out({ ok: true, items: resultsWithDetail(r => String(r[0]) === code, RESULTS_MAX_PER_CODE) });
     }
 
     if (a === 'usage') return out(usageSummary(p.pw));
+
+    if (a === 'me') return out(me(p));
+    if (a === 'userList') return out(userList(p));
+    if (a === 'examList') return out(examList(p));
+    if (a === 'myResults') return out(myResults(p));
+    if (a === 'studentResults') return out(studentResults(p));
+    if (a === 'allResults') return out(allResults(p));
+    if (a === 'reportGet') return out(reportGet(p));
+    if (a === 'reportPending') return out(reportPending(p));
 
     if (a === 'sh_list') return out(shList(p));
     if (a === 'sh_detail') return out(shDetail(p));
@@ -321,8 +334,17 @@ function doPost(e) {
   const a = body.action;
   // AI 생성은 오래 걸리므로 잠금 없이 처리 (시트에는 사용 기록만 추가)
   if (a === 'generate') {
-    try { return out(generate(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
+    try { return out(generateGemini(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
   }
+  if (a === 'login' || a === 'logout' || a === 'setup' || a === 'changePw') {
+    try {
+      if (a === 'login') return out(login(body));
+      if (a === 'logout') return out(logout(body));
+      if (a === 'setup') return out(setup(body));
+      return out(changePw(body));
+    } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
+  }
+  if (a === 'reportPut') { try { return out(reportPut(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
   // 학습 도우미: 사진 업로드·결과 저장은 드라이브 쓰기라 오래 걸릴 수 있어 잠금 없이 처리
   if (a === 'sh_upload' || a === 'sh_result' || a === 'sh_fetched' || a === 'sh_confirm') {
     try {
@@ -343,6 +365,14 @@ function doPost(e) {
     if (a === 'delete') return out(remove(body));
     if (a === 'submit') return out(submit(body));
     if (a === 'clearResults') return out(clearResults(body));
+    if (a === 'userCreate') return out(userCreate(body));
+    if (a === 'userUpdate') return out(userUpdate(body));
+    if (a === 'userDelete') return out(userDelete(body));
+    if (a === 'examSave') return out(examSave(body));
+    if (a === 'examDelete') return out(examDelete(body));
+    if (a === 'resultDelete') return out(resultDelete(body));
+    if (a === 'workerKeySet') return out(workerKeySet(body));
+    if (a === 'resetTestUsers') return out(resetTestUsers(body));
     return out({ ok: false, error: 'bad_action' });
   } catch (err) {
     return out({ ok: false, error: 'server', message: String(err) });
@@ -361,19 +391,25 @@ function share(body) {
   const now = Date.now();
   const s = quizSheet();
 
+  const user = auth(body.token);
+  if (user && user.role === 'student') return { ok: false, error: 'forbidden' };
   const code = cleanCode(body.code);
   if (code) {
     const row = findQuizRow(code);
     if (row) {
-      if (sha(body.key || '') !== String(s.getRange(row, 2).getValue())) return { ok: false, error: 'bad_key' };
+      const owner = String(s.getRange(row, 8).getValue() || '');
+      const okKey = body.key && sha(body.key) === String(s.getRange(row, 2).getValue());
+      const okUser = user && (user.role === 'admin' || (owner && owner === user.id));
+      if (!okKey && !okUser) return { ok: false, error: 'bad_key' };
       s.getRange(row, 3, 1, 4).setValues([[title, json, s.getRange(row, 5).getValue(), now]]);
+      if (user && !owner) s.getRange(row, 8).setValue(user.id);
       return { ok: true, code: code, updated: true };
     }
     // 코드가 서버에 없으면(예: 지워짐) 새 코드로 발급
   }
   const newC = newCode();
   const key = randomKey(24);
-  s.appendRow([newC, sha(key), title, json, now, now, 0]);
+  s.appendRow([newC, sha(key), title, json, now, now, 0, user ? user.id : '']);
   return { ok: true, code: newC, key: key, updated: false };
 }
 
@@ -382,7 +418,11 @@ function remove(body) {
   const s = quizSheet();
   const row = findQuizRow(code);
   if (!row) return { ok: true, gone: true };
-  if (sha(body.key || '') !== String(s.getRange(row, 2).getValue())) return { ok: false, error: 'bad_key' };
+  const user = auth(body.token);
+  const owner = String(s.getRange(row, 8).getValue() || '');
+  const okKey = body.key && sha(body.key) === String(s.getRange(row, 2).getValue());
+  const okUser = user && (user.role === 'admin' || (owner && owner === user.id));
+  if (!okKey && !okUser) return { ok: false, error: 'bad_key' };
   s.deleteRow(row);
   deleteResultsFor(code);
   return { ok: true };
@@ -397,7 +437,10 @@ function submit(body) {
   const score = Math.max(0, Math.floor(Number(en.score) || 0));
   const total = Math.max(1, Math.floor(Number(en.total) || 0));
   if (score > total) return { ok: false, error: 'bad_entry' };
-  resSheet().appendRow([code, safeText(en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now()]);
+  const user = auth(body.token);
+  let detail = '';
+  if (Array.isArray(en.detail)) { detail = JSON.stringify(en.detail.slice(0, 200).map(d => ({ q: String(d.q || '').slice(0, 40), m: Array.isArray(d.m) ? d.m.slice(0, 12) : [], ok: !!d.ok }))); if (detail.length > SH_CELL_MAX) detail = ''; }
+  resSheet().appendRow([code, safeText(user ? user.name : en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now(), user ? user.id : '', detail]);
   const cell = s.getRange(row, 7);
   cell.setValue((Number(cell.getValue()) || 0) + 1);
   return { ok: true };
@@ -408,7 +451,11 @@ function clearResults(body) {
   const s = quizSheet();
   const row = findQuizRow(code);
   if (!row) return { ok: false, error: 'not_found' };
-  if (sha(body.key || '') !== String(s.getRange(row, 2).getValue())) return { ok: false, error: 'bad_key' };
+  const user = auth(body.token);
+  const owner = String(s.getRange(row, 8).getValue() || '');
+  const okKey = body.key && sha(body.key) === String(s.getRange(row, 2).getValue());
+  const okUser = user && (user.role === 'admin' || (owner && owner === user.id));
+  if (!okKey && !okUser) return { ok: false, error: 'bad_key' };
   const n = deleteResultsFor(code);
   return { ok: true, removed: n };
 }
@@ -599,4 +646,372 @@ function shResult(body) {
   }
   s.getRange(row, 3, 1, 7).setValues([[String(body.status || 'in_progress'), summary, noteId || '', JSON.stringify(merged).slice(0, SH_CELL_MAX), questions, s.getRange(row, 8).getValue() || Date.now(), Date.now()]]);
   return { ok: true, worksheet: ws };
+}
+
+
+/* ── 계정·권한 ─────────────────────────────────
+   역할: admin(관리자) / teacher(선생) / student(학생). 사이트는 로그인 후에만 쓴다.
+   시트 users    : id | role | name | pwHash | salt | teacherId | createdAt | active
+        sessions : token | userId | createdAt | lastAt
+        exams    : id | ownerId | title | json | code | updatedAt        (계정별 시험지 초안 저장)
+        reports  : userId | driveId | summary | basis | updatedAt        (학생별 분석 리포트, HTML 은 드라이브)
+   비밀번호는 salt+SHA-256 해시로만 저장. 토큰은 60일 유효. 첫 관리자는 users 가 비어 있을 때 setup 으로 만든다. */
+const SESSION_DAYS = 60;
+const EXAM_MAX_CHARS = 45000;
+const ID_RE = /^[a-z0-9_.-]{3,30}$/i;
+
+function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active']); }
+function sessionsSheet() { return sheet('sessions', ['token', 'userId', 'createdAt', 'lastAt']); }
+function examsSheet() { return sheet('exams', ['id', 'ownerId', 'title', 'json', 'code', 'updatedAt']); }
+function reportsSheet() { return sheet('reports', ['userId', 'driveId', 'summary', 'basis', 'updatedAt']); }
+
+function hashPw(pw, salt) { return sha(salt + ':' + String(pw || '')); }
+function cleanId(v) { const s = String(v || '').trim().toLowerCase(); return ID_RE.test(s) ? s : ''; }
+function usersCount() { return Math.max(0, usersSheet().getLastRow() - 1); }
+function allUsers() {
+  const s = usersSheet(); const n = s.getLastRow();
+  if (n < 2) return [];
+  return s.getRange(2, 1, n - 1, 8).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0 }));
+}
+function findUser(id) { id = cleanId(id); return id ? allUsers().find(u => u.id === id) || null : null; }
+function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt }; }
+
+function auth(token) {
+  token = String(token || '').trim();
+  if (token.length < 20) return null;
+  const s = sessionsSheet(); const n = s.getLastRow();
+  if (n < 2) return null;
+  const rows = s.getRange(2, 1, n - 1, 4).getValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]) !== token) continue;
+    if (Date.now() - (Number(rows[i][2]) || 0) > SESSION_DAYS * 86400000) { s.deleteRow(i + 2); return null; }
+    const u = findUser(rows[i][1]);
+    if (!u || !u.active) return null;
+    if (Date.now() - (Number(rows[i][3]) || 0) > 3600000) s.getRange(i + 2, 4).setValue(Date.now());
+    return u;
+  }
+  return null;
+}
+function isAdmin(u) { return !!u && u.role === 'admin'; }
+function canSeeStudent(u, studentId) {
+  if (!u) return false;
+  if (u.role === 'admin' || u.id === studentId) return true;
+  const st = findUser(studentId);
+  return !!st && u.role === 'teacher' && st.teacherId === u.id;
+}
+
+// 첫 관리자 만들기 (users 가 비어 있을 때만)
+function setup(body) {
+  if (usersCount() > 0) return { ok: false, error: 'already_setup' };
+  const id = cleanId(body.id); const pw = String(body.pw || '');
+  if (!id) return { ok: false, error: 'bad_id' };
+  if (pw.length < 4) return { ok: false, error: 'bad_pw' };
+  const salt = randomKey(16);
+  usersSheet().appendRow([id, 'admin', safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, '', Date.now(), true]);
+  return login({ id: id, pw: pw });
+}
+
+function login(body) {
+  const u = findUser(body.id);
+  if (!u || !u.active || hashPw(body.pw, u.salt) !== u.pwHash) return { ok: false, error: 'bad_login' };
+  const token = randomKey(40);
+  sessionsSheet().appendRow([token, u.id, Date.now(), Date.now()]);
+  return { ok: true, token: token, user: pubUser(u) };
+}
+function logout(body) {
+  const s = sessionsSheet(); const n = s.getLastRow();
+  if (n >= 2) {
+    const rows = s.getRange(2, 1, n - 1, 1).getValues();
+    for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(body.token || '')) s.deleteRow(i + 2);
+  }
+  return { ok: true };
+}
+function me(p) {
+  const u = auth(p.token);
+  return u ? { ok: true, user: pubUser(u) } : { ok: false, error: 'bad_token' };
+}
+
+// 관리자: 계정 목록 / 선생: 내 학생 목록
+function userList(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const all = allUsers().map(pubUser);
+  if (u.role === 'admin') return { ok: true, users: all };
+  if (u.role === 'teacher') return { ok: true, users: all.filter(x => x.role === 'student' && x.teacherId === u.id) };
+  return { ok: false, error: 'forbidden' };
+}
+function userCreate(body) {
+  const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const id = cleanId(body.id); const pw = String(body.pw || '');
+  const role = ['admin', 'teacher', 'student'].indexOf(body.role) >= 0 ? body.role : 'student';
+  if (!id) return { ok: false, error: 'bad_id' };
+  if (pw.length < 4) return { ok: false, error: 'bad_pw' };
+  if (findUser(id)) return { ok: false, error: 'dup_id' };
+  const teacherId = role === 'student' ? cleanId(body.teacherId) : '';
+  if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
+  const salt = randomKey(16);
+  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true]);
+  return { ok: true, user: pubUser(findUser(id)) };
+}
+function userUpdate(body) {
+  const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const t = findUser(body.id); if (!t) return { ok: false, error: 'not_found' };
+  const s = usersSheet();
+  if (body.name !== undefined) s.getRange(t.row, 3).setValue(safeText(body.name, NAME_MAX));
+  if (body.role && ['admin', 'teacher', 'student'].indexOf(body.role) >= 0) {
+    if (t.id === u.id && body.role !== 'admin') return { ok: false, error: 'self_demote' };
+    s.getRange(t.row, 2).setValue(body.role);
+    if (body.role !== 'student') s.getRange(t.row, 6).setValue('');
+  }
+  if (body.teacherId !== undefined) {
+    const tid = cleanId(body.teacherId);
+    if (tid && !findUser(tid)) return { ok: false, error: 'bad_teacher' };
+    s.getRange(t.row, 6).setValue(tid);
+  }
+  if (body.pw) {
+    if (String(body.pw).length < 4) return { ok: false, error: 'bad_pw' };
+    const salt = randomKey(16);
+    s.getRange(t.row, 4, 1, 2).setValues([[hashPw(body.pw, salt), salt]]);
+  }
+  if (body.active !== undefined) {
+    if (t.id === u.id && !body.active) return { ok: false, error: 'self_disable' };
+    s.getRange(t.row, 8).setValue(!!body.active);
+  }
+  return { ok: true, user: pubUser(findUser(t.id)) };
+}
+function userDelete(body) {
+  const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const t = findUser(body.id); if (!t) return { ok: true, gone: true };
+  // 관리자 본인 삭제는 계정이 자기 하나뿐일 때만 허용(초기화: setup 이 다시 열림)
+  if (t.id === u.id && usersCount() > 1) return { ok: false, error: 'self_delete' };
+  usersSheet().deleteRow(t.row);
+  if (t.id === u.id) { logout(body); return { ok: true, reset: true }; }
+  // 이 선생에게 속한 학생은 소속 해제
+  allUsers().forEach(x => { if (x.teacherId === t.id) usersSheet().getRange(x.row, 6).setValue(''); });
+  return { ok: true };
+}
+// 본인 비밀번호 변경
+function changePw(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  if (hashPw(body.oldPw, u.salt) !== u.pwHash) return { ok: false, error: 'bad_login' };
+  if (String(body.newPw || '').length < 4) return { ok: false, error: 'bad_pw' };
+  const salt = randomKey(16);
+  usersSheet().getRange(u.row, 4, 1, 2).setValues([[hashPw(body.newPw, salt), salt]]);
+  return { ok: true };
+}
+
+/* ── 계정별 시험지 저장 ── */
+function examRows() {
+  const s = examsSheet(); const n = s.getLastRow();
+  if (n < 2) return [];
+  return s.getRange(2, 1, n - 1, 6).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), ownerId: String(r[1]), title: String(r[2]), json: String(r[3]), code: String(r[4] || ''), updatedAt: Number(r[5]) || 0 }));
+}
+function examList(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  if (u.role === 'student') return { ok: false, error: 'forbidden' };
+  const mine = examRows().filter(e => u.role === 'admin' && p.all === '1' ? true : e.ownerId === u.id);
+  const exams = [];
+  mine.forEach(e => { try { const x = JSON.parse(e.json); x.ownerId = e.ownerId; exams.push(x); } catch (err) {} });
+  exams.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return { ok: true, exams: exams };
+}
+function examSave(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  if (u.role === 'student') return { ok: false, error: 'forbidden' };
+  const ex = body.exam; if (!ex || typeof ex !== 'object' || !ex.id) return { ok: false, error: 'bad_exam' };
+  delete ex.ownerKey; delete ex.ownerId;
+  const json = JSON.stringify(ex);
+  if (json.length > EXAM_MAX_CHARS) return { ok: false, error: 'too_big' };
+  const s = examsSheet();
+  const cur = examRows().find(e => e.id === String(ex.id));
+  if (cur && cur.ownerId !== u.id && u.role !== 'admin') return { ok: false, error: 'forbidden' };
+  const vals = [String(ex.id), cur ? cur.ownerId : u.id, safeText(ex.title, 80), json, String(ex.code || ''), Date.now()];
+  if (cur) s.getRange(cur.row, 1, 1, 6).setValues([vals]); else s.appendRow(vals);
+  return { ok: true };
+}
+function examDelete(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const cur = examRows().find(e => e.id === String(body.id || ''));
+  if (!cur) return { ok: true, gone: true };
+  if (cur.ownerId !== u.id && u.role !== 'admin') return { ok: false, error: 'forbidden' };
+  examsSheet().deleteRow(cur.row);
+  if (cur.code) { const row = findQuizRow(cur.code); if (row) { quizSheet().deleteRow(row); deleteResultsFor(cur.code); } }
+  return { ok: true };
+}
+
+/* ── 응시 기록(계정) ── */
+function resultsWithDetail(filterFn, limit) {
+  const s = resSheet(); const last = s.getLastRow();
+  if (last < 2) return [];
+  const rows = s.getRange(2, 1, last - 1, 8).getValues();
+  const items = [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (!filterFn(r)) continue;
+    let detail = null; try { detail = r[7] ? JSON.parse(r[7]) : null; } catch (e) {}
+    items.push({ id: String(i + 2), code: String(r[0]), name: String(r[1] || ''), score: Number(r[2]) || 0, total: Number(r[3]) || 0, sec: Number(r[4]) || 0, at: Number(r[5]) || 0, userId: String(r[6] || ''), detail: detail });
+    if (items.length >= (limit || 200)) break;
+  }
+  return items;
+}
+function quizTitle(code) {
+  const row = findQuizRow(code); if (!row) return '';
+  try { return JSON.parse(quizSheet().getRange(row, 4).getValue()).title || ''; } catch (e) { return ''; }
+}
+function myResults(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const items = resultsWithDetail(r => String(r[6] || '') === u.id, 100);
+  const titles = {}; items.forEach(it => { if (!(it.code in titles)) titles[it.code] = quizTitle(it.code); it.title = titles[it.code]; });
+  return { ok: true, items: items };
+}
+function studentResults(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const sid = cleanId(p.studentId);
+  if (!canSeeStudent(u, sid)) return { ok: false, error: 'forbidden' };
+  const st = findUser(sid); if (!st) return { ok: false, error: 'not_found' };
+  const items = resultsWithDetail(r => String(r[6] || '') === sid, 200);
+  const titles = {}; items.forEach(it => { if (!(it.code in titles)) titles[it.code] = quizTitle(it.code); it.title = titles[it.code]; });
+  const rep = reportRow(sid);
+  return { ok: true, student: pubUser(st), items: items, report: rep ? { summary: rep.summary, updatedAt: rep.updatedAt, basis: rep.basis } : null };
+}
+// 관리자: 전체 기록(최근 300)
+function allResults(p) {
+  const u = auth(p.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const items = resultsWithDetail(() => true, 300);
+  const titles = {}; items.forEach(it => { if (!(it.code in titles)) titles[it.code] = quizTitle(it.code); it.title = titles[it.code]; });
+  return { ok: true, items: items };
+}
+function resultDelete(body) {
+  const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const row = Number(body.id) || 0;
+  const s = resSheet();
+  if (row < 2 || row > s.getLastRow()) return { ok: false, error: 'not_found' };
+  s.deleteRow(row);
+  return { ok: true };
+}
+
+/* ── 분석 리포트 (워커가 생성, 사이트가 보여 줌) ── */
+function reportRow(userId) {
+  const s = reportsSheet(); const n = s.getLastRow();
+  if (n < 2) return null;
+  const rows = s.getRange(2, 1, n - 1, 5).getValues();
+  for (let i = 0; i < rows.length; i++) if (String(rows[i][0]) === userId) return { row: i + 2, driveId: String(rows[i][1] || ''), summary: shParse(rows[i][2], null), basis: Number(rows[i][3]) || 0, updatedAt: Number(rows[i][4]) || 0 };
+  return null;
+}
+function reportGet(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const sid = cleanId(p.studentId);
+  if (!canSeeStudent(u, sid)) return { ok: false, error: 'forbidden' };
+  const rep = reportRow(sid);
+  if (!rep || !rep.driveId) return { ok: false, error: 'no_report' };
+  return { ok: true, html: DriveApp.getFileById(rep.driveId).getBlob().getDataAsString('UTF-8'), summary: rep.summary, updatedAt: rep.updatedAt };
+}
+// 워커(연결 코드 인증): 새 기록이 생긴 학생 목록 + 기록·문제지 내용
+function reportPending(p) {
+  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  if (!workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const students = allUsers().filter(u => u.role === 'student' && u.active);
+  const out = [];
+  students.forEach(st => {
+    const items = resultsWithDetail(r => String(r[6] || '') === st.id, 60);
+    if (!items.length) return;
+    const rep = reportRow(st.id);
+    const latest = Math.max.apply(null, items.map(i => i.at));
+    if (rep && rep.updatedAt >= latest && rep.basis === items.length) return;
+    const quizzes = {};
+    items.forEach(it => { if (!(it.code in quizzes)) { const row = findQuizRow(it.code); quizzes[it.code] = row ? shParse(quizSheet().getRange(row, 4).getValue(), null) : null; } });
+    const teacher = st.teacherId ? findUser(st.teacherId) : null;
+    out.push({ studentId: st.id, name: st.name, teacher: teacher ? teacher.name : '', results: items, quizzes: quizzes });
+  });
+  return { ok: true, students: out };
+}
+function reportPut(body) {
+  const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const sid = cleanId(body.studentId); if (!findUser(sid)) return { ok: false, error: 'not_found' };
+  const s = reportsSheet();
+  const rep = reportRow(sid);
+  let driveId = rep ? rep.driveId : '';
+  const html = String(body.html || '');
+  if (html) {
+    if (driveId) { try { DriveApp.getFileById(driveId).setContent(html); } catch (e) { driveId = ''; } }
+    if (!driveId) driveId = shFolder(kh).createFile(Utilities.newBlob(html, 'text/html', 'report__' + sid + '.html')).getId();
+  }
+  const vals = [sid, driveId, JSON.stringify(body.summary || {}).slice(0, SH_CELL_MAX), Number(body.basis) || 0, Date.now()];
+  if (rep) s.getRange(rep.row, 1, 1, 5).setValues([vals]); else s.appendRow(vals);
+  return { ok: true };
+}
+// 워커 연결 코드: 관리자가 사이트에서 등록한 값(스크립트 속성 WORKER_KH = sha(key))만 허용
+function workerKeyOk(kh) { const want = PropertiesService.getScriptProperties().getProperty('WORKER_KH'); return !!want && want === kh; }
+// 워커 키로 초기화: 계정이 전부 tmp_ 로 시작하는 테스트 계정일 때만 users·sessions 를 비운다(setup 재개방)
+function resetTestUsers(body) {
+  const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const users = allUsers();
+  if (users.some(u => u.id.indexOf('tmp_') !== 0)) return { ok: false, error: 'has_real_users' };
+  for (let i = users.length - 1; i >= 0; i--) usersSheet().deleteRow(users[i].row);
+  const ss2 = sessionsSheet(); const n = ss2.getLastRow(); if (n >= 2) ss2.deleteRows(2, n - 1);
+  return { ok: true, removed: users.length };
+}
+function workerKeySet(body) {
+  const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  PropertiesService.getScriptProperties().setProperty('WORKER_KH', kh);
+  return { ok: true };
+}
+
+/* ── AI 문제 생성 (Gemini API, 무료 등급) ──
+   스크립트 속성 GEMINI_API_KEY (aistudio.google.com 에서 발급), GEMINI_MODEL(선택, 기본 gemini-2.5-flash-lite),
+   GEN_DAILY_LIMIT(선택, 기본 100). 선생·관리자 계정만 호출 가능. */
+function geminiKey() { return PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY') || ''; }
+function generateGemini(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  if (u.role === 'student') return { ok: false, error: 'forbidden' };
+  const props = PropertiesService.getScriptProperties();
+  const key = geminiKey(); if (!key) return { ok: false, error: 'gen_not_configured' };
+  const model = props.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash-lite';
+  const limit = Number(props.getProperty('GEN_DAILY_LIMIT')) || 100;
+  const dayKey = 'gen:' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const used = Number(props.getProperty(dayKey)) || 0;
+  if (used >= limit) return { ok: false, error: 'gen_limit' };
+  const scope = String(body.scope || '').trim().slice(0, 500);
+  if (!scope) return { ok: false, error: 'bad_scope' };
+  const material = String(body.material || '').trim().slice(0, 20000);
+  const count = Math.min(GEN_MAX_COUNT, Math.max(1, Math.floor(Number(body.count) || 10)));
+  const difficulty = { '하': '쉬움 (기본 개념 확인)', '중': '보통 (개념 적용)', '상': '어려움 (추론·비교·응용)' }[body.difficulty] || '보통 (개념 적용)';
+  const kind = body.kind === 'tf' ? '참/거짓 2지선다 (options 는 ["참","거짓"])' : '4지선다 객관식 (options 4개)';
+  const prompt = [
+    '당신은 한국 고등학교 교사다. 아래 조건으로 시험 문제를 JSON 으로만 만든다.',
+    '범위/주제: ' + scope, '난이도: ' + difficulty, '형식: ' + kind, '문항 수: ' + count,
+    material ? '참고 자료(이 내용에서만 출제):\n' + material : '',
+    '규칙: 각 문항은 text(문제), options(보기 문자열 배열), answers(정답 보기의 0부터 시작하는 인덱스 배열, 보통 1개), explain(해설 2~3문장). 보기끼리 길이·형식을 비슷하게. 정답 위치를 골고루. 한국어.',
+    '출력 JSON: {"title": "시험지 제목", "questions": [{"text": "...", "options": ["..."], "answers": [0], "explain": "..."}]}',
+  ].filter(Boolean).join('\n');
+  const schema = {
+    type: 'object',
+    properties: { title: { type: 'string' }, questions: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, answers: { type: 'array', items: { type: 'integer' } }, explain: { type: 'string' } }, required: ['text', 'options', 'answers', 'explain'] } } },
+    required: ['title', 'questions'],
+  };
+  const t0 = Date.now();
+  let res, code;
+  try {
+    res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+      method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key },
+      payload: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.8 } }),
+      muteHttpExceptions: true,
+    });
+    code = res.getResponseCode();
+  } catch (err) { logUsage(scope, count, model, 0, 0, Date.now() - t0, 'fetch_error'); return { ok: false, error: 'api', message: String(err) }; }
+  let data = {}; try { data = JSON.parse(res.getContentText()); } catch (err) {}
+  const um = data.usageMetadata || {};
+  const ms = Date.now() - t0;
+  if (code !== 200) { logUsage(scope, count, model, 0, 0, ms, 'http_' + code); return { ok: false, error: 'api', message: (data.error && data.error.message) || ('HTTP ' + code) }; }
+  let text = '';
+  try { text = data.candidates[0].content.parts.map(p => p.text || '').join(''); } catch (err) {}
+  text = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+  let parsed; try { parsed = JSON.parse(text); } catch (err) { logUsage(scope, count, model, um.promptTokenCount || 0, um.candidatesTokenCount || 0, ms, 'bad_json'); return { ok: false, error: 'api', message: '응답을 해석하지 못했습니다.' }; }
+  const questions = (Array.isArray(parsed.questions) ? parsed.questions : [])
+    .map(q => ({ text: String(q.text || '').trim(), options: (Array.isArray(q.options) ? q.options : []).map(o => String(o || '').trim()), answers: Array.isArray(q.answers) ? q.answers.filter(a => Number.isInteger(a)) : [], explain: String(q.explain || '').trim() }))
+    .filter(q => q.text && q.options.length >= 2 && q.options.every(Boolean) && q.answers.length && q.answers.every(a => a >= 0 && a < q.options.length))
+    .slice(0, count);
+  props.setProperty(dayKey, String(used + 1));
+  logUsage(scope, questions.length, model, um.promptTokenCount || 0, um.candidatesTokenCount || 0, ms, 'ok');
+  return { ok: true, title: String(parsed.title || scope).slice(0, 80), questions: questions, remaining: limit - used - 1 };
 }

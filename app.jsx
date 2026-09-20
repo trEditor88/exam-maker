@@ -118,14 +118,16 @@ const syncUrl = () => {
 };
 async function apiGet(params) {
   try {
-    const q = new URLSearchParams({ ...params, t: Date.now() });
+    const a = authGet();
+    const q = new URLSearchParams({ ...(a && a.token ? { token: a.token } : {}), ...params, t: Date.now() });
     const r = await fetch(syncUrl() + "?" + q, { cache: "no-store" });
     return await r.json();
   } catch (e) { return { ok: false, error: "network" }; }
 }
 async function apiPost(body) {
   try {
-    const r = await fetch(syncUrl(), { method: "POST", body: JSON.stringify(body) });
+    const a = authGet();
+    const r = await fetch(syncUrl(), { method: "POST", body: JSON.stringify({ ...(a && a.token ? { token: a.token } : {}), ...body }) });
     return await r.json();
   } catch (e) { return { ok: false, error: "network" }; }
 }
@@ -144,6 +146,25 @@ const serverRemote = {
   shNote: (key, ws) => apiGet({ action: "sh_note", key, ws }),
   shUpload: (params) => apiPost({ action: "sh_upload", ...params }),
   shConfirm: (params) => apiPost({ action: "sh_confirm", ...params }),
+  ping: () => apiGet({ action: "ping" }),
+  setup: (b) => apiPost({ action: "setup", ...b }),
+  login: (b) => apiPost({ action: "login", ...b }),
+  logout: () => apiPost({ action: "logout" }),
+  me: () => apiGet({ action: "me" }),
+  changePw: (b) => apiPost({ action: "changePw", ...b }),
+  userList: () => apiGet({ action: "userList" }),
+  userCreate: (b) => apiPost({ action: "userCreate", ...b }),
+  userUpdate: (b) => apiPost({ action: "userUpdate", ...b }),
+  userDelete: (id) => apiPost({ action: "userDelete", id }),
+  examList: () => apiGet({ action: "examList" }),
+  examSave: (exam) => apiPost({ action: "examSave", exam }),
+  examDelete: (id) => apiPost({ action: "examDelete", id }),
+  myResults: () => apiGet({ action: "myResults" }),
+  studentResults: (studentId) => apiGet({ action: "studentResults", studentId }),
+  allResults: () => apiGet({ action: "allResults" }),
+  resultDelete: (id) => apiPost({ action: "resultDelete", id }),
+  reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
+  workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
 };
 const localRemote = {
   kind: "local",
@@ -175,6 +196,26 @@ const localRemote = {
   async shNote() { return { ok: false, error: "sh_local" }; },
   async shUpload() { return { ok: false, error: "sh_local" }; },
   async shConfirm() { return { ok: false, error: "sh_local" }; },
+  // 로컬(서버 없음) 모드: 로그인 없이 관리자로 동작 — 개발·오프라인용
+  async ping() { return { ok: true, gen: false, setup: false }; },
+  async setup() { return { ok: false, error: "sh_local" }; },
+  async login() { return { ok: true, token: "local", user: { id: "local", role: "admin", name: "로컬" } }; },
+  async logout() { return { ok: true }; },
+  async me() { return { ok: true, user: { id: "local", role: "admin", name: "로컬" } }; },
+  async changePw() { return { ok: false, error: "sh_local" }; },
+  async userList() { return { ok: true, users: [] }; },
+  async userCreate() { return { ok: false, error: "sh_local" }; },
+  async userUpdate() { return { ok: false, error: "sh_local" }; },
+  async userDelete() { return { ok: false, error: "sh_local" }; },
+  async examList() { return { ok: false, error: "sh_local" }; },
+  async examSave() { return { ok: true }; },
+  async examDelete() { return { ok: true }; },
+  async myResults() { return { ok: true, items: [] }; },
+  async studentResults() { return { ok: false, error: "sh_local" }; },
+  async allResults() { return { ok: true, items: [] }; },
+  async resultDelete() { return { ok: false, error: "sh_local" }; },
+  async reportGet() { return { ok: false, error: "no_report" }; },
+  async workerKeySet() { return { ok: false, error: "sh_local" }; },
 };
 const remote = () => (syncUrl() ? serverRemote : localRemote);
 const ERR = {
@@ -191,6 +232,17 @@ const ERR = {
   truncated: "결과가 너무 길어 잘렸습니다. 문제 수를 줄여 주세요.",
   gen_local: "서버가 연결되어 있어야 AI 생성을 쓸 수 있습니다.",
   sh_local: "서버가 연결되어 있어야 오답노트를 쓸 수 있습니다.",
+  bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
+  bad_token: "로그인이 풀렸습니다. 다시 들어와 주세요.",
+  forbidden: "이 계정에는 권한이 없습니다.",
+  bad_id: "아이디는 영문·숫자·_ . - 로 3~30자입니다.",
+  dup_id: "이미 있는 아이디입니다.",
+  bad_teacher: "담당 선생 아이디가 없습니다.",
+  self_delete: "자기 계정은 지울 수 없습니다(다른 관리자가 지워야 합니다).",
+  self_demote: "자기 계정의 관리자 권한은 뺄 수 없습니다.",
+  self_disable: "자기 계정은 정지할 수 없습니다.",
+  already_setup: "이미 관리자가 있습니다. 로그인해 주세요.",
+  no_report: "아직 리포트가 없습니다.",
   bad_key: "연결 코드가 올바르지 않습니다.",
   too_big: "사진이 너무 큽니다(9MB 이하).",
 };
@@ -664,16 +716,24 @@ async function copyText(text) {
 }
 
 /* ── 화면: 홈 ────────────────────────────────── */
-function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast }) {
-  const items = [
-    { t: "새 시험지 만들기", d: "보기를 정하고 문제를 하나씩 추가합니다.", go: onNew },
-    { t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList },
-    { t: "코드로 문제 풀기", d: "받은 코드를 입력해 친구가 낸 문제를 풉니다.", go: onCode },
-    { t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy },
-  ];
+function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount }) {
+  const role = (user && user.role) || "admin";
+  const items = [];
+  if (role !== "student") {
+    items.push({ t: "새 시험지 만들기", d: "보기를 정하고 문제를 하나씩 추가합니다.", go: onNew });
+    items.push({ t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
+  }
+  items.push({ t: "코드로 문제 풀기", d: role === "student" ? "선생님이 준 코드를 입력해 문제를 풉니다." : "받은 코드를 입력해 문제를 풉니다.", go: onCode });
+  if (role === "student") items.push({ t: "내 결과", d: "내가 푼 시험지의 점수와 기록을 봅니다.", go: onMyResults });
+  if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
+  items.push({ t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy });
+  if (role === "admin") items.push({ t: "관리자", d: "계정 등록·수정, 전체 기록 열람, 리포트 워커 연결.", go: onAdmin });
   return (
     <Shell toast={toast}>
-      <h1 style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em", margin: "16px 0 10px" }}>시험지</h1>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "16px 0 10px" }}>
+        <h1 style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>시험지</h1>
+        {user && <TextBtn onClick={onAccount}>{user.name} · {ROLE_KO[user.role] || user.role}</TextBtn>}
+      </div>
       <p style={{ fontSize: 16.5, lineHeight: 1.6, color: C.sub, margin: "0 0 6px" }}>
         문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.
       </p>
@@ -990,7 +1050,7 @@ function GenerateModal({ onClose, onAdd }) {
   const [sel, setSel] = useState({});
 
   const run = async () => {
-    if (!scope.trim() || !pw || busy) return;
+    if (!scope.trim() || busy) return;
     setBusy(true);
     setErr("");
     const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, pw });
@@ -1026,10 +1086,10 @@ function GenerateModal({ onClose, onAdd }) {
           <Seg value={difficulty} onChange={setDifficulty} items={[["하", "쉬움"], ["중", "보통"], ["상", "어려움"]]} />
           {label("유형")}
           <Seg value={kind} onChange={setKind} items={[["single", "객관식 (정답 1개)"], ["multi", "객관식 (복수 정답)"], ["tf", "참·거짓"]]} />
-          <Field type="password" value={pw} onChange={setPw} placeholder="생성 비밀번호" onEnter={run} ariaLabel="생성 비밀번호" style={{ marginTop: 16 }} />
+
           {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
-            <Btn onClick={run} disabled={busy || !scope.trim() || !pw}>{busy ? "문제를 만드는 중… (최대 1분)" : "문제 만들기"}</Btn>
+            <Btn onClick={run} disabled={busy || !scope.trim()}>{busy ? "문제를 만드는 중… (최대 1분)" : "문제 만들기"}</Btn>
             <Btn kind="ghost" onClick={onClose}>닫기</Btn>
           </div>
         </>
@@ -1708,6 +1768,310 @@ function StudyScreen({ onBack, flash, toast }) {
   );
 }
 
+/* ── 계정: 로그인·역할별 화면 ─────────────────────
+   토큰은 이 브라우저에 저장(localStorage). 서버가 역할(admin/teacher/student)을 판정한다. */
+const authGet = () => { try { return JSON.parse(localStorage.getItem(LS_PREFIX + "auth") || "null"); } catch (e) { return null; } };
+const authSet = (a) => { try { a ? localStorage.setItem(LS_PREFIX + "auth", JSON.stringify(a)) : localStorage.removeItem(LS_PREFIX + "auth"); } catch (e) {} };
+const ROLE_KO = { admin: "관리자", teacher: "선생", student: "학생" };
+
+function LoginScreen({ needSetup, onDone, toast, flash }) {
+  const [id, setId] = useState("");
+  const [pw, setPw] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    if (!id.trim() || !pw) return flash("아이디와 비밀번호를 넣어 주세요.");
+    setBusy(true);
+    const r = needSetup ? await remote().setup({ id: id.trim(), pw, name: name.trim() || id.trim() }) : await remote().login({ id: id.trim(), pw });
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    authSet({ token: r.token, user: r.user });
+    onDone(r.user);
+  };
+  return (
+    <Shell toast={toast}>
+      <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", margin: "26px 0 8px" }}>시험지</h1>
+      <p style={{ fontSize: 15.5, color: C.sub, lineHeight: 1.6, margin: "0 0 20px" }}>
+        {needSetup ? "처음 실행입니다. 관리자 계정을 만들어 주세요. 이 계정으로 선생·학생 계정을 등록합니다." : "아이디와 비밀번호로 들어갑니다. 계정이 없으면 관리자에게 문의하세요."}
+      </p>
+      <Card>
+        <div style={{ display: "grid", gap: 10 }}>
+          {needSetup && <Field value={name} onChange={setName} placeholder="이름 (표시용)" ariaLabel="이름" />}
+          <Field value={id} onChange={setId} placeholder="아이디 (영문·숫자 3~30자)" ariaLabel="아이디" autoFocus />
+          <Field type="password" value={pw} onChange={setPw} placeholder="비밀번호" onEnter={go} ariaLabel="비밀번호" />
+          <Btn onClick={go} disabled={busy}>{busy ? "확인 중…" : needSetup ? "관리자 계정 만들기" : "들어가기"}</Btn>
+        </div>
+      </Card>
+    </Shell>
+  );
+}
+
+function AccountModal({ user, onClose, onLogout, flash }) {
+  const [oldPw, setOldPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const change = async () => {
+    if (newPw.length < 4) return flash("새 비밀번호는 4자 이상입니다.");
+    setBusy(true);
+    const r = await remote().changePw({ oldPw, newPw });
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    setOldPw(""); setNewPw(""); flash("비밀번호를 바꿨습니다.");
+  };
+  return (
+    <Modal title="내 계정" onClose={onClose}>
+      <p style={{ fontSize: 15, margin: "0 0 12px" }}><b>{user.name}</b> <Badge tone="accent">{ROLE_KO[user.role] || user.role}</Badge> <span style={{ color: C.sub, fontSize: 13.5 }}>· {user.id}</span></p>
+      <div style={{ display: "grid", gap: 8 }}>
+        <Field type="password" value={oldPw} onChange={setOldPw} placeholder="현재 비밀번호" ariaLabel="현재 비밀번호" />
+        <Field type="password" value={newPw} onChange={setNewPw} placeholder="새 비밀번호 (4자 이상)" ariaLabel="새 비밀번호" onEnter={change} />
+        <Btn kind="soft" onClick={change} disabled={busy}>비밀번호 변경</Btn>
+        <Btn kind="ghost" onClick={onLogout}>로그아웃</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* 관리자: 계정 관리 + 전체 기록 */
+function AdminScreen({ onBack, toast, flash }) {
+  const [users, setUsers] = useState(null);
+  const [tab, setTab] = useState("users");
+  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "" });
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState(null);
+  const [workerKey, setWorkerKey] = useState("");
+  const teachers = (users || []).filter((u) => u.role === "teacher" || u.role === "admin");
+
+  const load = async () => { const r = await remote().userList(); if (!r.ok) return flash(errMsg(r)); setUsers(r.users); };
+  useEffect(() => { load(); }, []);
+  const loadResults = async () => { const r = await remote().allResults(); if (!r.ok) return flash(errMsg(r)); setResults(r.items); };
+
+  const create = async () => {
+    if (!form.id.trim() || form.pw.length < 4) return flash("아이디와 4자 이상 비밀번호를 넣어 주세요.");
+    setBusy(true);
+    const r = await remote().userCreate({ ...form, id: form.id.trim(), name: form.name.trim() });
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId });
+    flash(`${r.user.name} (${ROLE_KO[r.user.role]}) 계정을 만들었습니다.`);
+    load();
+  };
+  const save = async () => {
+    setBusy(true);
+    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active };
+    if (edit.pw) body.pw = edit.pw;
+    const r = await remote().userUpdate(body);
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    setEdit(null); flash("저장했습니다."); load();
+  };
+  const del = async () => {
+    if (!confirm(`${edit.name} (${edit.id}) 계정을 지울까요? 이 계정의 응시 기록은 남습니다.`)) return;
+    const r = await remote().userDelete(edit.id);
+    if (!r.ok) return flash(errMsg(r));
+    setEdit(null); flash("삭제했습니다."); load();
+  };
+  const delResult = async (it) => {
+    if (!confirm(`${it.name}의 "${it.title || it.code}" 기록을 지울까요?`)) return;
+    const r = await remote().resultDelete(it.id);
+    if (!r.ok) return flash(errMsg(r));
+    setResults(results.filter((x) => x.id !== it.id));
+  };
+  const setWorker = async () => {
+    if (workerKey.trim().length < 8) return flash("연결 코드는 8자 이상입니다.");
+    const r = await remote().workerKeySet(workerKey.trim());
+    if (!r.ok) return flash(errMsg(r));
+    setWorkerKey(""); flash("리포트 워커 연결 코드를 등록했습니다.");
+  };
+  const teacherName = (id) => (users || []).find((u) => u.id === id)?.name || id || "-";
+  const sel = { fontFamily: FONT, fontSize: 15, padding: "10px 12px", border: `1px solid ${C.line}`, borderRadius: 10, background: "#fff", color: C.ink };
+
+  return (
+    <Shell back="처음으로" backTo={onBack} toast={toast}>
+      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); }} items={[["users", "계정"], ["results", "전체 기록"], ["worker", "리포트 워커"]]} />
+
+      {tab === "users" && (
+        <>
+          <Card style={{ margin: "14px 0" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>계정 만들기</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <Field value={form.id} onChange={(v) => setForm({ ...form, id: v })} placeholder="아이디" ariaLabel="아이디" />
+                <Field value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="이름" ariaLabel="이름" />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <Field type="password" value={form.pw} onChange={(v) => setForm({ ...form, pw: v })} placeholder="비밀번호 (4자 이상)" ariaLabel="비밀번호" />
+                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} style={sel} aria-label="역할">
+                  <option value="student">학생</option><option value="teacher">선생</option><option value="admin">관리자</option>
+                </select>
+              </div>
+              {form.role === "student" && (
+                <select value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })} style={sel} aria-label="담당 선생">
+                  <option value="">담당 선생 없음</option>
+                  {teachers.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.id})</option>)}
+                </select>
+              )}
+              <Btn onClick={create} disabled={busy}>계정 만들기</Btn>
+            </div>
+          </Card>
+          <h3 style={{ fontSize: 16, fontWeight: 700, margin: "18px 0 8px", color: C.inkMid }}>계정 목록 {users ? `(${users.length})` : ""}</h3>
+          {users === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
+          {(users || []).map((u) => (
+            <button key={u.id} className="em-btn em-row" onClick={() => setEdit({ ...u, pw: "" })}
+              style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
+              <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
+              <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
+              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.active ? "" : " · 정지"}</span>
+            </button>
+          ))}
+        </>
+      )}
+
+      {tab === "results" && (
+        <div style={{ marginTop: 14 }}>
+          {results === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : results.length === 0 ? <p style={{ color: C.sub }}>아직 기록이 없습니다.</p> : (
+            <Card style={{ padding: 8 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                <thead><tr>{["때", "이름", "시험지", "점수", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+                <tbody>{results.map((it) => (
+                  <tr key={it.id}>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(it.at)}</td>
+                    <td style={{ padding: "6px 8px" }}>{it.name}{it.userId ? "" : <span style={{ color: C.sub }}> (비회원)</span>}</td>
+                    <td style={{ padding: "6px 8px" }}>{it.title || it.code}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{it.score}/{it.total}</td>
+                    <td style={{ padding: "6px 8px" }}><TextBtn tone="sub" onClick={() => delResult(it)} style={{ fontSize: 13 }}>삭제</TextBtn></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {tab === "worker" && (
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>분석 리포트 워커 연결</div>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>학생 분석 리포트는 관리자 PC 의 Claude 예약 작업이 만듭니다. PC 의 study-helper\sync.json 에 있는 연결 코드를 등록하면 그 PC 만 기록을 읽고 리포트를 올릴 수 있습니다.</p>
+          <Field value={workerKey} onChange={setWorkerKey} placeholder="연결 코드" ariaLabel="연결 코드" onEnter={setWorker} />
+          <div style={{ marginTop: 10 }}><Btn kind="soft" onClick={setWorker}>등록</Btn></div>
+        </Card>
+      )}
+
+      {edit && (
+        <Modal title={`계정 수정 · ${edit.id}`} onClose={() => setEdit(null)}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <Field value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="이름" ariaLabel="이름" />
+            <select value={edit.role} onChange={(e) => setEdit({ ...edit, role: e.target.value })} style={sel} aria-label="역할">
+              <option value="student">학생</option><option value="teacher">선생</option><option value="admin">관리자</option>
+            </select>
+            {edit.role === "student" && (
+              <select value={edit.teacherId || ""} onChange={(e) => setEdit({ ...edit, teacherId: e.target.value })} style={sel} aria-label="담당 선생">
+                <option value="">담당 선생 없음</option>
+                {teachers.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.id})</option>)}
+              </select>
+            )}
+            <Field type="password" value={edit.pw} onChange={(v) => setEdit({ ...edit, pw: v })} placeholder="새 비밀번호 (바꿀 때만)" ariaLabel="새 비밀번호" />
+            <CheckRow on={edit.active !== false} onToggle={() => setEdit({ ...edit, active: edit.active === false })}>로그인 허용</CheckRow>
+            <Btn onClick={save} disabled={busy}>저장</Btn>
+            <Btn kind="danger" onClick={del}>계정 삭제</Btn>
+          </div>
+        </Modal>
+      )}
+    </Shell>
+  );
+}
+
+/* 결과 표 + 리포트 (선생·관리자가 학생을 볼 때, 학생이 자기 기록을 볼 때 공용) */
+function ResultsTable({ items }) {
+  if (!items.length) return <p style={{ color: C.sub, fontSize: 14.5 }}>아직 응시 기록이 없습니다.</p>;
+  const avg = Math.round((items.reduce((s, r) => s + r.score / r.total, 0) / items.length) * 100);
+  return (
+    <>
+      <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 8px" }}>{items.length}회 응시 · 평균 {avg}점</p>
+      <Card style={{ padding: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead><tr>{["때", "시험지", "점수", "시간"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+          <tbody>{items.map((it) => (
+            <tr key={it.id}><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(it.at)}</td><td style={{ padding: "6px 8px" }}>{it.title || it.code}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontWeight: 700, color: it.score === it.total ? C.good : C.ink }}>{it.score}/{it.total}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtSec(it.sec)}</td></tr>
+          ))}</tbody>
+        </table>
+      </Card>
+    </>
+  );
+}
+
+function StudentsScreen({ user, onBack, toast, flash }) {
+  const [students, setStudents] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [report, setReport] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { (async () => { const r = await remote().userList(); if (!r.ok) return flash(errMsg(r)); setStudents(r.users.filter((u) => u.role === "student")); })(); }, []);
+  const open = async (st) => {
+    setBusy(true);
+    const r = await remote().studentResults(st.id);
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    setReport(null); setDetail(r);
+  };
+  const openReport = async () => {
+    setBusy(true);
+    const r = await remote().reportGet(detail.student.id);
+    setBusy(false);
+    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 만들어지지 않았습니다. 관리자 PC 가 켜져 있으면 응시 후 10분 안에 만들어집니다." : errMsg(r));
+    setReport(r.html);
+  };
+  if (detail && report !== null)
+    return (
+      <Shell back={detail.student.name} backTo={() => setReport(null)} toast={toast}>
+        <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(report); w.document.close(); } }}>새 창에서 열기(인쇄·PDF)</Btn></div>
+        <iframe title="분석 리포트" srcDoc={report} style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
+      </Shell>
+    );
+  if (detail)
+    return (
+      <Shell back="학생 목록" backTo={() => setDetail(null)} toast={toast}>
+        <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 4px" }}>{detail.student.name} <span style={{ color: C.sub, fontSize: 14, fontWeight: 500 }}>{detail.student.id}</span></h2>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 14px" }}>
+          <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>
+          <Btn kind="soft" onClick={() => open(detail.student)} disabled={busy}>새로고침</Btn>
+        </div>
+        {detail.report && (
+          <Card style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
+            {detail.report.summary && detail.report.summary.headline && <div style={{ fontSize: 15, marginTop: 4 }}>{detail.report.summary.headline}</div>}
+            {detail.report.summary && Array.isArray(detail.report.summary.weak) && detail.report.summary.weak.length > 0 && <div style={{ fontSize: 14, marginTop: 6 }}>취약: {detail.report.summary.weak.join(" · ")}</div>}
+          </Card>
+        )}
+        <ResultsTable items={detail.items} />
+      </Shell>
+    );
+  return (
+    <Shell back="처음으로" backTo={onBack} toast={toast}>
+      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 학생</h2>
+      {students === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
+      {students && students.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>{user.role === "admin" ? "등록된 학생이 없습니다. 관리자 화면에서 계정을 만드세요." : "담당 학생이 없습니다. 관리자에게 학생 등록을 요청하세요."}</p>}
+      {(students || []).map((st) => (
+        <button key={st.id} className="em-btn em-row" onClick={() => open(st)} disabled={busy}
+          style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT }}>
+          <span style={{ fontWeight: 700, color: C.ink }}>{st.name}</span><span style={{ color: C.sub, fontSize: 13.5 }}>{st.id}{user.role === "admin" && st.teacherId ? ` · 담당 ${st.teacherId}` : ""}</span>
+        </button>
+      ))}
+    </Shell>
+  );
+}
+
+function MyResultsScreen({ onBack, toast, flash }) {
+  const [items, setItems] = useState(null);
+  useEffect(() => { (async () => { const r = await remote().myResults(); if (!r.ok) return flash(errMsg(r)); setItems(r.items); })(); }, []);
+  return (
+    <Shell back="처음으로" backTo={onBack} toast={toast}>
+      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 결과</h2>
+      {items === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={items} />}
+    </Shell>
+  );
+}
+
 function ExamMaker() {
   const [screen, setScreen] = useState("home");
   const [exams, setExams] = useState([]);
@@ -1731,6 +2095,30 @@ function ExamMaker() {
   const [name, setName] = useState("");
   const [result, setResult] = useState(null);
 
+  /* 계정 */
+  const [user, setUser] = useState(null);
+  const [needSetup, setNeedSetup] = useState(false);
+  const [acctOpen, setAcctOpen] = useState(false);
+  const examsRef = useRef([]);
+  useEffect(() => { examsRef.current = exams; }, [exams]);
+  const loadServerExams = async () => {
+    const r = await remote().examList();
+    if (r.ok) { setExams(r.exams.map(normalizeExam)); return true; }
+    return false;
+  };
+  const afterLogin = async (u) => {
+    setNeedSetup(false);
+    setUser(u);
+    if (u.name) setName(u.name);
+    if (u.role !== "student") await loadServerExams();
+    setScreen("home");
+  };
+  const logoutNow = async () => {
+    await remote().logout();
+    authSet(null); setUser(null); setExams([]); setAcctOpen(false); setScreen("home");
+    const pg = await remote().ping(); setNeedSetup(!!(pg && pg.setup));
+  };
+
   /* 초기 로드 */
   useEffect(() => {
     (async () => {
@@ -1748,6 +2136,15 @@ function ExamMaker() {
         setRecent([]);
       }
       if (rawName) setName(rawName);
+      /* 계정 확인: 저장된 토큰이 살아 있으면 자동 로그인, 아니면 로그인 화면(관리자가 없으면 설정 화면) */
+      if (remote().kind === "server") {
+        const a = authGet();
+        const meR = a && a.token ? await remote().me() : { ok: false };
+        if (meR.ok) { authSet({ token: a.token, user: meR.user }); setUser(meR.user); if (meR.user.name) setName(meR.user.name); if (meR.user.role !== "student") await loadServerExams(); }
+        else { authSet(null); const pg = await remote().ping(); setNeedSetup(!!(pg && pg.setup)); }
+      } else {
+        setUser({ id: "local", role: "admin", name: "로컬" });
+      }
       setReady(true);
     })();
   }, []);
@@ -1759,9 +2156,16 @@ function ExamMaker() {
   };
 
   const persist = async (list) => {
+    const prev = examsRef.current;
     setExams(list);
-    const ok = await store.set("exams", JSON.stringify(list));
-    if (!ok) flash("저장에 실패했어요. 잠시 후 다시 시도해 주세요.");
+    let ok = await store.set("exams", JSON.stringify(list));
+    if (remote().kind === "server" && user && user.role !== "student") {
+      for (const e of list) {
+        const p = prev.find((x) => x.id === e.id);
+        if (!p || p.updatedAt !== e.updatedAt || p.code !== e.code) { const r = await remote().examSave(e); if (!r.ok) { ok = false; flash(errMsg(r)); } }
+      }
+      for (const p of prev) if (!list.some((x) => x.id === p.id)) remote().examDelete(p.id);
+    } else if (!ok) flash("저장에 실패했어요. 잠시 후 다시 시도해 주세요.");
     return ok;
   };
 
@@ -1892,7 +2296,7 @@ function ExamMaker() {
     store.set("recent", JSON.stringify(nextRecent));
     if (trimmed) store.set("name", trimmed);
     /* 출제자에게 결과 전달 */
-    remote().submit(run.code, { name: trimmed, score, total, sec: Math.round(sec) });
+    remote().submit(run.code, { name: trimmed, score, total, sec: Math.round(sec), detail: rows.map((r) => ({ q: r.q.id, m: r.mine, ok: r.ok })) });
   };
 
   const retryWrong = (ids) => {
@@ -1924,8 +2328,16 @@ function ExamMaker() {
       </div>
     );
 
+  if (remote().kind === "server" && !user)
+    return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
+
+  if (screen === "admin") return <AdminScreen onBack={goHome} toast={toast} flash={flash} />;
+  if (screen === "students") return <StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} />;
+  if (screen === "myresults") return <MyResultsScreen onBack={goHome} toast={toast} flash={flash} />;
+
   const overlays = (
     <>
+      {acctOpen && user && <AccountModal user={user} onClose={() => setAcctOpen(false)} onLogout={logoutNow} flash={flash} />}
       {exportText !== null && <ExportModal title="내보내기" text={exportText} onClose={() => setExportText(null)} flash={flash} />}
       {importOpen && <ImportModal onImport={importExams} onClose={() => setImportOpen(false)} />}
     </>
@@ -1935,6 +2347,7 @@ function ExamMaker() {
     return (
       <>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} flash={flash} />}
+      {overlays}
       <HomeScreen
         exams={exams}
         recent={recent}
@@ -1944,6 +2357,11 @@ function ExamMaker() {
         onNew={newExam}
         onList={() => setScreen("list")}
         onStudy={() => setScreen("study")}
+        user={user}
+        onAdmin={() => setScreen("admin")}
+        onStudents={() => setScreen("students")}
+        onMyResults={() => setScreen("myresults")}
+        onAccount={() => setAcctOpen(true)}
         onCode={() => {
           setCodeInput("");
           setCodeErr("");
