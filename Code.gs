@@ -345,6 +345,7 @@ function doPost(e) {
     } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
   }
   if (a === 'reportPut') { try { return out(reportPut(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
+  if (a === 'reportRequest') { try { return out(reportRequest(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
   // 학습 도우미: 사진 업로드·결과 저장은 드라이브 쓰기라 오래 걸릴 수 있어 잠금 없이 처리
   if (a === 'sh_upload' || a === 'sh_result' || a === 'sh_fetched' || a === 'sh_confirm') {
     try {
@@ -933,7 +934,7 @@ function reportGet(p) {
 function reportPending(p) {
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   if (!workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
-  const students = allUsers().filter(u => u.role === 'student' && u.active);
+  const students = allUsers().filter(u => u.active);   // 학생·선생·관리자 모두 자기 응시 기록으로 리포트를 받는다
   const out = [];
   students.forEach(st => {
     const items = resultsWithDetail(r => String(r[6] || '') === st.id, 60);
@@ -944,9 +945,21 @@ function reportPending(p) {
     const quizzes = {};
     items.forEach(it => { if (!(it.code in quizzes)) { const row = findQuizRow(it.code); quizzes[it.code] = row ? shParse(quizSheet().getRange(row, 4).getValue(), null) : null; } });
     const teacher = st.teacherId ? findUser(st.teacherId) : null;
-    out.push({ studentId: st.id, name: st.name, teacher: teacher ? teacher.name : '', results: items, quizzes: quizzes });
+    out.push({ studentId: st.id, name: st.name, role: st.role, teacher: teacher ? teacher.name : '', results: items, quizzes: quizzes });
   });
   return { ok: true, students: out };
+}
+// 리포트 새로 만들기 요청: 본인, 또는 볼 수 있는 학생(선생·관리자). 다음 워커 실행 때 다시 만든다.
+function reportRequest(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const sid = body.studentId ? cleanId(body.studentId) : u.id;
+  if (!canSeeStudent(u, sid)) return { ok: false, error: 'forbidden' };
+  if (!findUser(sid)) return { ok: false, error: 'not_found' };
+  if (!resultsWithDetail(r => String(r[6] || '') === sid, 1).length) return { ok: false, error: 'no_results' };
+  const s = reportsSheet();
+  const rep = reportRow(sid);
+  if (rep) s.getRange(rep.row, 4, 1, 2).setValues([[0, 0]]); else s.appendRow([sid, '', '', 0, 0]);
+  return { ok: true };
 }
 function reportPut(body) {
   const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };

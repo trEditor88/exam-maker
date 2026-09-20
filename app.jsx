@@ -164,6 +164,7 @@ const serverRemote = {
   allResults: () => apiGet({ action: "allResults" }),
   resultDelete: (id) => apiPost({ action: "resultDelete", id }),
   reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
+  reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
 };
 const localRemote = {
@@ -215,6 +216,7 @@ const localRemote = {
   async allResults() { return { ok: true, items: [] }; },
   async resultDelete() { return { ok: false, error: "sh_local" }; },
   async reportGet() { return { ok: false, error: "no_report" }; },
+  async reportRequest() { return { ok: false, error: "sh_local" }; },
   async workerKeySet() { return { ok: false, error: "sh_local" }; },
 };
 const remote = () => (syncUrl() ? serverRemote : localRemote);
@@ -245,6 +247,7 @@ const ERR = {
   self_disable: "자기 계정은 정지할 수 없습니다.",
   already_setup: "이미 관리자가 있습니다. 로그인해 주세요.",
   no_report: "아직 리포트가 없습니다.",
+  no_results: "응시 기록이 있어야 리포트를 만들 수 있습니다.",
   bad_key: "연결 코드가 올바르지 않습니다.",
   too_big: "사진이 너무 큽니다(9MB 이하).",
 };
@@ -726,7 +729,7 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
     items.push({ t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
   }
   items.push({ t: "코드로 문제 풀기", d: role === "student" ? "선생님이 준 코드를 입력해 문제를 풉니다." : "받은 코드를 입력해 문제를 풉니다.", go: onCode });
-  if (role === "student") items.push({ t: "내 결과", d: "내가 푼 시험지의 점수와 기록을 봅니다.", go: onMyResults });
+  items.push({ t: "내 결과·리포트", d: "내가 푼 시험지의 점수·기록과 나의 분석 리포트를 봅니다.", go: onMyResults });
   if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
   items.push({ t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy });
   if (role === "admin") items.push({ t: "관리자", d: "계정 등록·수정, 전체 기록 열람, 리포트 워커 연결.", go: onAdmin });
@@ -797,11 +800,7 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
       )}
 
       <p style={{ fontSize: 12.5, color: C.sub, textAlign: "center", marginTop: 34, lineHeight: 1.6 }}>
-        {mode === "server"
-          ? "내 시험지는 이 브라우저에 저장되고, 공유 코드는 서버를 통해 누구나 열 수 있습니다."
-          : "서버가 설정되지 않아 이 기기 안에서만 동작합니다. 코드 공유는 서버 연결 후 가능합니다."}
-        <br />
-        <TextBtn tone="sub" onClick={onSettings} style={{ fontSize: 12.5 }}>서버 설정</TextBtn>
+        <a href="help.html" target="_blank" rel="noopener" style={{ color: C.sub }}>사용 설명서</a>
       </p>
     </Shell>
   );
@@ -2036,6 +2035,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
         <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 4px" }}>{detail.student.name} <span style={{ color: C.sub, fontSize: 14, fontWeight: 500 }}>{detail.student.id}</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 14px" }}>
           <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>
+          <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC 가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy}>리포트 새로 만들기</Btn>
           <Btn kind="soft" onClick={() => open(detail.student)} disabled={busy}>새로고침</Btn>
         </div>
         {detail.report && (
@@ -2063,13 +2063,43 @@ function StudentsScreen({ user, onBack, toast, flash }) {
   );
 }
 
-function MyResultsScreen({ onBack, toast, flash }) {
-  const [items, setItems] = useState(null);
-  useEffect(() => { (async () => { const r = await remote().myResults(); if (!r.ok) return flash(errMsg(r)); setItems(r.items); })(); }, []);
+function MyResultsScreen({ user, onBack, toast, flash }) {
+  const [detail, setDetail] = useState(null);
+  const [report, setReport] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = async () => { const r = await remote().studentResults(user.id); if (!r.ok) return flash(errMsg(r)); setDetail(r); };
+  useEffect(() => { load(); }, []);
+  const openReport = async () => {
+    setBusy(true);
+    const r = await remote().reportGet(user.id);
+    setBusy(false);
+    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 관리자 PC 가 켜져 있을 때 10분 안에 만들어집니다." : errMsg(r));
+    setReport(r.html);
+  };
+  const request = async () => { const r = await remote().reportRequest(); flash(r.ok ? "요청했습니다. 관리자 PC 가 켜져 있으면 10분 안에 만들어집니다." : errMsg(r)); };
+  if (report !== null)
+    return (
+      <Shell back="내 결과" backTo={() => setReport(null)} toast={toast}>
+        <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => { const w = window.open("", "_blank"); if (w) { w.document.write(report); w.document.close(); } }}>새 창에서 열기(인쇄·PDF)</Btn></div>
+        <iframe title="분석 리포트" srcDoc={report} style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
+      </Shell>
+    );
   return (
     <Shell back="처음으로" backTo={onBack} toast={toast}>
-      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 결과</h2>
-      {items === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={items} />}
+      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 결과·리포트</h2>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
+        <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>
+        <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>
+        <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
+      </div>
+      {detail && detail.report && (
+        <Card style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
+          {detail.report.summary && detail.report.summary.headline && <div style={{ fontSize: 15, marginTop: 4 }}>{detail.report.summary.headline}</div>}
+          {detail.report.summary && Array.isArray(detail.report.summary.weak) && detail.report.summary.weak.length > 0 && <div style={{ fontSize: 14, marginTop: 6 }}>취약: {detail.report.summary.weak.join(" · ")}</div>}
+        </Card>
+      )}
+      {detail === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={detail.items} />}
     </Shell>
   );
 }
@@ -2343,7 +2373,7 @@ function ExamMaker() {
 
   if (screen === "admin") return <AdminScreen onBack={goHome} toast={toast} flash={flash} />;
   if (screen === "students") return <StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} />;
-  if (screen === "myresults") return <MyResultsScreen onBack={goHome} toast={toast} flash={flash} />;
+  if (screen === "myresults") return <MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} />;
 
   const overlays = (
     <>
