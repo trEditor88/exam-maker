@@ -117,12 +117,8 @@ const syncUrl = () => {
   try { return localStorage.getItem(LS_PREFIX + "sync") || SYNC_URL; } catch (e) { return SYNC_URL; }
 };
 async function apiGet(params) {
-  try {
-    const a = authGet();
-    const q = new URLSearchParams({ ...(a && a.token ? { token: a.token } : {}), ...params, t: Date.now() });
-    const r = await fetch(syncUrl() + "?" + q, { cache: "no-store" });
-    return await r.json();
-  } catch (e) { return { ok: false, error: "network" }; }
+  // 조회도 POST 로 보낸다: 토큰이 주소(브라우저 기록·로그)에 남지 않게
+  return apiPost(params);
 }
 async function apiPost(body) {
   try {
@@ -166,6 +162,7 @@ const serverRemote = {
   reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
   reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
+  usage: () => apiGet({ action: "usage" }),
 };
 const localRemote = {
   kind: "local",
@@ -218,6 +215,7 @@ const localRemote = {
   async reportGet() { return { ok: false, error: "no_report" }; },
   async reportRequest() { return { ok: false, error: "sh_local" }; },
   async workerKeySet() { return { ok: false, error: "sh_local" }; },
+  async usage() { return { ok: false, error: "sh_local" }; },
 };
 const remote = () => (syncUrl() ? serverRemote : localRemote);
 const ERR = {
@@ -1075,7 +1073,7 @@ function GenerateModal({ onClose, onAdd }) {
       {!result ? (
         <>
           <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
-            범위를 적으면 그에 맞는 문제를 만들어 드립니다. 만든 문제는 편집 화면에서 자유롭게 고칠 수 있습니다.
+            범위를 적으면 그에 맞는 문제를 만들어 드립니다. 만든 문제는 편집 화면에서 자유롭게 고칠 수 있습니다. 무료 AI(Gemini)를 쓰므로 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요.
           </p>
           <Field multiline rows={2} value={scope} onChange={setScope} placeholder="범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)" maxLength={500} autoFocus />
           <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
@@ -1425,7 +1423,7 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
       </div>
 
       {!run.partial && (
-        <Field value={name} onChange={(v) => setName(v)} placeholder="이름 (선택) — 출제자에게 결과가 전달됩니다" maxLength={20} style={{ marginBottom: 14, fontSize: 15 }} />
+        {!(authGet() && authGet().token) && <Field value={name} onChange={(v) => setName(v)} placeholder="이름 (선택) — 출제자에게 결과가 전달됩니다" maxLength={20} style={{ marginBottom: 14, fontSize: 15 }} />}
       )}
 
       <div style={{ display: "grid", gap: 12 }}>
@@ -1839,6 +1837,8 @@ function AdminScreen({ onBack, toast, flash }) {
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
   const [workerKey, setWorkerKey] = useState("");
+  const [usage, setUsage] = useState(null);
+  const loadUsage = async () => { const r = await remote().usage(); if (!r.ok) return flash(errMsg(r)); setUsage(r); };
   const teachers = (users || []).filter((u) => u.role === "teacher" || u.role === "admin");
 
   const load = async () => { const r = await remote().userList(); if (!r.ok) return flash(errMsg(r)); setUsers(r.users); };
@@ -1888,7 +1888,7 @@ function AdminScreen({ onBack, toast, flash }) {
   return (
     <Shell back="처음으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
-      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); }} items={[["users", "계정"], ["results", "전체 기록"], ["worker", "리포트 워커"]]} />
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); }} items={[["users", "계정"], ["results", "전체 기록"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
 
       {tab === "users" && (
         <>
@@ -1946,6 +1946,20 @@ function AdminScreen({ onBack, toast, flash }) {
             </Card>
           )}
         </div>
+      )}
+
+      {tab === "usage" && (
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>AI 문제 생성 사용량</div>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>Gemini 무료 등급이라 요금은 0원이지만, 하루 한도 관리를 위해 호출 수를 기록합니다.</p>
+          {usage === null ? <Btn kind="soft" onClick={loadUsage}>불러오기</Btn> : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead><tr>{["모델", "호출", "성공", "입력 토큰", "출력 토큰"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+              <tbody>{Object.entries(usage.byModel || {}).map(([m, v]) => <tr key={m}><td style={{ padding: "6px 8px" }}>{m}</td><td style={{ padding: "6px 8px" }}>{v.calls}</td><td style={{ padding: "6px 8px" }}>{v.ok}</td><td style={{ padding: "6px 8px" }}>{v.inputTokens}</td><td style={{ padding: "6px 8px" }}>{v.outputTokens}</td></tr>)}</tbody>
+            </table>
+          )}
+          {usage && <div style={{ fontSize: 13, color: C.sub, marginTop: 8 }}>기록 {usage.rows}건 · <TextBtn tone="sub" onClick={loadUsage} style={{ fontSize: 13 }}>새로고침</TextBtn></div>}
+        </Card>
       )}
 
       {tab === "worker" && (

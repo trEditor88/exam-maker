@@ -276,8 +276,10 @@ function generate(body) {
 }
 
 /* ── 읽기 (GET) ────────────────────────────── */
-function doGet(e) {
-  const p = (e && e.parameter) || {};
+const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'sh_list', 'sh_detail', 'sh_note'];
+function doGet(e) { return readAction((e && e.parameter) || {}); }
+// 조회 동작. 사이트는 토큰을 주소에 싣지 않도록 POST 로 보내고, 워커·구형 호출은 GET 그대로.
+function readAction(p) {
   const a = p.action;
   try {
     if (a === 'ping') return out({ ok: true, v: 2, gen: !!geminiKey(), setup: usersCount() === 0 });
@@ -299,7 +301,8 @@ function doGet(e) {
       const viewer = auth(p.token);
       const owner = String(quizSheet().getRange(row, 8).getValue() || '');
       const okKey = p.key && sha(p.key) === String(quizSheet().getRange(row, 2).getValue());
-      const okUser = viewer && (viewer.role === 'admin' || (owner && owner === viewer.id));
+      const okTeacher = viewer && viewer.role === 'teacher' && owner && (findUser(owner) || {}).teacherId === viewer.id;
+      const okUser = viewer && (viewer.role === 'admin' || (owner && owner === viewer.id) || okTeacher);
       if (!okKey && !okUser) return out({ ok: false, error: 'bad_key' });
       return out({ ok: true, items: resultsWithDetail(r => String(r[0]) === code, RESULTS_MAX_PER_CODE) });
     }
@@ -332,6 +335,7 @@ function doPost(e) {
   let body = {};
   try { body = JSON.parse(e.postData.contents); } catch (err) { return out({ ok: false, error: 'bad_json' }); }
   const a = body.action;
+  if (READ_ACTIONS.indexOf(a) >= 0) return readAction(body);
   // AI 생성은 오래 걸리므로 잠금 없이 처리 (시트에는 사용 기록만 추가)
   if (a === 'generate') {
     try { return out(generateGemini(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
@@ -443,11 +447,23 @@ function submit(body) {
   let detail = '';
   if (Array.isArray(en.detail)) { detail = JSON.stringify(en.detail.slice(0, 200).map(d => ({ q: String(d.q || '').slice(0, 40), m: Array.isArray(d.m) ? d.m.slice(0, 12) : [], ok: !!d.ok }))); if (detail.length > SH_CELL_MAX) detail = ''; }
   resSheet().appendRow([code, safeText(user ? user.name : en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now(), user ? user.id : '', detail]);
+  archiveOldResults();
   const cell = s.getRange(row, 7);
   cell.setValue((Number(cell.getValue()) || 0) + 1);
   return { ok: true };
 }
 
+// 보관 정책: results 가 3,000행을 넘으면 1년 지난 행을 results_archive 시트로 옮긴다(삭제하지 않음)
+function archiveOldResults() {
+  const s = resSheet(); const n = s.getLastRow();
+  if (n < 3000) return;
+  const cutoff = Date.now() - 365 * 86400000;
+  const rows = s.getRange(2, 1, n - 1, 8).getValues();
+  const arch = sheet('results_archive', ['code', 'name', 'score', 'total', 'sec', 'at', 'userId', 'detail']);
+  const move = [];
+  for (let i = rows.length - 1; i >= 0; i--) if ((Number(rows[i][5]) || 0) < cutoff) { move.push(rows[i]); s.deleteRow(i + 2); }
+  if (move.length) arch.getRange(arch.getLastRow() + 1, 1, move.length, 8).setValues(move);
+}
 function clearResults(body) {
   const code = cleanCode(body.code);
   const s = quizSheet();
@@ -481,8 +497,17 @@ const SH_CELL_MAX = 45000;
 // 최초 1회: Apps Script 편집기에서 이 함수를 실행해 드라이브 권한을 승인한다(웹 앱 배포 뒤에도 필요).
 function shAuthorize() { shFolder('setup'); shFilesSheet(); shWsSheet(); return 'ok'; }
 
-function shFilesSheet() { return sheet('sh_files', ['id', 'kh', 'worksheet', 'filename', 'driveId', 'at', 'fetched']); }
-function shWsSheet() { return sheet('sh_ws', ['kh', 'worksheet', 'status', 'summary', 'noteDriveId', 'confirm', 'questions', 'createdAt', 'updatedAt']); }
+function shFilesSheet() { return sheet('sh_files', ['id', 'kh', 'worksheet', 'filename', 'driveId', 'at', 'fetched', 'ownerId']); }
+function shWsSheet() { return sheet('sh_ws', ['kh', 'worksheet', 'status', 'summary', 'noteDriveId', 'confirm', 'questions', 'createdAt', 'updatedAt', 'ownerId']); }
+// 오답노트 열람 권한: 본인, 관리자, 담당 선생(학생의 것). 소유자가 비어 있는 옛 문제지는 관리자만.
+function shCanSee(u, owner) {
+  if (!u) return false;
+  if (u.role === 'admin') return true;
+  if (!owner) return false;
+  if (owner === u.id) return true;
+  return u.role === 'teacher' && (findUser(owner) || {}).teacherId === u.id;
+}
+function shOwnerOf(row) { return String(shWsSheet().getRange(row, 10).getValue() || ''); }
 function shKh(key) {
   const k = String(key || '').trim();
   if (k.length < 8 || k.length > 64) return null;
@@ -505,19 +530,19 @@ function shFindWsRow(kh, ws) {
   for (let i = 0; i < vals.length; i++) if (vals[i][0] === kh && vals[i][1] === ws) return i + 2;
   return 0;
 }
-function shEnsureWs(kh, ws, status) {
+function shEnsureWs(kh, ws, status, ownerId) {
   const s = shWsSheet();
   const row = shFindWsRow(kh, ws);
   const now = Date.now();
-  if (row) return row;
-  s.appendRow([kh, ws, status || 'uploaded', '', '', '', '', now, now]);
+  if (row) { if (ownerId && !shOwnerOf(row)) s.getRange(row, 10).setValue(ownerId); return row; }
+  s.appendRow([kh, ws, status || 'uploaded', '', '', '', '', now, now, ownerId || '']);
   return s.getLastRow();
 }
 function shParse(v, dflt) { try { return v ? JSON.parse(v) : dflt; } catch (e) { return dflt; } }
 
 // 사진 업로드: {key, worksheet, filename, data(base64), mime}
 function shUpload(body) {
-  if (!auth(body.token)) return { ok: false, error: 'bad_token' };
+  const user = auth(body.token); if (!user) return { ok: false, error: 'bad_token' };
   const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
   const ws = shWsName(body.worksheet); if (!ws) return { ok: false, error: 'bad_worksheet' };
   const data = String(body.data || '');
@@ -530,24 +555,27 @@ function shUpload(body) {
   const blob = Utilities.newBlob(Utilities.base64Decode(data), mime, name);
   const file = shFolder(kh).createFile(blob);
   const id = randomKey(10);
-  shFilesSheet().appendRow([id, kh, ws, name, file.getId(), Date.now(), '']);
-  shEnsureWs(kh, ws, 'uploaded');
+  const row0 = shFindWsRow(kh, ws);
+  if (row0 && !shCanSee(user, shOwnerOf(row0))) return { ok: false, error: 'forbidden' };   // 남의 문제지 이름에 덧붙이기 방지
+  shFilesSheet().appendRow([id, kh, ws, name, file.getId(), Date.now(), '', user.id]);
+  shEnsureWs(kh, ws, 'uploaded', user.id);
   return { ok: true, id: id, worksheet: ws };
 }
 
 // 사이트 목록: {key}
 function shList(p) {
-  if (!auth(p.token)) return { ok: false, error: 'bad_token' };
+  const user = auth(p.token); if (!user) return { ok: false, error: 'bad_token' };
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   const photos = {};
   const fs = shFilesSheet(); const fn = fs.getLastRow();
   if (fn >= 2) fs.getRange(2, 1, fn - 1, 7).getValues().forEach(r => { if (r[1] === kh) photos[r[2]] = (photos[r[2]] || 0) + 1; });
   const s = shWsSheet(); const n = s.getLastRow();
   const list = [];
-  if (n >= 2) s.getRange(2, 1, n - 1, 9).getValues().forEach(r => {
+  if (n >= 2) s.getRange(2, 1, n - 1, 10).getValues().forEach(r => {
     if (r[0] !== kh) return;
+    if (!shCanSee(user, String(r[9] || ''))) return;
     const confirm = shParse(r[5], []);
-    list.push({ name: r[1], status: r[2] || 'uploaded', summary: shParse(r[3], null), hasNote: !!r[4],
+    list.push({ name: r[1], status: r[2] || 'uploaded', summary: shParse(r[3], null), hasNote: !!r[4], owner: String(r[9] || ''),
       pending: confirm.filter(c => !c.answer).length, photos: photos[r[1]] || 0, updatedAt: r[8] || r[7] });
   });
   list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -556,19 +584,21 @@ function shList(p) {
 
 // 사이트 상세: {key, ws}
 function shDetail(p) {
-  if (!auth(p.token)) return { ok: false, error: 'bad_token' };
+  const user = auth(p.token); if (!user) return { ok: false, error: 'bad_token' };
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   const ws = shWsName(p.ws);
   const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
+  if (!shCanSee(user, shOwnerOf(row))) return { ok: false, error: 'forbidden' };
   const r = shWsSheet().getRange(row, 1, 1, 9).getValues()[0];
   return { ok: true, name: ws, status: r[2], summary: shParse(r[3], null), hasNote: !!r[4], confirm: shParse(r[5], []), questions: shParse(r[6], []), updatedAt: r[8] };
 }
 
 // 오답노트 HTML: {key, ws}
 function shNote(p) {
-  if (!auth(p.token)) return { ok: false, error: 'bad_token' };
+  const user = auth(p.token); if (!user) return { ok: false, error: 'bad_token' };
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   const row = shFindWsRow(kh, shWsName(p.ws)); if (!row) return { ok: false, error: 'not_found' };
+  if (!shCanSee(user, shOwnerOf(row))) return { ok: false, error: 'forbidden' };
   const id = shWsSheet().getRange(row, 5).getValue();
   if (!id) return { ok: false, error: 'no_note' };
   return { ok: true, html: DriveApp.getFileById(id).getBlob().getDataAsString('UTF-8') };
@@ -576,10 +606,11 @@ function shNote(p) {
 
 // 확인 질문 답 저장: {key, worksheet, answers:{id: text}}
 function shConfirm(body) {
-  if (!auth(body.token)) return { ok: false, error: 'bad_token' };
+  const user = auth(body.token); if (!user) return { ok: false, error: 'bad_token' };
   const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
   const ws = shWsName(body.worksheet);
   const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
+  if (!shCanSee(user, shOwnerOf(row))) return { ok: false, error: 'forbidden' };
   const s = shWsSheet();
   const items = shParse(s.getRange(row, 6).getValue(), []);
   const answers = body.answers || {};
@@ -815,6 +846,8 @@ function userDelete(body) {
   // 관리자 본인 삭제는 계정이 자기 하나뿐일 때만 허용(초기화: setup 이 다시 열림)
   if (t.id === u.id && usersCount() > 1) return { ok: false, error: 'self_delete' };
   usersSheet().deleteRow(t.row);
+  try { const rep = reportRow(t.id); if (rep) { if (rep.driveId) { try { DriveApp.getFileById(rep.driveId).setTrashed(true); } catch (e) {} } reportsSheet().deleteRow(rep.row); } } catch (e) {}
+  try { const ss2 = sessionsSheet(); const n2 = ss2.getLastRow(); if (n2 >= 2) { const rows = ss2.getRange(2, 1, n2 - 1, 2).getValues(); for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][1]) === t.id) ss2.deleteRow(i + 2); } } catch (e) {}
   if (t.id === u.id) { logout(body); return { ok: true, reset: true }; }
   // 이 선생에게 속한 학생은 소속 해제
   allUsers().forEach(x => { if (x.teacherId === t.id) usersSheet().getRange(x.row, 6).setValue(''); });
@@ -838,7 +871,7 @@ function examRows() {
 }
 function examList(p) {
   const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
-  const mine = examRows().filter(e => u.role === 'admin' && p.all === '1' ? true : e.ownerId === u.id);
+  const mine = examRows().filter(e => u.role === 'admin' && (p.all === '1' || p.all === true) ? true : e.ownerId === u.id);
   const exams = [];
   mine.forEach(e => { try { const x = JSON.parse(e.json); x.ownerId = e.ownerId; exams.push(x); } catch (err) {} });
   exams.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
