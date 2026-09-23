@@ -276,7 +276,7 @@ function generate(body) {
 }
 
 /* ── 읽기 (GET) ────────────────────────────── */
-const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'assignList', 'sh_list', 'sh_detail', 'sh_note'];
+const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'assignList', 'jobList', 'noteList', 'sh_list', 'sh_detail', 'sh_note'];
 function doGet(e) { return readAction((e && e.parameter) || {}); }
 // 조회 동작. 사이트는 토큰을 주소에 싣지 않도록 POST 로 보내고, 워커·구형 호출은 GET 그대로.
 function readAction(p) {
@@ -324,6 +324,8 @@ function readAction(p) {
     if (a === 'allResults') return out(allResults(p));
     if (a === 'reportGet') return out(reportGet(p));
     if (a === 'assignList') return out(assignList(p));
+    if (a === 'jobList') return out(jobList(p));
+    if (a === 'noteList') return out(noteList(p));
     if (a === 'reportPending') return out(reportPending(p));
 
     if (a === 'sh_list') return out(shList(p));
@@ -386,6 +388,11 @@ function doPost(e) {
     if (a === 'assignSet') return out(assignSet(body));
     if (a === 'assignRemove') return out(assignRemove(body));
     if (a === 'profileUpdate') return out(profileUpdate(body));
+    if (a === 'jobCreate') return out(jobCreate(body));
+    if (a === 'jobCancel') return out(jobCancel(body));
+    if (a === 'jobTake') return out(jobTake(body));
+    if (a === 'jobResult') return out(jobResult(body));
+    if (a === 'noteSeen') return out(noteSeen(body));
     if (a === 'resultDelete') return out(resultDelete(body));
     if (a === 'workerKeySet') return out(workerKeySet(body));
     if (a === 'resetTestUsers') return out(resetTestUsers(body));
@@ -706,7 +713,13 @@ function shResult(body) {
     if (noteId) { try { DriveApp.getFileById(noteId).setContent(String(body.note)); } catch (e) { noteId = shFolder(kh).createFile(blob).getId(); } }
     else noteId = shFolder(kh).createFile(blob).getId();
   }
+  const prevStatus = String(s.getRange(row, 3).getValue() || '');
   s.getRange(row, 3, 1, 7).setValues([[String(body.status || 'in_progress'), summary, noteId || '', JSON.stringify(merged).slice(0, SH_CELL_MAX), questions, s.getRange(row, 8).getValue() || Date.now(), Date.now()]]);
+  const st = String(body.status || ''); const owner = shOwnerOf(row);
+  if (owner && st !== prevStatus) {
+    if (st === 'done') noteAdd(owner, 'note', '오답노트가 완성되었습니다', ws + ' · 오답노트에서 확인하세요.', ws);
+    else if (st === 'needs_confirm') noteAdd(owner, 'note', '오답노트 확인 질문이 있습니다', ws + ' · 글씨가 애매한 부분에 답해 주세요.', ws);
+  }
   return { ok: true, worksheet: ws };
 }
 
@@ -1085,6 +1098,114 @@ function assignList(p) {
   return out;
 }
 
+/* ── 알림(notes): 워커가 끝낸 일을 사이트에 알린다. 사이트가 1분마다 noteList 로 읽는다 ── */
+function notesSheet() { return sheet('notes', ['id', 'userId', 'kind', 'title', 'body', 'ref', 'at', 'seen']); }
+function noteAdd(userId, kind, title, body, ref) {
+  notesSheet().appendRow([randomKey(10), userId, kind, safeText(title, 80), safeText(body, 300), String(ref || '').slice(0, 80), Date.now(), false]);
+}
+function noteRows() {
+  const s = notesSheet(); const n = s.getLastRow();
+  if (n < 2) return [];
+  return s.getRange(2, 1, n - 1, 8).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), userId: String(r[1]), kind: String(r[2]), title: String(r[3]), body: String(r[4]), ref: String(r[5] || ''), at: Number(r[6]) || 0, seen: r[7] === true || r[7] === 'TRUE' }));
+}
+function noteList(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const mine = noteRows().filter(x => x.userId === u.id).sort((a, b) => b.at - a.at).slice(0, 30);
+  return { ok: true, notes: mine.map(x => ({ id: x.id, kind: x.kind, title: x.title, body: x.body, ref: x.ref, at: x.at, seen: x.seen })), unseen: mine.filter(x => !x.seen).length };
+}
+// {ids:[...]} 또는 빈 배열이면 내 알림 전부
+function noteSeen(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+  const s = notesSheet();
+  noteRows().filter(x => x.userId === u.id && !x.seen && (!ids.length || ids.indexOf(x.id) >= 0)).forEach(x => s.getRange(x.row, 8).setValue(true));
+  // 오래된 알림 정리(90일)
+  noteRows().filter(x => x.userId === u.id && x.seen && Date.now() - x.at > 90 * 86400000).reverse().forEach(x => s.deleteRow(x.row));
+  return { ok: true };
+}
+
+/* ── AI 문제 생성(고급) 작업 큐(jobs): 사이트가 jobCreate 로 넣고, 워커가 jobTake → jobResult 로 처리해 exams 에 시험지를 만든다 ── */
+const JOB_MAX_QUEUED = 3;
+function jobsSheet() { return sheet('jobs', ['id', 'userId', 'type', 'status', 'params', 'result', 'createdAt', 'updatedAt', 'error']); }
+function jobRows() {
+  const s = jobsSheet(); const n = s.getLastRow();
+  if (n < 2) return [];
+  return s.getRange(2, 1, n - 1, 9).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), userId: String(r[1]), type: String(r[2]), status: String(r[3]), params: shParse(r[4], {}), result: shParse(r[5], null), createdAt: Number(r[6]) || 0, updatedAt: Number(r[7]) || 0, error: String(r[8] || '') }));
+}
+function jobPublic(j) {
+  const p = j.params || {};
+  return { id: j.id, type: j.type, status: j.status, createdAt: j.createdAt, updatedAt: j.updatedAt, error: j.error, result: j.result, params: { scope: p.scope, count: p.count, difficulty: p.difficulty, kind: p.kind, subject: p.subject, hasMaterial: !!p.material } };
+}
+function jobCreate(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const p = body.params && typeof body.params === 'object' ? body.params : {};
+  const scope = safeText(String(p.scope || '').trim(), 500); if (!scope) return { ok: false, error: 'bad_scope' };
+  const params = {
+    scope: scope, material: String(p.material || '').slice(0, 20000),
+    count: Math.min(GEN_MAX_COUNT, Math.max(1, Math.floor(Number(p.count) || 10))),
+    difficulty: ['하', '중', '상'].indexOf(p.difficulty) >= 0 ? p.difficulty : '중',
+    kind: ['single', 'multi', 'tf'].indexOf(p.kind) >= 0 ? p.kind : 'single',
+    subject: safeText(String(p.subject || ''), 20),
+  };
+  const mine = jobRows().filter(j => j.userId === u.id && (j.status === 'queued' || j.status === 'running'));
+  if (mine.length >= JOB_MAX_QUEUED) return { ok: false, error: 'job_limit' };
+  const id = randomKey(10);
+  const json = JSON.stringify(params); if (json.length > SH_CELL_MAX) return { ok: false, error: 'too_big' };
+  jobsSheet().appendRow([id, u.id, 'gen', 'queued', json, '', Date.now(), Date.now(), '']);
+  return { ok: true, job: jobPublic({ id: id, userId: u.id, type: 'gen', status: 'queued', params: params, result: null, createdAt: Date.now(), updatedAt: Date.now(), error: '' }) };
+}
+function jobList(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const mine = jobRows().filter(j => j.userId === u.id).sort((a, b) => b.createdAt - a.createdAt).slice(0, 20);
+  return { ok: true, jobs: mine.map(jobPublic) };
+}
+function jobCancel(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const j = jobRows().find(x => x.id === String(body.id || ''));
+  if (!j || (j.userId !== u.id && u.role !== 'admin')) return { ok: false, error: 'not_found' };
+  if (j.status !== 'queued') return { ok: false, error: 'job_started' };
+  jobsSheet().deleteRow(j.row);
+  return { ok: true };
+}
+// 워커: 대기 중(또는 30분 넘게 running 인) 작업을 가져가며 running 으로 표시
+function jobTake(body) {
+  const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const limit = Math.min(10, Math.max(1, Number(body.limit) || 3));
+  const s = jobsSheet(); const now = Date.now();
+  const rows = jobRows().filter(j => j.status === 'queued' || (j.status === 'running' && now - j.updatedAt > 30 * 60000)).sort((a, b) => a.createdAt - b.createdAt).slice(0, limit);
+  rows.forEach(j => { s.getRange(j.row, 4).setValue('running'); s.getRange(j.row, 8).setValue(now); });
+  return { ok: true, jobs: rows.map(j => { const st = findUser(j.userId); return { id: j.id, userId: j.userId, userName: st ? st.name : '', type: j.type, params: j.params, createdAt: j.createdAt }; }) };
+}
+// 워커 결과: {id, ok, quiz:{title, subject, questions:[{text, options, answers, explain, tags}]}} 또는 {id, ok:false, error}
+function jobResult(body) {
+  const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const j = jobRows().find(x => x.id === String(body.id || '')); if (!j) return { ok: false, error: 'not_found' };
+  const s = jobsSheet(); const now = Date.now();
+  if (!body.ok) {
+    s.getRange(j.row, 4, 1, 6).setValues([['error', j.params ? JSON.stringify(j.params) : '', '', j.createdAt, now, safeText(String(body.error || '실패'), 200)]]);
+    noteAdd(j.userId, 'gen', 'AI 문제 생성(고급)을 마치지 못했습니다', safeText(String(body.error || '다시 요청해 주세요.'), 200), '');
+    return { ok: true };
+  }
+  const q = body.quiz || {};
+  const qs = (Array.isArray(q.questions) ? q.questions : []).filter(x => x && x.text && Array.isArray(x.options) && x.options.length >= 2 && Array.isArray(x.answers) && x.answers.length).slice(0, GEN_MAX_COUNT);
+  if (!qs.length) return jobResult(Object.assign({}, body, { ok: false, error: '검증을 통과한 문항이 없습니다.' }));
+  const shared = qs[0].options.map(String);
+  const same = (a) => a.length === shared.length && a.every((v, i) => String(v) === shared[i]);
+  const examId = 'gen_' + randomKey(8);
+  const exam = {
+    id: examId, title: safeText(String(q.title || j.params.scope || 'AI 문제'), 80), desc: '', subject: safeText(String(q.subject || j.params.subject || ''), 20),
+    options: shared,
+    questions: qs.map((x, i) => ({ id: 'q' + (i + 1) + '_' + randomKey(4), text: String(x.text).slice(0, 2000), explain: String(x.explain || '').slice(0, 500), options: same(x.options.map(String)) ? null : x.options.map(String), answers: x.answers.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < x.options.length), tags: Array.isArray(x.tags) ? x.tags.map(String).slice(0, 8) : [] })),
+    shuffle: false, createdAt: now, updatedAt: now,
+  };
+  const json = JSON.stringify(exam); if (json.length > EXAM_MAX_CHARS) return jobResult(Object.assign({}, body, { ok: false, error: '결과가 너무 큽니다.' }));
+  examsSheet().appendRow([examId, j.userId, exam.title, json, '', now]);
+  const result = { examId: examId, title: exam.title, count: exam.questions.length };
+  s.getRange(j.row, 4, 1, 6).setValues([['done', JSON.stringify(j.params || {}), JSON.stringify(result), j.createdAt, now, '']]);
+  noteAdd(j.userId, 'gen', 'AI 문제 생성(고급)이 끝났습니다', exam.title + ' · 문제 ' + exam.questions.length + '개가 내 시험지에 추가되었습니다.', examId);
+  return { ok: true, examId: examId };
+}
+
 /* ── 분석 리포트 (워커가 생성, 사이트가 보여 줌) ── */
 function reportRow(userId) {
   const s = reportsSheet(); const n = s.getLastRow();
@@ -1151,6 +1272,7 @@ function reportPut(body) {
   }
   const vals = [sid, driveId, JSON.stringify(body.summary || {}).slice(0, SH_CELL_MAX), Number(body.basis) || 0, Date.now()];
   if (rep) s.getRange(rep.row, 1, 1, 5).setValues([vals]); else s.appendRow(vals);
+  if (html) noteAdd(sid, 'report', '분석 리포트가 준비되었습니다', String((body.summary || {}).headline || '내 결과·리포트에서 확인하세요.'), '');
   return { ok: true };
 }
 // 워커 연결 코드: 관리자가 사이트에서 등록한 값(스크립트 속성 WORKER_KH = sha(key))만 허용

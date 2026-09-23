@@ -75,6 +75,7 @@ html,body{background:${C.bg};}
 .em-nav-logo{display:none;}
 .em-nav-item.em-nav-more{display:none;}
 .em-nav-profile{display:none;}
+.em-nav-dot{position:absolute;top:-6px;right:-10px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:999px;background:${C.bad};color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1;}
 .em-hero:hover{filter:brightness(1.04);} .em-hero:focus-visible{outline:2px solid ${C.ink};outline-offset:2px;}
 body.em-has-nav .em-page{padding-bottom:104px !important;}
 .em-split-side{display:none;}
@@ -227,6 +228,11 @@ const serverRemote = {
   assignSet: (code, studentIds) => apiPost({ action: "assignSet", code, studentIds }),
   assignRemove: (code, studentId) => apiPost({ action: "assignRemove", code, studentId }),
   profileUpdate: (b) => apiPost({ action: "profileUpdate", ...b }),
+  jobCreate: (params) => apiPost({ action: "jobCreate", params }),
+  jobList: () => apiGet({ action: "jobList" }),
+  jobCancel: (id) => apiPost({ action: "jobCancel", id }),
+  noteList: () => apiGet({ action: "noteList" }),
+  noteSeen: (ids) => apiPost({ action: "noteSeen", ids }),
   usage: () => apiGet({ action: "usage" }),
 };
 const localRemote = {
@@ -299,6 +305,9 @@ const ERR = {
   sh_local: "서버가 연결되어 있어야 오답노트를 쓸 수 있습니다.",
   sh_forbidden: "오답노트 사용 권한이 없습니다. 관리자에게 문의하세요.",
   rep_forbidden: "이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.",
+  job_limit: "이미 요청한 작업이 3개 있습니다. 끝난 뒤 다시 요청해 주세요.",
+  job_started: "이미 처리가 시작된 작업이라 취소할 수 없습니다.",
+  bad_scope: "범위를 적어 주세요.",
   sh_not_ready: "오답노트 서버가 아직 준비되지 않았습니다. 관리자에게 문의하세요.",
   bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
   locked: "로그인 실패가 많아 15분 동안 잠겼습니다. 잠시 뒤 다시 시도해 주세요.",
@@ -980,7 +989,7 @@ const NAV_ICON = {
 function NavIcon({ name }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{NAV_ICON[name]}</svg>;
 }
-function NavBar({ screen, role, go, onAccount, user }) {
+function NavBar({ screen, role, go, onAccount, user, badge }) {
   const items = [
     { k: "home", t: "홈", i: "home" },
     { k: "code", t: "풀기", i: "play" },
@@ -997,7 +1006,11 @@ function NavBar({ screen, role, go, onAccount, user }) {
       {items.map((it) => (
         <button key={it.k} className={"em-nav-item" + (it.more ? " em-nav-more" : "") + (it.acct ? " em-nav-acct" : "")} aria-current={screen === it.k ? "page" : undefined}
           onClick={() => (it.k === "account" ? onAccount() : go(it.k))}>
-          <NavIcon name={it.i} /><span>{it.t}</span>
+          <span style={{ position: "relative", display: "inline-flex" }}>
+            <NavIcon name={it.i} />
+            {it.k === "home" && badge > 0 && <span className="em-nav-dot" aria-label={`새 알림 ${badge}개`}>{badge > 9 ? "9+" : badge}</span>}
+          </span>
+          <span>{it.t}</span>
         </button>
       ))}
       {user && (
@@ -1134,6 +1147,40 @@ function AssignModal({ exam, onClose, flash }) {
   );
 }
 
+/* ── 홈: 알림(워커가 끝낸 일) ───────────────────── */
+const NOTE_ICON = { gen: "ai", note: "book", report: "book" };
+function NoteList({ notes, onOpen, onSeenAll }) {
+  const [showAll, setShowAll] = useState(false);
+  const unseen = notes.filter((n) => !n.seen);
+  const rows = showAll ? notes.slice(0, 10) : unseen;
+  if (!rows.length && !notes.length) return null;
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: C.inkMid }}>알림{unseen.length ? ` ${unseen.length}` : ""}</h3>
+        <div style={{ display: "flex", gap: 2 }}>
+          {unseen.length > 0 && <TextBtn tone="sub" onClick={onSeenAll} style={{ fontSize: 13 }}>모두 읽음</TextBtn>}
+          {notes.length > unseen.length && <TextBtn tone="sub" onClick={() => setShowAll((v) => !v)} style={{ fontSize: 13 }}>{showAll ? "새 알림만" : "지난 알림"}</TextBtn>}
+        </div>
+      </div>
+      {rows.length === 0 && <p style={{ color: C.sub, fontSize: 14, margin: 0 }}>새 알림이 없습니다.</p>}
+      <div style={{ display: "grid", gap: 8 }}>
+        {rows.map((n) => (
+          <button key={n.id} className="em-btn em-row" onClick={() => onOpen(n)}
+            style={{ display: "flex", alignItems: "center", gap: 12, textAlign: "left", background: n.seen ? C.card : C.accentSoft, border: `1px solid ${n.seen ? C.line : C.accent}`, borderRadius: 14, padding: "11px 14px", cursor: "pointer", fontFamily: FONT }}>
+            <SubjThumb kind={NOTE_ICON[n.kind] || "book"} size={40} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: C.ink }}>{n.title}</span>
+              <span style={{ display: "block", fontSize: 13, color: C.sub, marginTop: 2, lineHeight: 1.45 }}>{n.body} <span style={{ opacity: .8 }}>· {fmtDateTime(n.at)}</span></span>
+            </span>
+            {!n.seen && <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, background: C.accent, flex: "0 0 8px" }} />}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ── 홈: 풀어야 할 시험(배정) ─────────────────── */
 function AssignList({ d, onOpen }) {
   const [showDone, setShowDone] = useState(false);
@@ -1174,7 +1221,7 @@ function AssignList({ d, onOpen }) {
 }
 
 /* ── 화면: 홈 ────────────────────────────────── */
-function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount }) {
+function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount, notes, onOpenNote, onSeenAll }) {
   const role = (user && user.role) || "admin";
   const [d] = useHomeData(user, mode);
   const items = [];
@@ -1219,6 +1266,7 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
           <p style={{ fontSize: 16.5, lineHeight: 1.6, color: C.sub, margin: "0 0 6px" }}>문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.</p>
           <div style={{ height: 1, background: C.line, margin: "22px 0 20px" }} />
           {server && <HomeHero d={d} user={user} onOpen={onOpenRecent} onAssign={scrollAssign} onStudy={onStudy} onCode={onCode} />}
+          {server && <NoteList notes={notes || []} onOpen={onOpenNote} onSeenAll={onSeenAll} />}
           {server && <HomeStats d={d} onMyResults={onMyResults} onStudy={onStudy} onAssign={scrollAssign} />}
           {server && <div className="em-only-m">{assignEl}</div>}
           <div style={{ display: "grid", gap: 12 }}>
@@ -1484,8 +1532,10 @@ function Seg({ value, onChange, items }) {
 }
 
 /* ── AI 문제 생성 모달 ───────────────────────── */
-function GenerateModal({ onClose, onAdd, initScope }) {
+function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue }) {
   const lsGet = (k) => { try { return localStorage.getItem(LS_PREFIX + k) || ""; } catch (e) { return ""; } };
+  const server = remote().kind === "server";
+  const [mode, setMode] = useState(genAvail ? "fast" : "pro");   // fast = Gemini 즉시, pro = Claude 워커(고급)
   const [scope, setScope] = useState(initScope || "");
   const [material, setMaterial] = useState("");
   const [count, setCount] = useState(10);
@@ -1501,6 +1551,13 @@ function GenerateModal({ onClose, onAdd, initScope }) {
     if (!scope.trim() || busy) return;
     setBusy(true);
     setErr("");
+    if (mode === "pro") {
+      const rq = await remote().jobCreate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, subject: subject || "" });
+      setBusy(false);
+      if (!rq.ok) { setErr(errMsg(rq)); return; }
+      onQueue && onQueue(rq.job);
+      return;
+    }
     const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, pw });
     setBusy(false);
     if (!r.ok) {
@@ -1523,8 +1580,14 @@ function GenerateModal({ onClose, onAdd, initScope }) {
     <Modal title="AI로 문제 만들기" onClose={onClose} wide>
       {!result ? (
         <>
-          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
-            범위를 적으면 그에 맞는 문제를 만들어 드립니다. 만든 문제는 편집 화면에서 자유롭게 고칠 수 있습니다. 무료 AI(Gemini)를 쓰므로 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요.
+          {label("방식")}
+          <Seg value={mode} onChange={setMode} items={[["fast", "기본 (바로 만들기)"], ["pro", "고급 (Claude · 10분 안에)"]]} />
+          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: "8px 0 12px" }}>
+            {mode === "pro"
+              ? "관리자 PC의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(PC가 켜져 있을 때 보통 10분 안). 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
+              : genAvail
+                ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
+                : "기본 방식은 지금 쓸 수 없습니다(서버에 Gemini 설정 없음). 고급 방식을 골라 주세요."}
           </p>
           <Field multiline rows={2} value={scope} onChange={setScope} placeholder="범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)" maxLength={500} autoFocus />
           <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
@@ -1537,7 +1600,7 @@ function GenerateModal({ onClose, onAdd, initScope }) {
 
           {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
-            <Btn onClick={run} disabled={busy || !scope.trim()}>{busy ? "문제를 만드는 중… (최대 1분)" : "문제 만들기"}</Btn>
+            <Btn onClick={run} disabled={busy || !scope.trim() || (mode === "fast" && !genAvail) || (mode === "pro" && !server)}>{busy ? (mode === "pro" ? "요청하는 중…" : "문제를 만드는 중… (최대 1분)") : mode === "pro" ? "Claude에게 요청하기" : "문제 만들기"}</Btn>
             <Btn kind="ghost" onClick={onClose}>닫기</Btn>
           </div>
         </>
@@ -1680,7 +1743,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           {dirty && <Badge tone="warn">저장 안 됨</Badge>}
         </div>
         <div style={{ display: "flex", gap: 2 }}>
-          {genAvail && <TextBtn onClick={() => setGenOpen(true)}>AI로 문제 만들기</TextBtn>}
+          {(genAvail || remote().kind === "server") && <TextBtn onClick={() => setGenOpen(true)}>AI로 문제 만들기</TextBtn>}
           {draft.code && <TextBtn onClick={() => setResultsOpen(true)}>응시 기록</TextBtn>}
           <TextBtn onClick={onExport}>내보내기</TextBtn>
         </div>
@@ -1829,7 +1892,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
       )}
 
       {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
-      {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} />}
+      {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} genAvail={genAvail} subject={draft.subject} onQueue={() => { setGenOpen(false); flash("Claude에게 요청했습니다. 완료되면 알림이 뜨고 내 시험지에 새 시험지로 추가됩니다."); }} />}
     </Shell>
   );
 }
@@ -2951,6 +3014,45 @@ function ExamMaker() {
     setScreen("home");
   };
 
+  /* ── 알림: 워커(Claude)가 끝낸 일을 1분마다 확인해 토스트·배지·홈 패널로 보여 준다 */
+  const [notes, setNotes] = useState([]);
+  const toastedRef = useRef(new Set());
+  const pollNotes = async () => {
+    if (remote().kind !== "server" || !user) return;
+    const r = await remote().noteList();
+    if (!r.ok) return;
+    setNotes(r.notes || []);
+    const fresh = (r.notes || []).filter((n) => !n.seen && !toastedRef.current.has(n.id) && Date.now() - n.at < 3 * 86400000);
+    if (fresh.length) {
+      fresh.forEach((n) => toastedRef.current.add(n.id));
+      flash(fresh.length === 1 ? `🔔 ${fresh[0].title}` : `🔔 새 알림 ${fresh.length}개 — 홈에서 확인하세요`);
+      if (fresh.some((n) => n.kind === "gen")) loadServerExams();
+    }
+  };
+  useEffect(() => {
+    if (remote().kind !== "server" || !user) { setNotes([]); return; }
+    pollNotes();
+    const id = setInterval(() => { if (document.visibilityState === "visible") pollNotes(); }, 60000);
+    const onVis = () => { if (document.visibilityState === "visible") pollNotes(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, [user && user.id]);
+  const unseen = notes.filter((n) => !n.seen).length;
+  const markSeen = async (ids) => {
+    setNotes((ns) => ns.map((n) => (ids === "all" || ids.includes(n.id) ? { ...n, seen: true } : n)));
+    await remote().noteSeen(ids === "all" ? [] : ids);
+  };
+  const openNote = async (n) => {
+    markSeen([n.id]);
+    if (n.kind === "gen" && n.ref) {
+      if (!examsRef.current.find((x) => x.id === n.ref)) await loadServerExams();
+      if (examsRef.current.find((x) => x.id === n.ref)) return openExam(n.ref);
+      return setScreen("list");
+    }
+    if (n.kind === "note") return setScreen("study");
+    if (n.kind === "report") return setScreen("myresults");
+  };
+
   /* ── 내비게이션(하단 탭/사이드바): 로그인 뒤, 응시·편집 중이 아닐 때만 */
   const navOn = ready && !!user && !["take", "result", "editor"].includes(screen);
   useEffect(() => { document.body.classList.toggle("em-has-nav", navOn); }, [navOn]);
@@ -2962,7 +3064,7 @@ function ExamMaker() {
   const chrome = (
     <>
       {acctOpen && user && <AccountModal user={user} onClose={() => setAcctOpen(false)} onLogout={logoutNow} flash={flash} onUser={(u) => { setUser(u); const a = authGet(); if (a) authSet({ token: a.token, user: u }); }} />}
-      {navOn && <NavBar screen={screen} role={(user && user.role) || "admin"} go={navGo} onAccount={() => setAcctOpen(true)} user={user} />}
+      {navOn && <NavBar screen={screen} role={(user && user.role) || "admin"} go={navGo} onAccount={() => setAcctOpen(true)} user={user} badge={unseen} />}
     </>
   );
 
@@ -2997,6 +3099,9 @@ function ExamMaker() {
       <HomeScreen
         exams={exams}
         recent={recent}
+        notes={notes}
+        onOpenNote={openNote}
+        onSeenAll={() => markSeen("all")}
         mode={remote().kind}
         toast={toast}
         onSettings={() => setSettingsOpen(true)}
