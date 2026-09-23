@@ -6,7 +6,8 @@
 <title>시험지</title>
 <meta name="description" content="문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
-<style>html,body{margin:0;background:#EDF3FA}#root:empty::after{content:"불러오는 중…";display:flex;justify-content:center;padding:80px 0;color:#5C7092;font:16px 'Pretendard','Malgun Gothic',sans-serif}</style>
+<style>html,body{margin:0;background:#FFFFFF}html[data-theme=dark],html[data-theme=dark] body{background:#0B0B0D}#root:empty::after{content:"불러오는 중…";display:flex;justify-content:center;padding:80px 0;color:#6E6E73;font:16px 'Pretendard','Malgun Gothic',sans-serif}</style>
+<script>try{var t=localStorage.getItem("exam-maker:theme");var d=t==="dark"||(!t&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.setAttribute("data-theme",d?"dark":"light")}catch(e){}</script>
 <script>
   // Google Apps Script 웹 앱 URL. Code.gs 를 배포한 뒤 여기에 넣으세요.
   window.EXAM_SYNC_URL = "https://script.google.com/macros/s/AKfycbzgSHp0EpEAKbLQ5nhiY-dwQTeA2WWBeHHf_FWxJ547CGmyA0TKfXcDpjj_JOMbd7ypqQ/exec";
@@ -17,6 +18,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
-<script type="text/babel" data-presets="react" src="app.jsx?v=16"></script>
+<script type="text/babel" data-presets="react" src="app.jsx?v=17"></script>
 </body>
 </html>

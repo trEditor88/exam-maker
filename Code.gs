@@ -276,7 +276,7 @@ function generate(body) {
 }
 
 /* ── 읽기 (GET) ────────────────────────────── */
-const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'sh_list', 'sh_detail', 'sh_note'];
+const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'assignList', 'sh_list', 'sh_detail', 'sh_note'];
 function doGet(e) { return readAction((e && e.parameter) || {}); }
 // 조회 동작. 사이트는 토큰을 주소에 싣지 않도록 POST 로 보내고, 워커·구형 호출은 GET 그대로.
 function readAction(p) {
@@ -291,7 +291,14 @@ function readAction(p) {
       const json = quizSheet().getRange(row, 4).getValue();
       let quiz;
       try { quiz = JSON.parse(json); } catch (err) { return out({ ok: false, error: 'corrupt' }); }
-      return out({ ok: true, code: code, quiz: quiz });
+      const ownerId = String(quizSheet().getRange(row, 8).getValue() || '');
+      const viewer = auth(p.token);
+      const isOwner = !!viewer && (viewer.role === 'admin' || (ownerId && ownerId === viewer.id));
+      const now = Date.now();
+      if (!isOwner && Number(quiz.openAt) && now < Number(quiz.openAt)) return out({ ok: false, error: 'not_open', openAt: Number(quiz.openAt) });
+      if (!isOwner && Number(quiz.closeAt) && now > Number(quiz.closeAt)) return out({ ok: false, error: 'closed', closeAt: Number(quiz.closeAt) });
+      const ow = ownerId ? findUser(ownerId) : null;
+      return out({ ok: true, code: code, quiz: quiz, owner: ow ? ow.name : '', preview: isOwner && !!(Number(quiz.openAt) && now < Number(quiz.openAt) || Number(quiz.closeAt) && now > Number(quiz.closeAt)) });
     }
 
     if (a === 'results') {
@@ -316,6 +323,7 @@ function readAction(p) {
     if (a === 'studentResults') return out(studentResults(p));
     if (a === 'allResults') return out(allResults(p));
     if (a === 'reportGet') return out(reportGet(p));
+    if (a === 'assignList') return out(assignList(p));
     if (a === 'reportPending') return out(reportPending(p));
 
     if (a === 'sh_list') return out(shList(p));
@@ -375,6 +383,9 @@ function doPost(e) {
     if (a === 'userDelete') return out(userDelete(body));
     if (a === 'examSave') return out(examSave(body));
     if (a === 'examDelete') return out(examDelete(body));
+    if (a === 'assignSet') return out(assignSet(body));
+    if (a === 'assignRemove') return out(assignRemove(body));
+    if (a === 'profileUpdate') return out(profileUpdate(body));
     if (a === 'resultDelete') return out(resultDelete(body));
     if (a === 'workerKeySet') return out(workerKeySet(body));
     if (a === 'resetTestUsers') return out(resetTestUsers(body));
@@ -430,6 +441,7 @@ function remove(body) {
   if (!okKey && !okUser) return { ok: false, error: 'bad_key' };
   s.deleteRow(row);
   deleteResultsFor(code);
+  deleteAssignFor(code);
   return { ok: true };
 }
 
@@ -444,6 +456,11 @@ function submit(body) {
   if (score > total) return { ok: false, error: 'bad_entry' };
   const user = auth(body.token);
   if (!user) return { ok: false, error: 'bad_token' };   // 결과 제출은 로그인 계정만(이름 위조·익명 기록 방지)
+  try {
+    const qz = JSON.parse(s.getRange(row, 4).getValue());
+    const owner = String(s.getRange(row, 8).getValue() || '');
+    if (Number(qz.closeAt) && Date.now() > Number(qz.closeAt) + 120000 && user.role !== 'admin' && owner !== user.id) return { ok: false, error: 'closed' };
+  } catch (err) {}
   let detail = '';
   if (Array.isArray(en.detail)) { detail = JSON.stringify(en.detail.slice(0, 200).map(d => ({ q: String(d.q || '').slice(0, 40), m: Array.isArray(d.m) ? d.m.slice(0, 12) : [], ok: !!d.ok }))); if (detail.length > SH_CELL_MAX) detail = ''; }
   resSheet().appendRow([code, safeText(user ? user.name : en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now(), user ? user.id : '', detail]);
@@ -698,7 +715,7 @@ const SESSION_DAYS = 60;
 const EXAM_MAX_CHARS = 45000;
 const ID_RE = /^[\p{L}\p{N}_.-]{2,30}$/u;   // 한글·영문·숫자·_ . - (2~30자)
 
-function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active']); }
+function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active', 'subjects']); }
 function sessionsSheet() { return sheet('sessions', ['token', 'userId', 'createdAt', 'lastAt']); }
 function examsSheet() { return sheet('exams', ['id', 'ownerId', 'title', 'json', 'code', 'updatedAt']); }
 function reportsSheet() { return sheet('reports', ['userId', 'driveId', 'summary', 'basis', 'updatedAt']); }
@@ -721,10 +738,18 @@ function usersCount() { return Math.max(0, usersSheet().getLastRow() - 1); }
 function allUsers() {
   const s = usersSheet(); const n = s.getLastRow();
   if (n < 2) return [];
-  return s.getRange(2, 1, n - 1, 8).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0 }));
+  return s.getRange(2, 1, n - 1, 9).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0, subjects: String(r[8] || '') }));
 }
+// 수강 과목: 배열 또는 쉼표 문자열 → 최대 10개, 각 20자
+function cleanSubjects(v) {
+  const arr = Array.isArray(v) ? v : String(v || '').split(',');
+  const seen = {}; const out = [];
+  arr.forEach(x => { const t = safeText(String(x || '').trim(), 20); if (t && !seen[t] && out.length < 10) { seen[t] = 1; out.push(t); } });
+  return out.join(',');
+}
+function subjectsOf(u) { return u.subjects ? u.subjects.split(',').filter(Boolean) : []; }
 function findUser(id) { id = cleanId(id); return id ? allUsers().find(u => u.id === id) || null : null; }
-function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt }; }
+function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt, subjects: subjectsOf(u) }; }
 
 function auth(token) {
   token = String(token || '').trim();
@@ -811,7 +836,7 @@ function userCreate(body) {
   const teacherId = role === 'student' ? cleanId(body.teacherId) : '';
   if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
   const salt = randomKey(16);
-  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true]);
+  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true, cleanSubjects(body.subjects)]);
   return { ok: true, user: pubUser(findUser(id)) };
 }
 function userUpdate(body) {
@@ -838,7 +863,14 @@ function userUpdate(body) {
     if (t.id === u.id && !body.active) return { ok: false, error: 'self_disable' };
     s.getRange(t.row, 8).setValue(!!body.active);
   }
+  if (body.subjects !== undefined) s.getRange(t.row, 9).setValue(cleanSubjects(body.subjects));
   return { ok: true, user: pubUser(findUser(t.id)) };
+}
+// 본인 프로필(수강 과목)
+function profileUpdate(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  if (body.subjects !== undefined) usersSheet().getRange(u.row, 9).setValue(cleanSubjects(body.subjects));
+  return { ok: true, user: pubUser(findUser(u.id)) };
 }
 function userDelete(body) {
   const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
@@ -896,7 +928,7 @@ function examDelete(body) {
   if (!cur) return { ok: true, gone: true };
   if (cur.ownerId !== u.id && u.role !== 'admin') return { ok: false, error: 'forbidden' };
   examsSheet().deleteRow(cur.row);
-  if (cur.code) { const row = findQuizRow(cur.code); if (row) { quizSheet().deleteRow(row); deleteResultsFor(cur.code); } }
+  if (cur.code) { const row = findQuizRow(cur.code); if (row) { quizSheet().deleteRow(row); deleteResultsFor(cur.code); deleteAssignFor(cur.code); } }
   return { ok: true };
 }
 
@@ -931,9 +963,20 @@ function studentResults(p) {
   if (!canSeeStudent(u, sid)) return { ok: false, error: 'forbidden' };
   const st = findUser(sid); if (!st) return { ok: false, error: 'not_found' };
   const items = resultsWithDetail(r => String(r[6] || '') === sid, 200);
-  const titles = {}; items.forEach(it => { if (!(it.code in titles)) titles[it.code] = quizTitle(it.code); it.title = titles[it.code]; });
+  const quizzes = {};   // code → { title, subject, tags: { 문항id: [태그] } }
+  items.forEach(it => {
+    if (!(it.code in quizzes)) {
+      let info = { title: '', subject: '', tags: {} };
+      const row = findQuizRow(it.code);
+      if (row) { try { const q = JSON.parse(quizSheet().getRange(row, 4).getValue()); info.title = String(q.title || ''); info.subject = String(q.subject || ''); (q.questions || []).forEach(x => { if (Array.isArray(x.tags) && x.tags.length) info.tags[x.id] = x.tags.map(String).slice(0, 8); }); } catch (e) {} }
+      quizzes[it.code] = info;
+    }
+    it.title = quizzes[it.code].title;
+  });
   const rep = reportRow(sid);
-  return { ok: true, student: pubUser(st), items: items, report: rep ? { summary: rep.summary, updatedAt: rep.updatedAt, basis: rep.basis } : null };
+  const doneCodes = {}; items.forEach(it => { doneCodes[it.code] = 1; });
+  const mine = assignRows().filter(a => a.studentId === sid);
+  return { ok: true, student: pubUser(st), items: items, quizzes: quizzes, assign: { total: mine.length, done: mine.filter(a => doneCodes[a.code]).length }, report: rep ? { summary: rep.summary, updatedAt: rep.updatedAt, basis: rep.basis } : null };
 }
 // 관리자: 전체 기록(최근 300)
 function allResults(p) {
@@ -949,6 +992,87 @@ function resultDelete(body) {
   if (row < 2 || row > s.getLastRow()) return { ok: false, error: 'not_found' };
   s.deleteRow(row);
   return { ok: true };
+}
+
+/* ── 배정: 출제자(또는 관리자)가 공유 코드를 학생에게 배정. 학생 홈 "풀어야 할 시험"·완료율의 근거 ── */
+function assignSheet() { return sheet('assignments', ['id', 'code', 'studentId', 'byId', 'at']); }
+function assignRows() {
+  const s = assignSheet(); const n = s.getLastRow();
+  if (n < 2) return [];
+  return s.getRange(2, 1, n - 1, 5).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), code: String(r[1]), studentId: String(r[2]), byId: String(r[3] || ''), at: Number(r[4]) || 0 }));
+}
+function deleteAssignFor(code) {
+  const s = assignSheet();
+  assignRows().filter(a => a.code === code).reverse().forEach(a => s.deleteRow(a.row));
+}
+function quizInfo(code, cache) {
+  if (cache && code in cache) return cache[code];
+  let info = null;
+  const row = findQuizRow(code);
+  if (row) {
+    try {
+      const q = JSON.parse(quizSheet().getRange(row, 4).getValue());
+      const ownerId = String(quizSheet().getRange(row, 8).getValue() || '');
+      const ow = ownerId ? findUser(ownerId) : null;
+      info = { title: String(q.title || ''), subject: String(q.subject || ''), openAt: Number(q.openAt) || 0, closeAt: Number(q.closeAt) || 0, timeLimit: Number(q.timeLimit) || 0, questions: (q.questions || []).length, owner: ow ? ow.name : '', ownerId: ownerId };
+    } catch (e) {}
+  }
+  if (cache) cache[code] = info;
+  return info;
+}
+function canAssign(u, code) {
+  if (!u) return false;
+  if (u.role === 'admin') return true;
+  const row = findQuizRow(code); if (!row) return false;
+  return String(quizSheet().getRange(row, 8).getValue() || '') === u.id;
+}
+// {code, studentIds:[...]} → 아직 없는 학생만 추가
+function assignSet(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const code = cleanCode(body.code);
+  if (!findQuizRow(code)) return { ok: false, error: 'not_found' };
+  if (!canAssign(u, code)) return { ok: false, error: 'forbidden' };
+  const ids = (Array.isArray(body.studentIds) ? body.studentIds : []).map(cleanId).filter(Boolean).slice(0, 200);
+  const have = {}; assignRows().filter(a => a.code === code).forEach(a => { have[a.studentId] = 1; });
+  const s = assignSheet(); let added = 0;
+  ids.forEach(sid => {
+    if (have[sid]) return;
+    const st = findUser(sid); if (!st || !st.active) return;
+    if (!canSeeStudent(u, sid) && u.role !== 'admin') return;
+    s.appendRow([randomKey(10), code, sid, u.id, Date.now()]); have[sid] = 1; added++;
+  });
+  return { ok: true, added: added };
+}
+function assignRemove(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const code = cleanCode(body.code); const sid = cleanId(body.studentId);
+  if (!canAssign(u, code)) return { ok: false, error: 'forbidden' };
+  const s = assignSheet();
+  assignRows().filter(a => a.code === code && a.studentId === sid).reverse().forEach(a => s.deleteRow(a.row));
+  return { ok: true };
+}
+// 내게 배정된 시험(mine) + (code 를 주면) 그 코드의 배정 현황(forCode)
+function assignList(p) {
+  const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
+  const rows = assignRows();
+  const cache = {};
+  const myRes = {};   // code → 최근 기록
+  resultsWithDetail(r => String(r[6] || '') === u.id, 300).forEach(it => { if (!(it.code in myRes)) myRes[it.code] = it; });
+  const mine = [];
+  rows.filter(a => a.studentId === u.id).forEach(a => {
+    const q = quizInfo(a.code, cache); if (!q) return;
+    const r = myRes[a.code] || null;
+    mine.push({ id: a.id, code: a.code, title: q.title, subject: q.subject, owner: q.owner, openAt: q.openAt, closeAt: q.closeAt, timeLimit: q.timeLimit, questions: q.questions, at: a.at, done: !!r, score: r ? r.score : null, total: r ? r.total : null, doneAt: r ? r.at : null });
+  });
+  mine.sort((a, b) => (a.done - b.done) || ((a.closeAt || 9e15) - (b.closeAt || 9e15)) || (b.at - a.at));
+  const out = { ok: true, mine: mine };
+  const code = cleanCode(p.code);
+  if (code && canAssign(u, code)) {
+    const done = {};
+    resultsWithDetail(r => String(r[0]) === code, RESULTS_MAX_PER_CODE).forEach(it => { if (it.userId && !(it.userId in done)) done[it.userId] = it; });
+    out.forCode = rows.filter(a => a.code === code).map(a => { const st = findUser(a.studentId); const r = done[a.studentId]; return { studentId: a.studentId, name: st ? st.name : a.studentId, at: a.at, done: !!r, score: r ? r.score : null, total: r ? r.total : null }; });
+  }
+  return out;
 }
 
 /* ── 분석 리포트 (워커가 생성, 사이트가 보여 줌) ── */
