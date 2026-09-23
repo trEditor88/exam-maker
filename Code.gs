@@ -722,7 +722,7 @@ const SESSION_DAYS = 60;
 const EXAM_MAX_CHARS = 45000;
 const ID_RE = /^[\p{L}\p{N}_.-]{2,30}$/u;   // 한글·영문·숫자·_ . - (2~30자)
 
-function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active', 'subjects', 'shOn']); }
+function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active', 'subjects', 'shOn', 'repOn']); }
 function sessionsSheet() { return sheet('sessions', ['token', 'userId', 'createdAt', 'lastAt']); }
 function examsSheet() { return sheet('exams', ['id', 'ownerId', 'title', 'json', 'code', 'updatedAt']); }
 function reportsSheet() { return sheet('reports', ['userId', 'driveId', 'summary', 'basis', 'updatedAt']); }
@@ -745,7 +745,7 @@ function usersCount() { return Math.max(0, usersSheet().getLastRow() - 1); }
 function allUsers() {
   const s = usersSheet(); const n = s.getLastRow();
   if (n < 2) return [];
-  return s.getRange(2, 1, n - 1, 10).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0, subjects: String(r[8] || ''), shOn: r[9] === true || r[9] === 'TRUE' || r[9] === 1 }));
+  return s.getRange(2, 1, n - 1, 11).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0, subjects: String(r[8] || ''), shOn: r[9] === true || r[9] === 'TRUE' || r[9] === 1, repOn: r[10] === true || r[10] === 'TRUE' || r[10] === 1 }));
 }
 // 수강 과목: 배열 또는 쉼표 문자열 → 최대 10개, 각 20자
 function cleanSubjects(v) {
@@ -756,7 +756,8 @@ function cleanSubjects(v) {
 }
 function subjectsOf(u) { return u.subjects ? u.subjects.split(',').filter(Boolean) : []; }
 function findUser(id) { id = cleanId(id); return id ? allUsers().find(u => u.id === id) || null : null; }
-function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt, subjects: subjectsOf(u), shOn: u.role === 'admin' || !!u.shOn }; }
+function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt, subjects: subjectsOf(u), shOn: u.role === 'admin' || !!u.shOn, repOn: u.role === 'admin' || !!u.repOn }; }
+function repAllowed(u) { return !!u && (u.role === 'admin' || !!u.repOn); }
 
 function auth(token) {
   token = String(token || '').trim();
@@ -843,7 +844,7 @@ function userCreate(body) {
   const teacherId = role === 'student' ? cleanId(body.teacherId) : '';
   if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
   const salt = randomKey(16);
-  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true, cleanSubjects(body.subjects), !!body.shOn]);
+  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true, cleanSubjects(body.subjects), !!body.shOn, !!body.repOn]);
   return { ok: true, user: pubUser(findUser(id)) };
 }
 function userUpdate(body) {
@@ -872,6 +873,7 @@ function userUpdate(body) {
   }
   if (body.subjects !== undefined) s.getRange(t.row, 9).setValue(cleanSubjects(body.subjects));
   if (body.shOn !== undefined) s.getRange(t.row, 10).setValue(!!body.shOn);
+  if (body.repOn !== undefined) s.getRange(t.row, 11).setValue(!!body.repOn);
   return { ok: true, user: pubUser(findUser(t.id)) };
 }
 // 본인 프로필(수강 과목)
@@ -981,7 +983,7 @@ function studentResults(p) {
     }
     it.title = quizzes[it.code].title;
   });
-  const rep = reportRow(sid);
+  const rep = repAllowed(st) ? reportRow(sid) : null;
   const doneCodes = {}; items.forEach(it => { doneCodes[it.code] = 1; });
   const mine = assignRows().filter(a => a.studentId === sid);
   return { ok: true, student: pubUser(st), items: items, quizzes: quizzes, assign: { total: mine.length, done: mine.filter(a => doneCodes[a.code]).length }, report: rep ? { summary: rep.summary, updatedAt: rep.updatedAt, basis: rep.basis } : null };
@@ -1095,6 +1097,7 @@ function reportGet(p) {
   const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
   const sid = cleanId(p.studentId);
   if (!canSeeStudent(u, sid)) return { ok: false, error: 'forbidden' };
+  if (!repAllowed(findUser(sid))) return { ok: false, error: 'rep_forbidden' };
   const rep = reportRow(sid);
   if (!rep || !rep.driveId) return { ok: false, error: 'no_report' };
   return { ok: true, html: DriveApp.getFileById(rep.driveId).getBlob().getDataAsString('UTF-8'), summary: rep.summary, updatedAt: rep.updatedAt };
@@ -1103,7 +1106,7 @@ function reportGet(p) {
 function reportPending(p) {
   const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
   if (!workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
-  const students = allUsers().filter(u => u.active);   // 학생·선생·관리자 모두 자기 응시 기록으로 리포트를 받는다
+  const students = allUsers().filter(u => u.active && repAllowed(u));   // 관리자 + '분석 리포트 허용'이 켜진 계정만
   const out = [];
   const all = resultsWithDetail(r => !!r[6], 5000);        // 시트를 한 번만 읽고 계정별로 나눈다
   const byUser = {};
@@ -1127,7 +1130,8 @@ function reportRequest(body) {
   const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
   const sid = body.studentId ? cleanId(body.studentId) : u.id;
   if (!canSeeStudent(u, sid)) return { ok: false, error: 'forbidden' };
-  if (!findUser(sid)) return { ok: false, error: 'not_found' };
+  const st = findUser(sid); if (!st) return { ok: false, error: 'not_found' };
+  if (!repAllowed(st)) return { ok: false, error: 'rep_forbidden' };
   if (!resultsWithDetail(r => String(r[6] || '') === sid, 1).length) return { ok: false, error: 'no_results' };
   const s = reportsSheet();
   const rep = reportRow(sid);

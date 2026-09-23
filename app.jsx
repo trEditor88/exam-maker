@@ -293,6 +293,7 @@ const ERR = {
   gen_local: "서버가 연결되어 있어야 AI 생성을 쓸 수 있습니다.",
   sh_local: "서버가 연결되어 있어야 오답노트를 쓸 수 있습니다.",
   sh_forbidden: "오답노트 사용 권한이 없습니다. 관리자에게 문의하세요.",
+  rep_forbidden: "이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.",
   sh_not_ready: "오답노트 서버가 아직 준비되지 않았습니다. 관리자에게 문의하세요.",
   bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
   locked: "로그인 실패가 많아 15분 동안 잠겼습니다. 잠시 뒤 다시 시도해 주세요.",
@@ -858,7 +859,7 @@ function useHomeData(user, mode) {
       const mine = asg && asg.ok ? asg.mine : [];
       homeCache = {
         uid: user.id, err: !res.ok, latest: items[0] || null, avg, count: items.length,
-        shOn, pending: ws ? ws.reduce((s, w) => s + (w.pending || 0), 0) : null,
+        shOn, repOn: user.role === "admin" || !!user.repOn, pending: ws ? ws.reduce((s, w) => s + (w.pending || 0), 0) : null,
         processing: ws ? ws.filter((w) => w.status !== "done" && w.status !== "needs_confirm").length : 0,
         rep: res.ok ? res.report : null,
         assigns: mine, asgTotal: mine.length, asgDone: mine.filter((a) => a.done).length,
@@ -881,7 +882,7 @@ function HomeStats({ d, onMyResults, onStudy, onAssign }) {
       <StatCard label="평균 정답률" value={L ? "…" : d.avg == null ? "—" : `${d.avg}%`} sub={L ? "" : `${d.count}회 응시`} pct={d && d.avg} tone="good" onClick={onMyResults} />
       <StatCard label="완료율" value={L ? "…" : d.asgTotal ? `${asgPct}%` : "—"} sub={L ? "" : d.asgTotal ? `배정 ${d.asgTotal}개 중 ${d.asgDone}개 완료` : "배정된 시험 없음"} pct={asgPct} tone={d && d.asgTotal && d.asgDone < d.asgTotal ? "warn" : "accent"} onClick={onAssign} />
       <StatCard label="확인 질문" value={L ? "…" : !d.shOn ? "—" : `${d.pending}개`} sub={L ? "" : !d.shOn ? "오답노트 권한 없음" : d.processing ? `처리 중 ${d.processing}개` : "답을 기다리는 질문"} pct={d && d.pending ? 100 : 0} tone="warn" onClick={onStudy} />
-      <StatCard label="분석 리포트" value={L ? "…" : d.rep ? (repNew ? "새 리포트" : fmtDate(d.rep.updatedAt)) : "없음"} sub={L ? "" : d.rep ? `기록 ${d.rep.basis}회 기준` : "내 결과에서 요청"} pct={d && d.rep ? 100 : 0} tone="accent" onClick={onMyResults} />
+      <StatCard label="분석 리포트" value={L ? "…" : !d.repOn ? "—" : d.rep ? (repNew ? "새 리포트" : fmtDate(d.rep.updatedAt)) : "없음"} sub={L ? "" : !d.repOn ? "리포트 권한 없음" : d.rep ? `기록 ${d.rep.basis}회 기준` : "내 결과에서 요청"} pct={d && d.rep ? 100 : 0} tone="accent" onClick={onMyResults} />
     </div>
   );
 }
@@ -2258,7 +2259,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
 function AdminScreen({ onBack, toast, flash }) {
   const [users, setUsers] = useState(null);
   const [tab, setTab] = useState("users");
-  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false });
+  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false, repOn: false });
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
@@ -2277,13 +2278,13 @@ function AdminScreen({ onBack, toast, flash }) {
     const r = await remote().userCreate({ ...form, id: form.id.trim(), name: form.name.trim() });
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
-    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "", shOn: form.shOn });
+    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "", shOn: form.shOn, repOn: form.repOn });
     flash(`${r.user.name} (${ROLE_KO[r.user.role]}) 계정을 만들었습니다.`);
     load();
   };
   const save = async () => {
     setBusy(true);
-    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
+    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, repOn: !!edit.repOn, subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
     if (edit.pw) body.pw = edit.pw;
     const r = await remote().userUpdate(body);
     setBusy(false);
@@ -2339,6 +2340,7 @@ function AdminScreen({ onBack, toast, flash }) {
               )}
               <Field value={form.subjects} onChange={(v) => setForm({ ...form, subjects: v })} placeholder="수강 과목 (선택, 쉼표로) 예: 통합과학, 수학" ariaLabel="수강 과목" maxLength={200} />
               {form.role !== "admin" && <CheckRow on={!!form.shOn} onToggle={() => setForm({ ...form, shOn: !form.shOn })}><Check on={!!form.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
+              {form.role !== "admin" && <CheckRow on={!!form.repOn} onToggle={() => setForm({ ...form, repOn: !form.repOn })}><Check on={!!form.repOn} size={20} /><span style={{ fontSize: 14.5 }}>분석 리포트 허용</span></CheckRow>}
               <Btn onClick={create} disabled={busy}>계정 만들기</Btn>
             </div>
           </Card>
@@ -2349,7 +2351,7 @@ function AdminScreen({ onBack, toast, flash }) {
               style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
               <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
               <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
-              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.active ? "" : " · 정지"}</span>
+              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}</span>
             </button>
           ))}
         </>
@@ -2415,6 +2417,7 @@ function AdminScreen({ onBack, toast, flash }) {
             <Field value={Array.isArray(edit.subjects) ? edit.subjects.join(", ") : edit.subjects || ""} onChange={(v) => setEdit({ ...edit, subjects: v })} placeholder="수강 과목 (쉼표로)" ariaLabel="수강 과목" maxLength={200} />
             <Field type="password" value={edit.pw} onChange={(v) => setEdit({ ...edit, pw: v })} placeholder="새 비밀번호 (바꿀 때만)" ariaLabel="새 비밀번호" />
             {edit.role !== "admin" && <CheckRow on={!!edit.shOn} onToggle={() => setEdit({ ...edit, shOn: !edit.shOn })}><Check on={!!edit.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
+            {edit.role !== "admin" && <CheckRow on={!!edit.repOn} onToggle={() => setEdit({ ...edit, repOn: !edit.repOn })}><Check on={!!edit.repOn} size={20} /><span style={{ fontSize: 14.5 }}>분석 리포트 허용</span></CheckRow>}
             <CheckRow on={edit.active !== false} onToggle={() => setEdit({ ...edit, active: edit.active === false })}>로그인 허용</CheckRow>
             <Btn onClick={save} disabled={busy}>저장</Btn>
             <Btn kind="danger" onClick={del}>계정 삭제</Btn>
@@ -2476,10 +2479,11 @@ function StudentsScreen({ user, onBack, toast, flash }) {
       <Shell back="학생 목록" backTo={() => setDetail(null)} toast={toast}>
         <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 4px" }}>{detail.student.name} <span style={{ color: C.sub, fontSize: 14, fontWeight: 500 }}>{detail.student.id}</span></h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 14px" }}>
-          <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>
-          <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC 가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy}>리포트 새로 만들기</Btn>
+          {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
+          {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC 가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy}>리포트 새로 만들기</Btn>}
           <Btn kind="soft" onClick={() => open(detail.student)} disabled={busy}>새로고침</Btn>
         </div>
+        {!detail.student.repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 분석 리포트 허용이 꺼져 있습니다. 관리자 화면의 계정 수정에서 켤 수 있습니다.</p>}
         {detail.report && (
           <Card style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
@@ -2508,6 +2512,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
 }
 
 function MyResultsScreen({ user, onBack, toast, flash, onPractice }) {
+  const repOn = user.role === "admin" || !!user.repOn;
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -2532,10 +2537,11 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice }) {
     <Shell back="처음으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 결과·리포트</h2>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
-        <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>
-        <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>
+        {repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
+        {repOn && <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>}
         <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
       </div>
+      {!repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.</p>}
       {detail && detail.report && (
         <Card style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
@@ -2556,7 +2562,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice }) {
                 <div style={{ fontSize: 14, color: C.inkMid, lineHeight: 1.6, marginBottom: 10 }}>약한 부분: <b>{weak.join(" · ")}</b></div>
                 <div style={{ display: "grid", gap: 8 }}>
                   {onPractice && <Btn kind="soft" onClick={() => onPractice(weak.join(", "), subj)} disabled={busy}>이 약점으로 연습 문제 만들기 (AI)</Btn>}
-                  {detail.report && <TextBtn onClick={openReport} disabled={busy}>리포트의 맞춤 연습 문제 보기</TextBtn>}
+                  {repOn && detail.report && <TextBtn onClick={openReport} disabled={busy}>리포트의 맞춤 연습 문제 보기</TextBtn>}
                 </div>
               </Card>
             )}
