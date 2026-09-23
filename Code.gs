@@ -530,6 +530,13 @@ function shKh(key) {
   if (k.length < 8 || k.length > 64) return null;
   return sha(k);
 }
+/* 사이트에서 쓰는 오답노트 저장소 키: 연결 코드 대신 계정 권한(관리자 또는 shOn)으로 열고,
+   저장소 구분값(kh)은 관리자 화면에서 등록한 워커 키 해시(WORKER_KH)를 그대로 쓴다(워커와 같은 폴더·행). */
+function siteKh(user) {
+  if (!user || !(user.role === 'admin' || user.shOn)) return { error: 'sh_forbidden' };
+  const kh = PropertiesService.getScriptProperties().getProperty('WORKER_KH');
+  return kh ? { kh: kh } : { error: 'sh_not_ready' };
+}
 function shWsName(v) { return safeText(String(v || '').replace(/[\\/:*?"<>|]+/g, ''), 60).replace(/\s+/g, '_'); }
 function shFolder(kh) {
   const root = DriveApp.getRootFolder();
@@ -560,7 +567,7 @@ function shParse(v, dflt) { try { return v ? JSON.parse(v) : dflt; } catch (e) {
 // 사진 업로드: {key, worksheet, filename, data(base64), mime}
 function shUpload(body) {
   const user = auth(body.token); if (!user) return { ok: false, error: 'bad_token' };
-  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const sk = siteKh(user); if (sk.error) return { ok: false, error: sk.error }; const kh = sk.kh;
   const ws = shWsName(body.worksheet); if (!ws) return { ok: false, error: 'bad_worksheet' };
   const data = String(body.data || '');
   if (!data || data.length > SH_FILE_MAX) return { ok: false, error: 'too_big' };
@@ -582,7 +589,7 @@ function shUpload(body) {
 // 사이트 목록: {key}
 function shList(p) {
   const user = auth(p.token); if (!user) return { ok: false, error: 'bad_token' };
-  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const sk = siteKh(user); if (sk.error) return { ok: false, error: sk.error }; const kh = sk.kh;
   const photos = {};
   const fs = shFilesSheet(); const fn = fs.getLastRow();
   if (fn >= 2) fs.getRange(2, 1, fn - 1, 7).getValues().forEach(r => { if (r[1] === kh) photos[r[2]] = (photos[r[2]] || 0) + 1; });
@@ -602,7 +609,7 @@ function shList(p) {
 // 사이트 상세: {key, ws}
 function shDetail(p) {
   const user = auth(p.token); if (!user) return { ok: false, error: 'bad_token' };
-  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const sk = siteKh(user); if (sk.error) return { ok: false, error: sk.error }; const kh = sk.kh;
   const ws = shWsName(p.ws);
   const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
   if (!shCanSee(user, shOwnerOf(row))) return { ok: false, error: 'forbidden' };
@@ -613,7 +620,7 @@ function shDetail(p) {
 // 오답노트 HTML: {key, ws}
 function shNote(p) {
   const user = auth(p.token); if (!user) return { ok: false, error: 'bad_token' };
-  const kh = shKh(p.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const sk = siteKh(user); if (sk.error) return { ok: false, error: sk.error }; const kh = sk.kh;
   const row = shFindWsRow(kh, shWsName(p.ws)); if (!row) return { ok: false, error: 'not_found' };
   if (!shCanSee(user, shOwnerOf(row))) return { ok: false, error: 'forbidden' };
   const id = shWsSheet().getRange(row, 5).getValue();
@@ -624,7 +631,7 @@ function shNote(p) {
 // 확인 질문 답 저장: {key, worksheet, answers:{id: text}}
 function shConfirm(body) {
   const user = auth(body.token); if (!user) return { ok: false, error: 'bad_token' };
-  const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
+  const sk = siteKh(user); if (sk.error) return { ok: false, error: sk.error }; const kh = sk.kh;
   const ws = shWsName(body.worksheet);
   const row = shFindWsRow(kh, ws); if (!row) return { ok: false, error: 'not_found' };
   if (!shCanSee(user, shOwnerOf(row))) return { ok: false, error: 'forbidden' };
@@ -715,7 +722,7 @@ const SESSION_DAYS = 60;
 const EXAM_MAX_CHARS = 45000;
 const ID_RE = /^[\p{L}\p{N}_.-]{2,30}$/u;   // 한글·영문·숫자·_ . - (2~30자)
 
-function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active', 'subjects']); }
+function usersSheet() { return sheet('users', ['id', 'role', 'name', 'pwHash', 'salt', 'teacherId', 'createdAt', 'active', 'subjects', 'shOn']); }
 function sessionsSheet() { return sheet('sessions', ['token', 'userId', 'createdAt', 'lastAt']); }
 function examsSheet() { return sheet('exams', ['id', 'ownerId', 'title', 'json', 'code', 'updatedAt']); }
 function reportsSheet() { return sheet('reports', ['userId', 'driveId', 'summary', 'basis', 'updatedAt']); }
@@ -738,7 +745,7 @@ function usersCount() { return Math.max(0, usersSheet().getLastRow() - 1); }
 function allUsers() {
   const s = usersSheet(); const n = s.getLastRow();
   if (n < 2) return [];
-  return s.getRange(2, 1, n - 1, 9).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0, subjects: String(r[8] || '') }));
+  return s.getRange(2, 1, n - 1, 10).getValues().map((r, i) => ({ row: i + 2, id: String(r[0]), role: String(r[1]), name: String(r[2]), pwHash: String(r[3]), salt: String(r[4]), teacherId: String(r[5] || ''), createdAt: Number(r[6]) || 0, active: r[7] !== false && r[7] !== 'FALSE' && r[7] !== 0, subjects: String(r[8] || ''), shOn: r[9] === true || r[9] === 'TRUE' || r[9] === 1 }));
 }
 // 수강 과목: 배열 또는 쉼표 문자열 → 최대 10개, 각 20자
 function cleanSubjects(v) {
@@ -749,7 +756,7 @@ function cleanSubjects(v) {
 }
 function subjectsOf(u) { return u.subjects ? u.subjects.split(',').filter(Boolean) : []; }
 function findUser(id) { id = cleanId(id); return id ? allUsers().find(u => u.id === id) || null : null; }
-function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt, subjects: subjectsOf(u) }; }
+function pubUser(u) { return { id: u.id, role: u.role, name: u.name, teacherId: u.teacherId, active: u.active, createdAt: u.createdAt, subjects: subjectsOf(u), shOn: u.role === 'admin' || !!u.shOn }; }
 
 function auth(token) {
   token = String(token || '').trim();
@@ -836,7 +843,7 @@ function userCreate(body) {
   const teacherId = role === 'student' ? cleanId(body.teacherId) : '';
   if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
   const salt = randomKey(16);
-  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true, cleanSubjects(body.subjects)]);
+  usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true, cleanSubjects(body.subjects), !!body.shOn]);
   return { ok: true, user: pubUser(findUser(id)) };
 }
 function userUpdate(body) {
@@ -864,6 +871,7 @@ function userUpdate(body) {
     s.getRange(t.row, 8).setValue(!!body.active);
   }
   if (body.subjects !== undefined) s.getRange(t.row, 9).setValue(cleanSubjects(body.subjects));
+  if (body.shOn !== undefined) s.getRange(t.row, 10).setValue(!!body.shOn);
   return { ok: true, user: pubUser(findUser(t.id)) };
 }
 // 본인 프로필(수강 과목)

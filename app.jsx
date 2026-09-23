@@ -193,9 +193,9 @@ const serverRemote = {
   clearResults: (code, key) => apiPost({ action: "clearResults", code, key }),
   generate: (params) => apiPost({ action: "generate", ...params }),
   genAvailable: async () => { const r = await apiGet({ action: "ping" }); return !!(r && r.ok && r.gen); },
-  shList: (key) => apiGet({ action: "sh_list", key }),
-  shDetail: (key, ws) => apiGet({ action: "sh_detail", key, ws }),
-  shNote: (key, ws) => apiGet({ action: "sh_note", key, ws }),
+  shList: () => apiGet({ action: "sh_list" }),
+  shDetail: (ws) => apiGet({ action: "sh_detail", ws }),
+  shNote: (ws) => apiGet({ action: "sh_note", ws }),
   shUpload: (params) => apiPost({ action: "sh_upload", ...params }),
   shConfirm: (params) => apiPost({ action: "sh_confirm", ...params }),
   ping: () => apiGet({ action: "ping" }),
@@ -292,6 +292,8 @@ const ERR = {
   truncated: "결과가 너무 길어 잘렸습니다. 문제 수를 줄여 주세요.",
   gen_local: "서버가 연결되어 있어야 AI 생성을 쓸 수 있습니다.",
   sh_local: "서버가 연결되어 있어야 오답노트를 쓸 수 있습니다.",
+  sh_forbidden: "오답노트 사용 권한이 없습니다. 관리자에게 문의하세요.",
+  sh_not_ready: "오답노트 서버가 아직 준비되지 않았습니다. 관리자에게 문의하세요.",
   bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
   locked: "로그인 실패가 많아 15분 동안 잠겼습니다. 잠시 뒤 다시 시도해 주세요.",
   bad_pw: "비밀번호는 4자 이상이어야 합니다.",
@@ -847,8 +849,8 @@ function useHomeData(user, mode) {
     if (mode !== "server" || !user) return;
     let alive = true;
     (async () => {
-      const key = shKeyGet();
-      const [res, sh, asg] = await Promise.all([remote().studentResults(user.id), key ? remote().shList(key) : Promise.resolve(null), remote().assignList()]);
+      const shOn = user.role === "admin" || !!user.shOn;
+      const [res, sh, asg] = await Promise.all([remote().studentResults(user.id), shOn ? remote().shList() : Promise.resolve(null), remote().assignList()]);
       if (!alive) return;
       const items = res.ok ? res.items : [];
       const avg = items.length ? Math.round((items.reduce((s, r) => s + (r.total ? r.score / r.total : 0), 0) / items.length) * 100) : null;
@@ -856,7 +858,7 @@ function useHomeData(user, mode) {
       const mine = asg && asg.ok ? asg.mine : [];
       homeCache = {
         uid: user.id, err: !res.ok, latest: items[0] || null, avg, count: items.length,
-        shOn: !!key, pending: ws ? ws.reduce((s, w) => s + (w.pending || 0), 0) : null,
+        shOn, pending: ws ? ws.reduce((s, w) => s + (w.pending || 0), 0) : null,
         processing: ws ? ws.filter((w) => w.status !== "done" && w.status !== "needs_confirm").length : 0,
         rep: res.ok ? res.report : null,
         assigns: mine, asgTotal: mine.length, asgDone: mine.filter((a) => a.done).length,
@@ -878,7 +880,7 @@ function HomeStats({ d, onMyResults, onStudy, onAssign }) {
       <StatCard label="최근 점수" value={L ? "…" : latest ? `${latest.score}/${latest.total}` : "—"} sub={L ? "불러오는 중" : latest ? latest.title || latest.code : "아직 응시 기록이 없음"} pct={latest ? pctOf(latest) : null} tone={latest && pctOf(latest) < 60 ? "bad" : "accent"} onClick={onMyResults} />
       <StatCard label="평균 정답률" value={L ? "…" : d.avg == null ? "—" : `${d.avg}%`} sub={L ? "" : `${d.count}회 응시`} pct={d && d.avg} tone="good" onClick={onMyResults} />
       <StatCard label="완료율" value={L ? "…" : d.asgTotal ? `${asgPct}%` : "—"} sub={L ? "" : d.asgTotal ? `배정 ${d.asgTotal}개 중 ${d.asgDone}개 완료` : "배정된 시험 없음"} pct={asgPct} tone={d && d.asgTotal && d.asgDone < d.asgTotal ? "warn" : "accent"} onClick={onAssign} />
-      <StatCard label="확인 질문" value={L ? "…" : !d.shOn ? "—" : `${d.pending}개`} sub={L ? "" : !d.shOn ? "오답노트 연결 안 됨" : d.processing ? `처리 중 ${d.processing}개` : "답을 기다리는 질문"} pct={d && d.pending ? 100 : 0} tone="warn" onClick={onStudy} />
+      <StatCard label="확인 질문" value={L ? "…" : !d.shOn ? "—" : `${d.pending}개`} sub={L ? "" : !d.shOn ? "오답노트 권한 없음" : d.processing ? `처리 중 ${d.processing}개` : "답을 기다리는 질문"} pct={d && d.pending ? 100 : 0} tone="warn" onClick={onStudy} />
       <StatCard label="분석 리포트" value={L ? "…" : d.rep ? (repNew ? "새 리포트" : fmtDate(d.rep.updatedAt)) : "없음"} sub={L ? "" : d.rep ? `기록 ${d.rep.basis}회 기준` : "내 결과에서 요청"} pct={d && d.rep ? 100 : 0} tone="accent" onClick={onMyResults} />
     </div>
   );
@@ -1959,13 +1961,10 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
    사진을 서버(드라이브)에 올리면 PC 의 워커(Claude 예약 작업)가 가져가 분석하고 결과를 다시 올린다.
    연결 코드는 PC 의 study-helper\sync.json 에 있는 값. 이 브라우저에 저장된다. */
 const SH_STATUS = { uploaded: ["대기 중", "neutral"], extracting: ["처리 중", "accent"], in_progress: ["처리 중", "accent"], needs_confirm: ["확인 필요", "warn"], done: ["완료", "good"] };
-const shKeyGet = () => { try { return localStorage.getItem(LS_PREFIX + "sh_key") || ""; } catch (e) { return ""; } };
-const shKeySet = (k) => { try { k ? localStorage.setItem(LS_PREFIX + "sh_key", k) : localStorage.removeItem(LS_PREFIX + "sh_key"); } catch (e) {} };
 const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(file); });
 
-function StudyScreen({ onBack, flash, toast }) {
-  const [key, setKey] = useState(shKeyGet);
-  const [keyInput, setKeyInput] = useState("");
+function StudyScreen({ onBack, flash, toast, user }) {
+  const allowed = !!user && (user.role === "admin" || !!user.shOn);   // 관리자가 계정에 준 오답노트 권한
   const [list, setList] = useState(null);
   const [busy, setBusy] = useState(false);
   const [wsName, setWsName] = useState("");
@@ -1978,21 +1977,15 @@ function StudyScreen({ onBack, flash, toast }) {
   const r = remote();
 
   const load = async () => {
-    if (!key) return;
+    if (!allowed) return;
     setBusy(true);
-    const res = await r.shList(key);
+    const res = await r.shList();
     setBusy(false);
     if (!res.ok) { flash(ERR[res.error] || "목록을 불러오지 못했습니다."); setList([]); return; }
     setList(res.worksheets);
   };
-  useEffect(() => { load(); }, [key]);
+  useEffect(() => { load(); }, []);
 
-  const connect = () => {
-    const k = keyInput.trim();
-    if (k.length < 8) return flash("연결 코드는 8자 이상입니다. PC 의 study-helper\\sync.json 에 있는 값을 넣으세요.");
-    shKeySet(k); setKey(k);
-  };
-  const disconnect = () => { shKeySet(""); setKey(""); setList(null); setDetail(null); };
 
   const upload = async () => {
     const name = wsName.trim();
@@ -2003,7 +1996,7 @@ function StudyScreen({ onBack, flash, toast }) {
     for (const f of files) {
       setProgress(`${done + 1}/${files.length} 올리는 중…`);
       const data = await fileToBase64(f);
-      const res = await r.shUpload({ key, worksheet: name, filename: f.name, mime: f.type, data });
+      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: f.type, data });
       if (!res.ok) { setBusy(false); setProgress(""); return flash(ERR[res.error] || `업로드 실패(${res.error || "network"})`); }
       done++;
     }
@@ -2015,14 +2008,14 @@ function StudyScreen({ onBack, flash, toast }) {
 
   const openDetail = async (name) => {
     setBusy(true);
-    const res = await r.shDetail(key, name);
+    const res = await r.shDetail(name);
     setBusy(false);
     if (!res.ok) return flash(ERR[res.error] || "상세를 불러오지 못했습니다.");
     setAnswers({}); setNoteHtml(null); setDetail(res);
   };
   const openNote = async () => {
     setBusy(true);
-    const res = await r.shNote(key, detail.name);
+    const res = await r.shNote(detail.name);
     setBusy(false);
     if (!res.ok) return flash(res.error === "no_note" ? "아직 오답노트가 만들어지지 않았습니다." : "오답노트를 불러오지 못했습니다.");
     setNoteHtml(res.html);
@@ -2031,7 +2024,7 @@ function StudyScreen({ onBack, flash, toast }) {
     const filled = Object.fromEntries(Object.entries(answers).filter(([, v]) => v && v.trim()));
     if (!Object.keys(filled).length) return flash("적은 답이 없습니다.");
     setBusy(true);
-    const res = await r.shConfirm({ key, worksheet: detail.name, answers: filled });
+    const res = await r.shConfirm({ worksheet: detail.name, answers: filled });
     setBusy(false);
     if (!res.ok) return flash("저장하지 못했습니다.");
     flash(`답 ${res.saved}개를 저장했습니다. 다음 자동 처리 때 반영됩니다.`);
@@ -2062,18 +2055,13 @@ function StudyScreen({ onBack, flash, toast }) {
     </>
   );
 
-  /* 연결 전 */
-  if (!key)
+  /* 권한 없음 */
+  if (!allowed)
     return (
       <Shell back="처음으로" backTo={onBack} toast={toast}>
         <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 8px" }}>오답노트</h2>
-        <p style={{ fontSize: 15, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>
-          시험지 사진을 올리면 정답·해설·검증과 손글씨 메모를 반영한 오답노트가 만들어집니다. 처리는 내 PC 의 Claude 가 하므로 PC 가 켜져 있어야 합니다.
-        </p>
         <Card>
-          <div style={{ fontSize: 14, color: C.sub, marginBottom: 8 }}>연결 코드 (PC 의 study-helper\sync.json 에 있는 key)</div>
-          <Field value={keyInput} onChange={setKeyInput} placeholder="연결 코드" onEnter={connect} ariaLabel="연결 코드" />
-          <div style={{ marginTop: 10 }}><Btn onClick={connect}>연결</Btn></div>
+          <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: 0 }}>이 계정은 아직 오답노트를 쓸 수 없습니다. 관리자에게 문의하세요.</p>
         </Card>
       </Shell>
     );
@@ -2165,7 +2153,6 @@ function StudyScreen({ onBack, flash, toast }) {
         {files.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{files.map((f, i) => <img key={i} src={URL.createObjectURL(f)} alt={f.name} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}` }} />)}</div>}
         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
           <Btn onClick={upload} disabled={busy}>{progress || "올리기"}</Btn>
-          <TextBtn tone="sub" onClick={disconnect} style={{ fontSize: 12.5 }}>연결 해제</TextBtn>
         </div>
       </Card>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 8px" }}>
@@ -2271,7 +2258,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
 function AdminScreen({ onBack, toast, flash }) {
   const [users, setUsers] = useState(null);
   const [tab, setTab] = useState("users");
-  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "" });
+  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false });
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
@@ -2290,13 +2277,13 @@ function AdminScreen({ onBack, toast, flash }) {
     const r = await remote().userCreate({ ...form, id: form.id.trim(), name: form.name.trim() });
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
-    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "" });
+    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "", shOn: form.shOn });
     flash(`${r.user.name} (${ROLE_KO[r.user.role]}) 계정을 만들었습니다.`);
     load();
   };
   const save = async () => {
     setBusy(true);
-    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
+    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
     if (edit.pw) body.pw = edit.pw;
     const r = await remote().userUpdate(body);
     setBusy(false);
@@ -2351,6 +2338,7 @@ function AdminScreen({ onBack, toast, flash }) {
                 </select>
               )}
               <Field value={form.subjects} onChange={(v) => setForm({ ...form, subjects: v })} placeholder="수강 과목 (선택, 쉼표로) 예: 통합과학, 수학" ariaLabel="수강 과목" maxLength={200} />
+              {form.role !== "admin" && <CheckRow on={!!form.shOn} onToggle={() => setForm({ ...form, shOn: !form.shOn })}><Check on={!!form.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
               <Btn onClick={create} disabled={busy}>계정 만들기</Btn>
             </div>
           </Card>
@@ -2361,7 +2349,7 @@ function AdminScreen({ onBack, toast, flash }) {
               style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
               <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
               <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
-              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.active ? "" : " · 정지"}</span>
+              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.active ? "" : " · 정지"}</span>
             </button>
           ))}
         </>
@@ -2426,6 +2414,7 @@ function AdminScreen({ onBack, toast, flash }) {
             )}
             <Field value={Array.isArray(edit.subjects) ? edit.subjects.join(", ") : edit.subjects || ""} onChange={(v) => setEdit({ ...edit, subjects: v })} placeholder="수강 과목 (쉼표로)" ariaLabel="수강 과목" maxLength={200} />
             <Field type="password" value={edit.pw} onChange={(v) => setEdit({ ...edit, pw: v })} placeholder="새 비밀번호 (바꿀 때만)" ariaLabel="새 비밀번호" />
+            {edit.role !== "admin" && <CheckRow on={!!edit.shOn} onToggle={() => setEdit({ ...edit, shOn: !edit.shOn })}><Check on={!!edit.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
             <CheckRow on={edit.active !== false} onToggle={() => setEdit({ ...edit, active: edit.active === false })}>로그인 허용</CheckRow>
             <Btn onClick={save} disabled={busy}>저장</Btn>
             <Btn kind="danger" onClick={del}>계정 삭제</Btn>
@@ -2919,7 +2908,7 @@ function ExamMaker() {
       </>
     );
 
-  if (screen === "study") return <>{<StudyScreen onBack={() => setScreen("home")} flash={flash} toast={toast} />}{chrome}</>;
+  if (screen === "study") return <>{<StudyScreen onBack={() => setScreen("home")} flash={flash} toast={toast} user={user} />}{chrome}</>;
 
   if (screen === "list")
     return (
