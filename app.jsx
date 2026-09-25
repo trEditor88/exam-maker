@@ -228,7 +228,9 @@ const serverRemote = {
   assignSet: (code, studentIds) => apiPost({ action: "assignSet", code, studentIds }),
   assignRemove: (code, studentId) => apiPost({ action: "assignRemove", code, studentId }),
   profileUpdate: (b) => apiPost({ action: "profileUpdate", ...b }),
-  jobCreate: (params) => apiPost({ action: "jobCreate", params }),
+  jobCreate: (params, type, pending) => apiPost({ action: "jobCreate", params, type: type || "gen", pending: pending || 0 }),
+  jobPhoto: (id, filename, mime, data) => apiPost({ action: "jobPhoto", id, filename, mime, data }),
+  jobReady: (id) => apiPost({ action: "jobReady", id }),
   jobList: () => apiGet({ action: "jobList" }),
   jobCancel: (id) => apiPost({ action: "jobCancel", id }),
   noteList: () => apiGet({ action: "noteList" }),
@@ -308,6 +310,11 @@ const ERR = {
   job_limit: "이미 요청한 작업이 3개 있습니다. 끝난 뒤 다시 요청해 주세요.",
   job_started: "이미 처리가 시작된 작업이라 취소할 수 없습니다.",
   bad_scope: "범위를 적어 주세요.",
+  no_photo: "사진을 한 장 이상 골라 주세요.",
+  too_many: "사진은 8장까지입니다.",
+  no_detail: "문항별 기록이 없는 결과라 오답노트를 만들 수 없습니다.",
+  no_wrong: "틀린 문제가 없어 오답노트를 만들 필요가 없습니다.",
+  job_dup: "이 결과의 오답노트는 이미 요청했습니다. 완료되면 알림이 뜹니다.",
   sh_not_ready: "오답노트 서버가 아직 준비되지 않았습니다. 관리자에게 문의하세요.",
   bad_login: "아이디 또는 비밀번호가 맞지 않습니다.",
   locked: "로그인 실패가 많아 15분 동안 잠겼습니다. 잠시 뒤 다시 시도해 주세요.",
@@ -1536,6 +1543,8 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue }
   const lsGet = (k) => { try { return localStorage.getItem(LS_PREFIX + k) || ""; } catch (e) { return ""; } };
   const server = remote().kind === "server";
   const [mode, setMode] = useState(genAvail ? "fast" : "pro");   // fast = Gemini 즉시, pro = Claude 워커(고급)
+  const [photos, setPhotos] = useState([]);   // 고급: 사진으로 만들기
+  const [prog, setProg] = useState("");
   const [scope, setScope] = useState(initScope || "");
   const [material, setMaterial] = useState("");
   const [count, setCount] = useState(10);
@@ -1548,13 +1557,26 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue }
   const [sel, setSel] = useState({});
 
   const run = async () => {
-    if (!scope.trim() || busy) return;
+    if (busy || (!scope.trim() && !(mode === "pro" && photos.length))) return;
     setBusy(true);
     setErr("");
     if (mode === "pro") {
-      const rq = await remote().jobCreate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, subject: subject || "" });
-      setBusy(false);
-      if (!rq.ok) { setErr(errMsg(rq)); return; }
+      const type = photos.length ? "photo" : "gen";
+      const rq = await remote().jobCreate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, subject: subject || "" }, type, photos.length);
+      if (!rq.ok) { setBusy(false); setErr(errMsg(rq)); return; }
+      if (type === "photo") {
+        for (let i = 0; i < photos.length; i++) {
+          setProg(`사진 올리는 중 ${i + 1}/${photos.length}`);
+          let b64 = "";
+          try { b64 = await shrinkImage(photos[i]); } catch (e) { b64 = ""; }
+          if (!b64) { setBusy(false); setProg(""); setErr("사진을 읽지 못했습니다. 다른 사진으로 해 보세요."); return; }
+          const up = await remote().jobPhoto(rq.job.id, `p${i + 1}.jpg`, "image/jpeg", b64);
+          if (!up.ok) { setBusy(false); setProg(""); setErr(errMsg(up)); return; }
+        }
+        const rd = await remote().jobReady(rq.job.id);
+        if (!rd.ok) { setBusy(false); setProg(""); setErr(errMsg(rd)); return; }
+      }
+      setBusy(false); setProg("");
       onQueue && onQueue(rq.job);
       return;
     }
@@ -1589,7 +1611,23 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue }
                 ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
                 : "기본 방식은 지금 쓸 수 없습니다(서버에 Gemini 설정 없음). 고급 방식을 골라 주세요."}
           </p>
-          <Field multiline rows={2} value={scope} onChange={setScope} placeholder="범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)" maxLength={500} autoFocus />
+          <Field multiline rows={2} value={scope} onChange={setScope} placeholder={mode === "pro" ? "범위 또는 시험지 제목 (사진을 올리면 비워도 됩니다)" : "범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)"} maxLength={500} autoFocus />
+          {mode === "pro" && server && (
+            <>
+              {label("사진으로 만들기 (선택, 최대 8장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다")}
+              <input type="file" accept="image/*" multiple onChange={(e) => { setPhotos([...photos, ...Array.from(e.target.files || [])].slice(0, 8)); e.target.value = ""; }} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
+              {photos.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  {photos.map((f, i) => (
+                    <span key={i} style={{ position: "relative", display: "inline-block" }}>
+                      <img src={URL.createObjectURL(f)} alt={`사진 ${i + 1}`} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}`, display: "block" }} />
+                      <button className="em-btn" aria-label={`사진 ${i + 1} 빼기`} onClick={() => setPhotos(photos.filter((_, k) => k !== i))} style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: 999, border: "none", background: C.ink, color: C.bg, fontSize: 12, cursor: "pointer", lineHeight: 1 }}>×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
           <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
           {label("문제 수")}
           <Seg value={count} onChange={setCount} items={[[5, "5개"], [10, "10개"], [15, "15개"], [20, "20개"]]} />
@@ -1600,7 +1638,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue }
 
           {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
-            <Btn onClick={run} disabled={busy || !scope.trim() || (mode === "fast" && !genAvail) || (mode === "pro" && !server)}>{busy ? (mode === "pro" ? "요청하는 중…" : "문제를 만드는 중… (최대 1분)") : mode === "pro" ? "Claude에게 요청하기" : "문제 만들기"}</Btn>
+            <Btn onClick={run} disabled={busy || (!scope.trim() && !(mode === "pro" && photos.length)) || (mode === "fast" && !genAvail) || (mode === "pro" && !server)}>{busy ? (mode === "pro" ? prog || "요청하는 중…" : "문제를 만드는 중… (최대 1분)") : mode === "pro" ? (photos.length ? `사진 ${photos.length}장으로 Claude에게 요청하기` : "Claude에게 요청하기") : "문제 만들기"}</Btn>
             <Btn kind="ghost" onClick={onClose}>닫기</Btn>
           </div>
         </>
@@ -2020,7 +2058,8 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
 }
 
 /* ── 화면: 결과 ──────────────────────────────── */
-function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, toast, onMyResults, onStudy, loggedIn }) {
+function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, toast, onMyResults, onStudy, loggedIn, resultId, canNote, onMakeNote }) {
+  const [noteAsked, setNoteAsked] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [explOpen, setExplOpen] = useState({});
   const [allExpl, setAllExpl] = useState(false);
@@ -2118,7 +2157,10 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
         {wrong.length > 0 && <Btn onClick={() => onRetryWrong(wrong.map((r) => r.q.id))}>틀린 문제만 다시 풀기</Btn>}
         <Btn kind="soft" onClick={onRetryAll}>처음부터 다시 풀기</Btn>
         {loggedIn && onMyResults && <Btn kind="soft" onClick={onMyResults}>내 결과·리포트 보기</Btn>}
-        {loggedIn && onStudy && <Btn kind="ghost" onClick={onStudy}>오답노트 만들기 (사진 올리기)</Btn>}
+        {loggedIn && canNote && resultId && wrong.length > 0 && !run.partial && (
+          <Btn kind="soft" onClick={async () => { if (await onMakeNote(resultId)) setNoteAsked(true); }} disabled={noteAsked}>{noteAsked ? "오답노트 요청됨 · 완료되면 알림" : "이 결과로 오답노트 만들기 (Claude)"}</Btn>
+        )}
+        {loggedIn && onStudy && <Btn kind="ghost" onClick={onStudy}>오답노트 보기 · 사진 올리기</Btn>}
         <Btn kind="ghost" onClick={copyResult}>결과 복사</Btn>
         <Btn kind="ghost" onClick={onHome}>처음으로</Btn>
       </div>
@@ -2131,6 +2173,16 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
    사진을 서버(드라이브)에 올리면 PC 의 워커(Claude 예약 작업)가 가져가 분석하고 결과를 다시 올린다.
    연결 코드는 PC 의 study-helper\sync.json 에 있는 값. 이 브라우저에 저장된다. */
 const SH_STATUS = { uploaded: ["대기 중", "neutral"], extracting: ["처리 중", "accent"], in_progress: ["처리 중", "accent"], needs_confirm: ["확인 필요", "warn"], done: ["완료", "good"] };
+/* 사진을 긴 변 1600px JPEG(base64)로 줄인다 — 업로드 크기·워커 읽기 부담을 줄임 */
+async function shrinkImage(file, max = 1600) {
+  let bmp = null;
+  try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); } catch (e) { bmp = null; }
+  const src = bmp || (await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(file); }));
+  const w = src.width, h = src.height, k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
+  c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.85).split(",")[1] || "";
+}
 const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(file); });
 
 function StudyScreen({ onBack, flash, toast, user }) {
@@ -2601,7 +2653,7 @@ function AdminScreen({ onBack, toast, flash }) {
 }
 
 /* 결과 표 + 리포트 (선생·관리자가 학생을 볼 때, 학생이 자기 기록을 볼 때 공용) */
-function ResultsTable({ items }) {
+function ResultsTable({ items, onNote }) {
   if (!items.length) return <p style={{ color: C.sub, fontSize: 14.5 }}>아직 응시 기록이 없습니다.</p>;
   const avg = Math.round((items.reduce((s, r) => s + r.score / r.total, 0) / items.length) * 100);
   return (
@@ -2609,9 +2661,11 @@ function ResultsTable({ items }) {
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 8px" }}>{items.length}회 응시 · 평균 {avg}점</p>
       <Card style={{ padding: 8 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead><tr>{["때", "시험지", "점수", "시간"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+          <thead><tr>{["때", "시험지", "점수", "시간"].concat(onNote ? [""] : []).map((h, i) => <th key={i} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
           <tbody>{items.map((it) => (
-            <tr key={it.id}><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(it.at)}</td><td style={{ padding: "6px 8px" }}>{it.title || it.code}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontWeight: 700, color: it.score === it.total ? C.good : C.ink }}>{it.score}/{it.total}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtSec(it.sec)}</td></tr>
+            <tr key={it.id}><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(it.at)}</td><td style={{ padding: "6px 8px" }}>{it.title || it.code}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontWeight: 700, color: it.score === it.total ? C.good : C.ink }}>{it.score}/{it.total}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtSec(it.sec)}</td>
+              {onNote && <td style={{ padding: "4px 6px", whiteSpace: "nowrap" }}>{Array.isArray(it.detail) && it.detail.some((d) => !d.ok) && <TextBtn onClick={() => onNote(it.id)} style={{ fontSize: 13 }}>오답노트</TextBtn>}</td>}
+            </tr>
           ))}</tbody>
         </table>
       </Card>
@@ -2683,7 +2737,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
   );
 }
 
-function MyResultsScreen({ user, onBack, toast, flash, onPractice }) {
+function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote }) {
   const repOn = user.role === "admin" || !!user.repOn;
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
@@ -2743,7 +2797,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice }) {
           </>
         );
       })()}
-      {detail === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={detail.items} />}
+      {detail === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={detail.items} onNote={onMakeNote} />}
     </Shell>
   );
 }
@@ -2770,6 +2824,13 @@ function ExamMaker() {
   const [picked, setPicked] = useState({});
   const [name, setName] = useState("");
   const [result, setResult] = useState(null);
+  const [resultId, setResultId] = useState(null);   // 방금 제출한 결과의 서버 행 id(오답노트 만들기용)
+  const canNote = () => remote().kind === "server" && !!user && (user.role === "admin" || !!user.shOn);
+  const makeNote = async (rid) => {
+    const r = await remote().jobCreate({ resultId: rid }, "note");
+    flash(r.ok ? "오답노트를 요청했습니다. 관리자 PC 가 켜져 있으면 10분 안에 만들어지고 알림이 뜹니다." : errMsg(r));
+    return r.ok;
+  };
 
   /* 계정 */
   const [user, setUser] = useState(null);
@@ -2979,6 +3040,7 @@ function ExamMaker() {
     const total = rows.length;
     const sec = (Date.now() - run.startedAt) / 1000;
     setResult({ rows, score, total, sec });
+    setResultId(null);
     setScreen("result");
     window.scrollTo(0, 0);
 
@@ -2990,7 +3052,8 @@ function ExamMaker() {
     store.set("recent", JSON.stringify(nextRecent));
     if (trimmed) store.set("name", trimmed);
     /* 출제자에게 결과 전달 */
-    remote().submit(run.code, { name: trimmed, score, total, sec: Math.round(sec), detail: rows.map((r) => ({ q: r.q.id, m: r.mine, ok: r.ok })) });
+    const sr = await remote().submit(run.code, { name: trimmed, score, total, sec: Math.round(sec), detail: rows.map((r) => ({ q: r.q.id, m: r.mine, ok: r.ok })) });
+    if (sr && sr.ok && sr.id) setResultId(String(sr.id));
   };
 
   const retryWrong = (ids) => {
@@ -3081,7 +3144,7 @@ function ExamMaker() {
 
   if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
   if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
-  if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} />}{chrome}</>;
+  if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} />}{chrome}</>;
 
   const overlays = (
     <>
@@ -3178,7 +3241,7 @@ function ExamMaker() {
     return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} />}{chrome}</>;
 
   if (screen === "result" && result && run)
-    return <>{<ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} loggedIn={remote().kind === "server" && !!user} onMyResults={() => setScreen("myresults")} onStudy={() => setScreen("study")} />}{chrome}</>;
+    return <>{<ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} loggedIn={remote().kind === "server" && !!user} onMyResults={() => setScreen("myresults")} onStudy={() => setScreen("study")} resultId={resultId} canNote={canNote()} onMakeNote={makeNote} />}{chrome}</>;
 
   return (
     <Shell back="처음으로" backTo={goHome} toast={toast}>

@@ -333,6 +333,7 @@ function readAction(p) {
     if (a === 'sh_note') return out(shNote(p));
     if (a === 'sh_pending') return out(shPending(p));
     if (a === 'sh_file') return out(shFile(p));
+    if (a === 'jobFile') return out(jobFile(p));
 
     return out({ ok: false, error: 'bad_action' });
   } catch (err) {
@@ -361,6 +362,7 @@ function doPost(e) {
   if (a === 'reportPut') { try { return out(reportPut(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
   if (a === 'reportRequest') { try { return out(reportRequest(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
   // 학습 도우미: 사진 업로드·결과 저장은 드라이브 쓰기라 오래 걸릴 수 있어 잠금 없이 처리
+  if (a === 'jobPhoto') { try { return out(jobPhoto(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
   if (a === 'sh_upload' || a === 'sh_result' || a === 'sh_fetched' || a === 'sh_confirm') {
     try {
       if (a === 'sh_upload') return out(shUpload(body));
@@ -391,6 +393,7 @@ function doPost(e) {
     if (a === 'jobCreate') return out(jobCreate(body));
     if (a === 'jobCancel') return out(jobCancel(body));
     if (a === 'jobTake') return out(jobTake(body));
+    if (a === 'jobReady') return out(jobReady(body));
     if (a === 'jobResult') return out(jobResult(body));
     if (a === 'examPut') return out(examPut(body));
     if (a === 'noteSeen') return out(noteSeen(body));
@@ -471,11 +474,13 @@ function submit(body) {
   } catch (err) {}
   let detail = '';
   if (Array.isArray(en.detail)) { detail = JSON.stringify(en.detail.slice(0, 200).map(d => ({ q: String(d.q || '').slice(0, 40), m: Array.isArray(d.m) ? d.m.slice(0, 12) : [], ok: !!d.ok }))); if (detail.length > SH_CELL_MAX) detail = ''; }
-  resSheet().appendRow([code, safeText(user ? user.name : en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now(), user ? user.id : '', detail]);
+  const rs = resSheet();
+  rs.appendRow([code, safeText(user ? user.name : en.name, NAME_MAX), score, total, Math.max(0, Math.round(Number(en.sec) || 0)), Date.now(), user ? user.id : '', detail]);
+  const resultId = String(rs.getLastRow());
   archiveOldResults();
   const cell = s.getRange(row, 7);
   cell.setValue((Number(cell.getValue()) || 0) + 1);
-  return { ok: true };
+  return { ok: true, id: resultId };
 }
 
 // 보관 정책: results 가 3,000행을 넘으면 1년 지난 행을 results_archive 시트로 옮긴다(삭제하지 않음)
@@ -1135,25 +1140,80 @@ function jobRows() {
 }
 function jobPublic(j) {
   const p = j.params || {};
-  return { id: j.id, type: j.type, status: j.status, createdAt: j.createdAt, updatedAt: j.updatedAt, error: j.error, result: j.result, params: { scope: p.scope, count: p.count, difficulty: p.difficulty, kind: p.kind, subject: p.subject, hasMaterial: !!p.material } };
+  return { id: j.id, type: j.type, status: j.status, createdAt: j.createdAt, updatedAt: j.updatedAt, error: j.error, result: j.result, params: { scope: p.scope, count: p.count, difficulty: p.difficulty, kind: p.kind, subject: p.subject, hasMaterial: !!p.material, photos: (p.photos || []).length, resultId: p.resultId, title: p.title } };
 }
+// 유형: gen(범위·자료→문제) / photo(사이트에서 올린 사진→문제, jobPhoto 로 사진을 붙인 뒤 jobReady) / note(사이트에서 푼 결과→오답노트)
 function jobCreate(body) {
   const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const type = ['gen', 'photo', 'note'].indexOf(body.type) >= 0 ? body.type : 'gen';
   const p = body.params && typeof body.params === 'object' ? body.params : {};
-  const scope = safeText(String(p.scope || '').trim(), 500); if (!scope) return { ok: false, error: 'bad_scope' };
-  const params = {
-    scope: scope, material: String(p.material || '').slice(0, 20000),
-    count: Math.min(GEN_MAX_COUNT, Math.max(1, Math.floor(Number(p.count) || 10))),
-    difficulty: ['하', '중', '상'].indexOf(p.difficulty) >= 0 ? p.difficulty : '중',
-    kind: ['single', 'multi', 'tf'].indexOf(p.kind) >= 0 ? p.kind : 'single',
-    subject: safeText(String(p.subject || ''), 20),
-  };
-  const mine = jobRows().filter(j => j.userId === u.id && (j.status === 'queued' || j.status === 'running'));
+  const mine = jobRows().filter(j => j.userId === u.id && (j.status === 'queued' || j.status === 'running' || j.status === 'uploading'));
   if (mine.length >= JOB_MAX_QUEUED) return { ok: false, error: 'job_limit' };
+  let params, status = 'queued';
+  if (type === 'note') {
+    if (!(u.role === 'admin' || u.shOn)) return { ok: false, error: 'sh_forbidden' };
+    const rid = String(p.resultId || '');
+    const it = resultsWithDetail(r => true, 5000).find(x => x.id === rid);
+    if (!it || it.userId !== u.id) return { ok: false, error: 'not_found' };
+    if (!it.detail || !it.detail.length) return { ok: false, error: 'no_detail' };
+    const wrong = it.detail.filter(d => !d.ok).length;
+    if (!wrong) return { ok: false, error: 'no_wrong' };
+    const dup = jobRows().find(j => j.userId === u.id && j.type === 'note' && j.params && j.params.resultId === rid && j.status !== 'error');
+    if (dup) return { ok: false, error: 'job_dup' };
+    params = { resultId: rid, code: it.code, title: quizTitle(it.code) || it.code, at: it.at, score: it.score, total: it.total };
+  } else {
+    const scope = safeText(String(p.scope || '').trim(), 500);
+    const pending = Math.min(8, Math.max(0, Math.floor(Number(body.pending) || 0)));
+    if (!scope && !(type === 'photo' && pending)) return { ok: false, error: 'bad_scope' };
+    if (type === 'photo' && !pending) return { ok: false, error: 'no_photo' };
+    if (type === 'photo' && !PropertiesService.getScriptProperties().getProperty('WORKER_KH')) return { ok: false, error: 'sh_not_ready' };
+    params = {
+      scope: scope, material: String(p.material || '').slice(0, 20000),
+      count: Math.min(GEN_MAX_COUNT, Math.max(1, Math.floor(Number(p.count) || 10))),
+      difficulty: ['하', '중', '상'].indexOf(p.difficulty) >= 0 ? p.difficulty : '중',
+      kind: ['single', 'multi', 'tf'].indexOf(p.kind) >= 0 ? p.kind : 'single',
+      subject: safeText(String(p.subject || ''), 20),
+    };
+    if (type === 'photo') { params.photos = []; params.pending = pending; status = 'uploading'; }
+  }
   const id = randomKey(10);
   const json = JSON.stringify(params); if (json.length > SH_CELL_MAX) return { ok: false, error: 'too_big' };
-  jobsSheet().appendRow([id, u.id, 'gen', 'queued', json, '', Date.now(), Date.now(), '']);
-  return { ok: true, job: jobPublic({ id: id, userId: u.id, type: 'gen', status: 'queued', params: params, result: null, createdAt: Date.now(), updatedAt: Date.now(), error: '' }) };
+  jobsSheet().appendRow([id, u.id, type, status, json, '', Date.now(), Date.now(), '']);
+  return { ok: true, job: jobPublic({ id: id, userId: u.id, type: type, status: status, params: params, result: null, createdAt: Date.now(), updatedAt: Date.now(), error: '' }) };
+}
+// 사진 붙이기: {id, filename, mime, data(base64)} — 드라이브 "학습도우미/<kh>" 폴더에 저장
+function jobPhoto(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const j = jobRows().find(x => x.id === String(body.id || ''));
+  if (!j || j.userId !== u.id || j.type !== 'photo' || j.status !== 'uploading') return { ok: false, error: 'not_found' };
+  const kh = PropertiesService.getScriptProperties().getProperty('WORKER_KH'); if (!kh) return { ok: false, error: 'sh_not_ready' };
+  const data = String(body.data || ''); if (!data || data.length > SH_FILE_MAX) return { ok: false, error: 'too_big' };
+  const photos = j.params.photos || [];
+  if (photos.length >= 8) return { ok: false, error: 'too_many' };
+  const mime = /png/i.test(body.mime || '') ? 'image/png' : 'image/jpeg';
+  const name = 'job_' + j.id + '_p' + (photos.length + 1) + (mime === 'image/png' ? '.png' : '.jpg');
+  const file = shFolder(kh).createFile(Utilities.newBlob(Utilities.base64Decode(data), mime, name));
+  photos.push({ driveId: file.getId(), name: name });
+  const params = Object.assign({}, j.params, { photos: photos });
+  jobsSheet().getRange(j.row, 5, 1, 1).setValue(JSON.stringify(params)); jobsSheet().getRange(j.row, 8).setValue(Date.now());
+  return { ok: true, n: photos.length };
+}
+// 사진을 다 올렸으면 대기열로
+function jobReady(body) {
+  const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
+  const j = jobRows().find(x => x.id === String(body.id || ''));
+  if (!j || j.userId !== u.id || j.status !== 'uploading') return { ok: false, error: 'not_found' };
+  if (!(j.params.photos || []).length) return { ok: false, error: 'no_photo' };
+  jobsSheet().getRange(j.row, 4).setValue('queued'); jobsSheet().getRange(j.row, 8).setValue(Date.now());
+  return { ok: true };
+}
+// 워커: 작업 사진 내려받기 {key, driveId}
+function jobFile(p) {
+  const kh = shKh(p.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const j = jobRows().find(x => x.type === 'photo' && (x.params.photos || []).some(ph => ph.driveId === String(p.driveId)));
+  if (!j) return { ok: false, error: 'not_found' };
+  const blob = DriveApp.getFileById(String(p.driveId)).getBlob();
+  return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 function jobList(p) {
   const u = auth(p.token); if (!u) return { ok: false, error: 'bad_token' };
@@ -1173,9 +1233,24 @@ function jobTake(body) {
   const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
   const limit = Math.min(10, Math.max(1, Number(body.limit) || 3));
   const s = jobsSheet(); const now = Date.now();
+  jobRows().filter(j => j.status === 'uploading' && now - j.updatedAt > 30 * 60000).forEach(j => { s.getRange(j.row, 4).setValue('error'); s.getRange(j.row, 9).setValue('사진 업로드가 끝나지 않았습니다.'); });
   const rows = jobRows().filter(j => j.status === 'queued' || (j.status === 'running' && now - j.updatedAt > 30 * 60000)).sort((a, b) => a.createdAt - b.createdAt).slice(0, limit);
   rows.forEach(j => { s.getRange(j.row, 4).setValue('running'); s.getRange(j.row, 8).setValue(now); });
-  return { ok: true, jobs: rows.map(j => { const st = findUser(j.userId); return { id: j.id, userId: j.userId, userName: st ? st.name : '', type: j.type, params: j.params, createdAt: j.createdAt }; }) };
+  return { ok: true, jobs: rows.map(j => { const st = findUser(j.userId); const o = { id: j.id, userId: j.userId, userName: st ? st.name : '', type: j.type, params: j.params, createdAt: j.createdAt }; if (j.type === 'note') o.input = noteInput(j); return o; }) };
+}
+// 오답노트 작업 입력: 결과의 문항별 정오 + 시험지 원문
+function noteInput(j) {
+  const it = resultsWithDetail(r => true, 5000).find(x => x.id === j.params.resultId);
+  const row = findQuizRow(j.params.code); let quiz = null;
+  if (row) { try { quiz = JSON.parse(quizSheet().getRange(row, 4).getValue()); } catch (e) {} }
+  if (!it || !quiz) return null;
+  const shared = quiz.options || [];
+  const qs = (quiz.questions || []).map((q, i) => {
+    const d = (it.detail || []).find(x => x.q === q.id) || { m: [], ok: false };
+    const opts = Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared;
+    return { no: i + 1, id: q.id, text: q.text, options: opts, answers: q.answers || [], mine: d.m || [], ok: !!d.ok, explain: q.explain || '', tags: q.tags || [] };
+  });
+  return { title: quiz.title || j.params.title, subject: quiz.subject || '', code: j.params.code, at: it.at, score: it.score, total: it.total, questions: qs };
 }
 // 워커 결과: {id, ok, quiz:{title, subject, questions:[{text, options, answers, explain, tags}]}} 또는 {id, ok:false, error}
 function jobResult(body) {
@@ -1184,15 +1259,33 @@ function jobResult(body) {
   const s = jobsSheet(); const now = Date.now();
   if (!body.ok) {
     s.getRange(j.row, 4, 1, 6).setValues([['error', j.params ? JSON.stringify(j.params) : '', '', j.createdAt, now, safeText(String(body.error || '실패'), 200)]]);
-    noteAdd(j.userId, 'gen', 'AI 문제 생성(고급)을 마치지 못했습니다', safeText(String(body.error || '다시 요청해 주세요.'), 200), '');
+    noteAdd(j.userId, j.type === 'note' ? 'note' : 'gen', j.type === 'note' ? '오답노트를 만들지 못했습니다' : j.type === 'photo' ? '사진으로 문제를 만들지 못했습니다' : 'AI 문제 생성(고급)을 마치지 못했습니다', safeText(String(body.error || '다시 요청해 주세요.'), 200), '');
     return { ok: true };
   }
-  const made = examFromQuiz(j.userId, body.quiz || {}, j.params.scope || 'AI 문제', j.params.subject || '', 'gen', 60);
+  if (j.type === 'note') {
+    const kh = PropertiesService.getScriptProperties().getProperty('WORKER_KH'); if (!kh) return { ok: false, error: 'sh_not_ready' };
+    const html = String(body.note || ''); if (!html) return jobResult(Object.assign({}, body, { ok: false, error: '오답노트 내용이 없습니다.' }));
+    const d = new Date(Number(j.params.at) || now);
+    const ws = shWsName(String(j.params.title || j.params.code) + '_' + Utilities.formatDate(d, 'Asia/Seoul', 'MMdd') + '_' + String(j.params.code));
+    const wsRow = shEnsureWs(kh, ws, 'done', j.userId);
+    const wsheet = shWsSheet();
+    let noteId = wsheet.getRange(wsRow, 5).getValue();
+    if (noteId) { try { DriveApp.getFileById(noteId).setContent(html); } catch (e) { noteId = ''; } }
+    if (!noteId) noteId = shFolder(kh).createFile(Utilities.newBlob(html, 'text/html', ws + '__note.html')).getId();
+    const summary = JSON.stringify(body.summary || {}).slice(0, SH_CELL_MAX);
+    const questions = JSON.stringify(body.questions || []).slice(0, SH_CELL_MAX);
+    wsheet.getRange(wsRow, 3, 1, 7).setValues([['done', summary, noteId, '[]', questions, wsheet.getRange(wsRow, 8).getValue() || now, now]]);
+    s.getRange(j.row, 4, 1, 6).setValues([['done', JSON.stringify(j.params || {}), JSON.stringify({ worksheet: ws }), j.createdAt, now, '']]);
+    noteAdd(j.userId, 'note', '오답노트가 완성되었습니다', String(j.params.title || ws) + ' · 오답노트에서 확인하세요.', ws);
+    return { ok: true, worksheet: ws };
+  }
+  const made = examFromQuiz(j.userId, body.quiz || {}, j.params.scope || (j.type === 'photo' ? '사진으로 만든 문제' : 'AI 문제'), j.params.subject || '', j.type === 'photo' ? 'photo' : 'gen', 60);
   if (made.error) return jobResult(Object.assign({}, body, { ok: false, error: made.error }));
   const exam = made.exam, examId = made.examId;
   const result = { examId: examId, title: exam.title, count: exam.questions.length };
   s.getRange(j.row, 4, 1, 6).setValues([['done', JSON.stringify(j.params || {}), JSON.stringify(result), j.createdAt, now, '']]);
-  noteAdd(j.userId, 'gen', 'AI 문제 생성(고급)이 끝났습니다', exam.title + ' · 문제 ' + exam.questions.length + '개가 내 시험지에 추가되었습니다.', examId);
+  (j.params.photos || []).forEach(ph => { try { DriveApp.getFileById(ph.driveId).setTrashed(true); } catch (e) {} });
+  noteAdd(j.userId, 'gen', j.type === 'photo' ? '사진으로 만든 문제가 도착했습니다' : 'AI 문제 생성(고급)이 끝났습니다', exam.title + ' · 문제 ' + exam.questions.length + '개가 내 시험지에 추가되었습니다.', examId);
   return { ok: true, examId: examId };
 }
 
