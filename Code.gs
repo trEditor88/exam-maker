@@ -392,6 +392,7 @@ function doPost(e) {
     if (a === 'jobCancel') return out(jobCancel(body));
     if (a === 'jobTake') return out(jobTake(body));
     if (a === 'jobResult') return out(jobResult(body));
+    if (a === 'examPut') return out(examPut(body));
     if (a === 'noteSeen') return out(noteSeen(body));
     if (a === 'resultDelete') return out(resultDelete(body));
     if (a === 'workerKeySet') return out(workerKeySet(body));
@@ -1186,24 +1187,42 @@ function jobResult(body) {
     noteAdd(j.userId, 'gen', 'AI 문제 생성(고급)을 마치지 못했습니다', safeText(String(body.error || '다시 요청해 주세요.'), 200), '');
     return { ok: true };
   }
-  const q = body.quiz || {};
-  const qs = (Array.isArray(q.questions) ? q.questions : []).filter(x => x && x.text && Array.isArray(x.options) && x.options.length >= 2 && Array.isArray(x.answers) && x.answers.length).slice(0, GEN_MAX_COUNT);
-  if (!qs.length) return jobResult(Object.assign({}, body, { ok: false, error: '검증을 통과한 문항이 없습니다.' }));
-  const shared = qs[0].options.map(String);
-  const same = (a) => a.length === shared.length && a.every((v, i) => String(v) === shared[i]);
-  const examId = 'gen_' + randomKey(8);
-  const exam = {
-    id: examId, title: safeText(String(q.title || j.params.scope || 'AI 문제'), 80), desc: '', subject: safeText(String(q.subject || j.params.subject || ''), 20),
-    options: shared,
-    questions: qs.map((x, i) => ({ id: 'q' + (i + 1) + '_' + randomKey(4), text: String(x.text).slice(0, 2000), explain: String(x.explain || '').slice(0, 500), options: same(x.options.map(String)) ? null : x.options.map(String), answers: x.answers.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < x.options.length), tags: Array.isArray(x.tags) ? x.tags.map(String).slice(0, 8) : [] })),
-    shuffle: false, createdAt: now, updatedAt: now,
-  };
-  const json = JSON.stringify(exam); if (json.length > EXAM_MAX_CHARS) return jobResult(Object.assign({}, body, { ok: false, error: '결과가 너무 큽니다.' }));
-  examsSheet().appendRow([examId, j.userId, exam.title, json, '', now]);
+  const made = examFromQuiz(j.userId, body.quiz || {}, j.params.scope || 'AI 문제', j.params.subject || '', 'gen', 60);
+  if (made.error) return jobResult(Object.assign({}, body, { ok: false, error: made.error }));
+  const exam = made.exam, examId = made.examId;
   const result = { examId: examId, title: exam.title, count: exam.questions.length };
   s.getRange(j.row, 4, 1, 6).setValues([['done', JSON.stringify(j.params || {}), JSON.stringify(result), j.createdAt, now, '']]);
   noteAdd(j.userId, 'gen', 'AI 문제 생성(고급)이 끝났습니다', exam.title + ' · 문제 ' + exam.questions.length + '개가 내 시험지에 추가되었습니다.', examId);
   return { ok: true, examId: examId };
+}
+
+/* 워커가 만든 문항 묶음 → 계정의 exams 행. quiz = {title, subject, desc?, questions:[{text, options, answers, explain, tags}]} */
+function examFromQuiz(userId, q, fallbackTitle, fallbackSubject, prefix, maxQ) {
+  const now = Date.now();
+  const qs = (Array.isArray(q.questions) ? q.questions : []).filter(x => x && x.text && Array.isArray(x.options) && x.options.length >= 2 && Array.isArray(x.answers) && x.answers.length).slice(0, maxQ || 60);
+  if (!qs.length) return { error: '검증을 통과한 문항이 없습니다.' };
+  const shared = qs[0].options.map(String);
+  const same = (a) => a.length === shared.length && a.every((v, i) => String(v) === shared[i]);
+  const examId = (prefix || 'gen') + '_' + randomKey(8);
+  const exam = {
+    id: examId, title: safeText(String(q.title || fallbackTitle || '문제'), 80), desc: safeText(String(q.desc || ''), 300), subject: safeText(String(q.subject || fallbackSubject || ''), 20),
+    options: shared,
+    questions: qs.map((x, i) => ({ id: 'q' + (i + 1) + '_' + randomKey(4), text: String(x.text).slice(0, 2000), explain: String(x.explain || '').slice(0, 500), options: same(x.options.map(String)) ? null : x.options.map(String), answers: x.answers.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < x.options.length), tags: Array.isArray(x.tags) ? x.tags.map(String).slice(0, 8) : [] })),
+    shuffle: false, createdAt: now, updatedAt: now,
+  };
+  const json = JSON.stringify(exam); if (json.length > EXAM_MAX_CHARS) return { error: '결과가 너무 큽니다.' };
+  examsSheet().appendRow([examId, userId, exam.title, json, '', now]);
+  return { examId: examId, exam: exam };
+}
+// 워커: PC 에서 만든 시험지(예: 사진→문제)를 계정에 넣고 알림. {key, userId, quiz, source}
+function examPut(body) {
+  const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const uid = cleanId(body.userId); const st = findUser(uid); if (!st) return { ok: false, error: 'not_found' };
+  const made = examFromQuiz(uid, body.quiz || {}, '문제', '', body.source === 'photo' ? 'photo' : 'put', 60);
+  if (made.error) return { ok: false, error: made.error };
+  const label = body.source === 'photo' ? '사진으로 만든 문제가 도착했습니다' : '새 시험지가 도착했습니다';
+  noteAdd(uid, 'gen', label, made.exam.title + ' · 문제 ' + made.exam.questions.length + '개가 내 시험지에 추가되었습니다.', made.examId);
+  return { ok: true, examId: made.examId, count: made.exam.questions.length };
 }
 
 /* ── 분석 리포트 (워커가 생성, 사이트가 보여 줌) ── */
