@@ -1517,6 +1517,77 @@ function SettingsModal({ onClose, flash }) {
 }
 
 
+/* ── 인쇄·PDF: A4 한 장에 3~4문항, 마지막에 해설지. 브라우저 인쇄 창에서 "PDF로 저장" ── */
+function printableItems(src) {
+  const shared = src.options || [];
+  return (src.questions || []).map((q, i) => ({ no: i + 1, text: q.text || "", options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared, answers: q.answers || [], explain: q.explain || "" }));
+}
+function buildPrintHtml(src, opts) {
+  const esc = (v) => String(v || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const items = printableItems(src);
+  const per = opts.perPage || 4;
+  const pages = [];
+  for (let i = 0; i < items.length; i += per) pages.push(items.slice(i, i + per));
+  const total = pages.length + (opts.withKey ? 1 : 0);
+  const head = (p) => `<div class="hd"><div><b>${esc(src.title || "시험지")}</b>${src.subject ? ` <span class="sub">· ${esc(src.subject)}</span>` : ""}</div><div class="sub">${p} / ${total}</div></div>`;
+  const nameLine = opts.nameLine ? `<div class="name">이름 ______________ &nbsp;&nbsp; 날짜 ______________ &nbsp;&nbsp; 점수 ______ / ${items.length}</div>` : "";
+  const qHtml = (q) => `<div class="q"><div class="no">${q.no}.</div><div class="body"><div class="t">${esc(q.text)}${q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</div><div class="opts">${q.options.map((o, i) => `<div class="o">${mark(i)} ${esc(o)}</div>`).join("")}</div></div></div>`;
+  let html = pages.map((pg, pi) => `<section class="page">${head(pi + 1)}${pi === 0 ? nameLine : ""}${pi === 0 && src.desc ? `<p class="desc">${esc(src.desc)}</p>` : ""}${pg.map(qHtml).join("")}</section>`).join("");
+  if (opts.withKey) {
+    const cols = 10;
+    let tbl = "";
+    for (let i = 0; i < items.length; i += cols) {
+      const chunk = items.slice(i, i + cols);
+      tbl += `<table class="ans"><tr>${chunk.map((q) => `<th>${q.no}</th>`).join("")}</tr><tr>${chunk.map((q) => `<td>${q.answers.map(mark).join("")}</td>`).join("")}</tr></table>`;
+    }
+    html += `<section class="page key">${head(total)}<h2>정답 및 해설</h2>${tbl}${items.filter((q) => q.explain).map((q) => `<div class="ex"><b>${q.no}. ${q.answers.map(mark).join("")}</b> ${esc(q.explain)}</div>`).join("")}</section>`;
+  }
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(src.title || "시험지")}</title><style>
+@page{size:A4;margin:14mm 14mm 16mm}
+html,body{margin:0;background:#fff;color:#1D1D1F;font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:13pt;line-height:1.65}
+.page{page-break-after:always;break-after:page} .page:last-child{page-break-after:auto;break-after:auto}
+.hd{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #1D1D1F;padding-bottom:3mm;margin-bottom:5mm;font-size:15pt}
+.sub{color:#6E6E73;font-size:10.5pt;font-weight:400} .name{margin:0 0 6mm;font-size:12pt} .desc{color:#3A3A3C;font-size:11.5pt;margin:0 0 5mm;white-space:pre-wrap}
+.q{display:flex;gap:4mm;margin:0 0 9mm;page-break-inside:avoid;break-inside:avoid} .no{font-weight:800;min-width:8mm} .body{flex:1} .t{white-space:pre-wrap;margin-bottom:2.5mm}
+.opts .o{padding:1.2mm 0 1.2mm 2mm}
+.key h2{font-size:16pt;margin:0 0 4mm} table.ans{border-collapse:collapse;margin:0 0 4mm;font-size:12pt} table.ans th,table.ans td{border:1px solid #C9C9CE;padding:1.5mm 3mm;text-align:center;min-width:7mm} table.ans th{background:#F5F5F7}
+.ex{font-size:11.5pt;margin:2mm 0 0;page-break-inside:avoid;break-inside:avoid;white-space:pre-wrap;line-height:1.55}
+@media screen{body{background:#EEE;padding:10mm 0} .page{background:#fff;width:210mm;min-height:297mm;box-sizing:border-box;padding:14mm;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:#0066CC;color:#fff;cursor:pointer}}
+@media print{.bar{display:none}}
+</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div>${html}<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},400)});</script></body></html>`;
+}
+function PrintModal({ src, onClose, flash }) {
+  const [per, setPer] = useState(4);
+  const [withKey, setWithKey] = useState(true);
+  const [nameLine, setNameLine] = useState(true);
+  const n = (src.questions || []).length;
+  const pages = Math.ceil(n / per) + (withKey ? 1 : 0);
+  const go = () => {
+    const w = window.open("", "_blank");
+    if (!w) return flash("팝업이 막혀 있습니다. 이 사이트의 팝업을 허용한 뒤 다시 눌러 주세요.");
+    w.document.write(buildPrintHtml(src, { perPage: per, withKey, nameLine }));
+    w.document.close();
+    onClose();
+  };
+  const lab = (t) => <div style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 6px" }}>{t}</div>;
+  return (
+    <Modal title="인쇄 · PDF 저장" onClose={onClose}>
+      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: 0 }}>A4 시험지로 만듭니다. 열리는 인쇄 창에서 프린터 대신 <b>PDF로 저장</b>을 고르면 파일로 받을 수 있습니다.</p>
+      {lab("한 장에 넣을 문항 수")}
+      <Seg value={per} onChange={setPer} items={[[3, "3문항"], [4, "4문항"]]} />
+      <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+        <CheckRow on={withKey} onToggle={() => setWithKey((v) => !v)}><Check on={withKey} size={20} /><span style={{ fontSize: 14.5 }}>해설지(정답표 + 해설)를 마지막 장에 붙이기</span></CheckRow>
+        <CheckRow on={nameLine} onToggle={() => setNameLine((v) => !v)}><Check on={nameLine} size={20} /><span style={{ fontSize: 14.5 }}>첫 장에 이름·날짜·점수 칸</span></CheckRow>
+      </div>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 0" }}>문제 {n}개 · 예상 {pages}쪽{n === 0 ? " — 문제가 없습니다" : ""}</p>
+      <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+        <Btn onClick={go} disabled={n === 0}>인쇄 창 열기</Btn>
+        <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 function Seg({ value, onChange, items }) {
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1681,7 +1752,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue }
 }
 
 /* ── 화면: 편집 ──────────────────────────────── */
-function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast, genInit, onGenInitUsed }) {
+function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast, genInit, onGenInitUsed, onPrint }) {
   const [shareCode, setShareCode] = useState(null);
   const [showProblems, setShowProblems] = useState(false);
   const [leaveAsk, setLeaveAsk] = useState(false);
@@ -1784,6 +1855,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           {(genAvail || remote().kind === "server") && <TextBtn onClick={() => setGenOpen(true)}>AI로 문제 만들기</TextBtn>}
           {draft.code && <TextBtn onClick={() => setResultsOpen(true)}>응시 기록</TextBtn>}
           <TextBtn onClick={onExport}>내보내기</TextBtn>
+          {onPrint && <TextBtn onClick={() => onPrint(draft)}>인쇄·PDF</TextBtn>}
         </div>
       </div>
 
@@ -1973,7 +2045,7 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
 }
 
 /* ── 화면: 응시 ──────────────────────────────── */
-function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, toast }) {
+function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, toast, onPrint }) {
   const [confirm, setConfirm] = useState(false);
   /* 제한 시간: 0.5초마다 남은 시간을 계산하고 0이 되면 한 번만 자동 제출 */
   const submitRef = useRef(onSubmit); submitRef.current = onSubmit;
@@ -1997,6 +2069,7 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
       {run.desc && <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{run.desc}</p>}
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
         {run.owner ? `${run.owner} 출제 · ` : ""}{run.partial ? "틀린 문제만 다시 풉니다 · " : ""}문제 {run.questions.length}개{run.timeLimit ? ` · 제한 ${run.timeLimit}분` : ""} · 정답이 여러 개일 수 있습니다{run.preview ? " · 응시 기간 밖(출제자 미리 보기)" : ""}
+        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, options: run.options, questions: run.questions })} style={{ padding: 0, fontSize: 14 }}>인쇄·PDF</TextBtn></>}
       </p>
 
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
@@ -2837,6 +2910,7 @@ function ExamMaker() {
   const [needSetup, setNeedSetup] = useState(false);
   const [acctOpen, setAcctOpen] = useState(false);
   const [genInit, setGenInit] = useState(null);   // 추천 학습 → 편집 화면을 열며 AI 생성 창에 넣을 범위
+  const [printSrc, setPrintSrc] = useState(null); // 인쇄·PDF 모달에 넘길 시험지
   const examsRef = useRef([]);
   useEffect(() => { examsRef.current = exams; }, [exams]);
   const loadServerExams = async () => {
@@ -3126,6 +3200,7 @@ function ExamMaker() {
   };
   const chrome = (
     <>
+      {printSrc && <PrintModal src={printSrc} onClose={() => setPrintSrc(null)} flash={flash} />}
       {acctOpen && user && <AccountModal user={user} onClose={() => setAcctOpen(false)} onLogout={logoutNow} flash={flash} onUser={(u) => { setUser(u); const a = authGet(); if (a) authSet({ token: a.token, user: u }); }} />}
       {navOn && <NavBar screen={screen} role={(user && user.role) || "admin"} go={navGo} onAccount={() => setAcctOpen(true)} user={user} badge={unseen} />}
     </>
@@ -3225,6 +3300,7 @@ function ExamMaker() {
           onShare={shareDraft}
           onBack={goHome}
           onExport={exportOne}
+          onPrint={(d) => setPrintSrc(d)}
           flash={flash}
           toast={toast}
           genInit={genInit}
@@ -3238,7 +3314,7 @@ function ExamMaker() {
     return <>{<CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} />}{chrome}</>;
 
   if (screen === "take" && run)
-    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} />}{chrome}</>;
+    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} onPrint={(d) => setPrintSrc(d)} />}{chrome}</>;
 
   if (screen === "result" && result && run)
     return <>{<ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} loggedIn={remote().kind === "server" && !!user} onMyResults={() => setScreen("myresults")} onStudy={() => setScreen("study")} resultId={resultId} canNote={canNote()} onMakeNote={makeNote} />}{chrome}</>;
