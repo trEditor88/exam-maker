@@ -45,6 +45,25 @@ const LS_PREFIX = "exam-maker:";
 
 /* ── 테마(밝게/어둡게/기기 설정) + 전역 CSS ───────
    C 의 값이 CSS 변수라 화면 코드는 그대로 두고 :root 변수만 바꾸면 테마가 바뀐다. */
+/* 학교·학년·학년도(이 브라우저에 저장). 기본 상현고 1학년 2026 — AI 문제 만들기의 교과서 자동 선택에 쓴다 */
+const SCHOOL_DEFAULT = { school: "상현고", grade: 1, year: 2026 };
+const schoolGet = () => { try { return Object.assign({}, SCHOOL_DEFAULT, JSON.parse(localStorage.getItem(LS_PREFIX + "school") || "{}")); } catch (e) { return { ...SCHOOL_DEFAULT }; } };
+const schoolSet = (v) => { try { localStorage.setItem(LS_PREFIX + "school", JSON.stringify(v)); } catch (e) {} };
+const tbLabel = (t) => t ? `${t.publisher ? t.publisher + " " : ""}${t.subject}${t.author ? " (" + t.author + ")" : ""}` : "";
+/* 과목 글자(예: "통합과학", "한국사 1단원")로 교과서 목록에서 가장 맞는 것을 고른다 */
+function pickTextbook(tbs, text, grade) {
+  const norm = (v) => String(v || "").replace(/[\s·]/g, "");
+  const t = norm(text); if (!t || !tbs.length) return -1;
+  let best = -1, bestScore = 0;
+  tbs.forEach((tb, i) => {
+    const base = norm(tb.subject).replace(/\d+$/, ""); if (!base) return;
+    let sc = 0;
+    if (t.startsWith(norm(tb.subject))) sc = 3; else if (t.includes(base) || base.includes(t)) sc = 2;
+    if (sc && grade && tb.grade === grade) sc += 0.5;
+    if (sc > bestScore) { bestScore = sc; best = i; }
+  });
+  return best;
+}
 const themeGet = () => { try { return localStorage.getItem(LS_PREFIX + "theme") || "auto"; } catch (e) { return "auto"; } };
 function applyTheme() {
   const pref = themeGet();
@@ -75,6 +94,7 @@ html,body{background:${C.bg};}
 .em-nav-logo{display:none;}
 .em-nav-item.em-nav-more{display:none;}
 .em-nav-profile{display:none;}
+.em-fig svg{max-width:100%;height:auto;display:block;background:#fff;border-radius:10px;}
 .em-jump{position:fixed;right:14px;bottom:18px;display:flex;flex-direction:column;gap:6px;z-index:40;}
 .em-jump button{width:48px;height:48px;border-radius:999px;border:1px solid ${C.line};background:${C.card};color:${C.accent};padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:${C.shadow};}
 .em-jump button svg{width:34px;height:34px;display:block;}
@@ -252,6 +272,9 @@ const serverRemote = {
   jobCancel: (id) => apiPost({ action: "jobCancel", id }),
   noteList: () => apiGet({ action: "noteList" }),
   noteSeen: (ids) => apiPost({ action: "noteSeen", ids }),
+  textbookGet: (school, year) => apiGet({ action: "textbookGet", school, year }),
+  textbookSet: (b) => apiPost({ action: "textbookSet", ...b }),
+  schoolLookup: (b) => apiPost({ action: "schoolLookup", ...b }),
   usage: () => apiGet({ action: "usage" }),
 };
 const localRemote = {
@@ -431,6 +454,26 @@ function aggregateResults(items, quizzes) {
 /* 난이도: 기초 → 기본 → 발전 → 심화. 인쇄 양식 색(초록·파랑·노랑·빨강)에 쓰인다 */
 const LEVELS = ["기초", "기본", "발전", "심화"];
 const QTYPES = ["mc", "short", "essay"];
+/* 문항 그림: inline SVG 만 허용. 스크립트·이벤트·외부 참조를 지운다 */
+function sanitizeSvg(v) {
+  let t = String(v || "").trim();
+  if (!/^<svg[\s>]/i.test(t)) return "";
+  t = t.slice(0, 20000).replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "").replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "").replace(/(href|src)\s*=\s*("[^"]*"|'[^']*')/gi, (m) => (/javascript:|https?:|data:/i.test(m) ? "" : m));
+  return /<\/svg>\s*$/i.test(t) ? t : "";
+}
+function PassageBox({ text }) {
+  if (!text) return null;
+  return (
+    <div style={{ border: `1px solid ${C.line}`, background: C.card, borderRadius: 14, padding: "12px 14px", margin: "4px 0 10px" }}>
+      <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", color: C.sub, marginBottom: 4 }}>지문</div>
+      <div style={{ fontSize: 15, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{text}</div>
+    </div>
+  );
+}
+function Figure({ svg, style }) {
+  if (!svg) return null;
+  return <div className="em-fig" role="img" aria-label="문항 그림" style={{ margin: "6px 0 12px", maxWidth: 420, ...style }} dangerouslySetInnerHTML={{ __html: svg }} />;
+}
 const QTYPE_KO = { mc: "객관식", short: "주관식", essay: "서술형" };
 const DEFAULT_OPTS = () => ["", "", "", "", ""];   // 새 문항의 보기는 5개
 const normAns = (t) => String(t || "").trim().toLowerCase().replace(/\s+/g, "").replace(/[.。]$/, "");
@@ -460,6 +503,8 @@ function normalizeQuestion(q, nOpt) {
     options: own,
     answers: asIntList(src.answers, own ? own.length : nOpt),
     type: QTYPES.indexOf(src.type) >= 0 ? src.type : "mc",     // mc 객관식 / short 주관식 / essay 서술형
+    svg: sanitizeSvg(src.svg),                                   // 그림(도형·그래프·표) inline SVG
+    passage: asStr(src.passage).slice(0, 4000),                  // 세트형 지문(같은 지문을 이어지는 문항에 두면 한 번만 표시)
     answerText: asStr(src.answerText),                          // 주관식 정답(| 로 여러 개) / 서술형 모범 답안
     tags: Array.isArray(src.tags) ? src.tags.map(asStr).map((t) => t.trim()).filter(Boolean).slice(0, 8) : [],
   };
@@ -506,6 +551,8 @@ function payloadOf(exam) {
       answers: q.answers,
       ...(q.tags && q.tags.length ? { tags: q.tags } : {}),
       ...(q.type && q.type !== "mc" ? { type: q.type, answerText: q.answerText || "" } : {}),
+      ...(q.svg ? { svg: q.svg } : {}),
+      ...(q.passage ? { passage: q.passage } : {}),
     })),
     shuffle: !!exam.shuffle,
     /* 아래는 값이 있을 때만 넣어 기존 공유본의 해시가 바뀌지 않게 한다 */
@@ -1552,7 +1599,7 @@ function SettingsModal({ onClose, flash }) {
 function printableItems(src) {
   const shared = src.options || [];
   const strip = (t) => String(t || "").replace(/\s*[\(（]\s*정답\s*\d+\s*개\s*[\)）]\s*$/, "");   // 본문 끝의 "(정답 N개)"는 지우고 양식이 한 번만 붙인다
-  return (src.questions || []).map((q, i) => ({ no: i + 1, type: q.type || "mc", answerText: q.answerText || "", text: strip(q.text), options: (q.type && q.type !== "mc") ? [] : (Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared), answers: q.answers || [], explain: q.explain || "" }));
+  return (src.questions || []).map((q, i, arr) => ({ no: i + 1, type: q.type || "mc", answerText: q.answerText || "", svg: sanitizeSvg(q.svg), passage: q.passage && (i === 0 || (arr[i - 1].passage || "") !== q.passage) ? q.passage : "", text: strip(q.text), options: (q.type && q.type !== "mc") ? [] : (Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared), answers: q.answers || [], explain: q.explain || "" }));
 }
 function quizKindLabel(items) {
   const mc = items.filter((q) => q.type === "mc");
@@ -1578,7 +1625,7 @@ function buildPrintHtml(src, opts) {
   first += `<div class="pill">확인 문제</div>`;
   const optHtml = (o) => `<div class="opts ${o.every((x) => String(x).length <= 14) ? "two" : "one"}">${o.map((x, i) => `<div class="o"><span class="m">${mark(i)}</span><span>${esc(x)}</span></div>`).join("")}</div>`;
   const bodyHtml = (q) => q.type === "short" ? `<div class="short">답: <span class="line"></span></div>` : q.type === "essay" ? `<div class="essay"><i></i><i></i><i></i><i></i><i></i></div>` : optHtml(q.options) + `<div class="space"></div>`;
-  const qHtml = (q) => `<div class="q"><div class="qh"><span class="qn">Q${q.no}.</span><span class="qt">${esc(q.text)}${q.type === "short" ? ` <span class="sub">(주관식)</span>` : q.type === "essay" ? ` <span class="sub">(서술형)</span>` : q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</span></div>${bodyHtml(q)}</div>`;
+  const qHtml = (q) => `<div class="q">${q.passage ? `<div class="pas">${esc(q.passage)}</div>` : ""}<div class="qh"><span class="qn">Q${q.no}.</span><span class="qt">${esc(q.text)}${q.type === "short" ? ` <span class="sub">(주관식)</span>` : q.type === "essay" ? ` <span class="sub">(서술형)</span>` : q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</span></div>${q.svg ? `<div class="fig">${q.svg}</div>` : ""}${bodyHtml(q)}</div>`;
   let tbl = "";
   for (let i = 0; i < items.length; i += 10) {
     const ch = items.slice(i, i + 10);
@@ -1605,6 +1652,8 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 .qh{display:flex;gap:2.5mm;margin:0 0 2.5mm} .qn{font-weight:800;font-size:12pt;white-space:nowrap} .qt{font-weight:700;white-space:pre-wrap} .sub{color:var(--sub);font-weight:400;font-size:9.5pt}
 .opts{display:grid;gap:1.2mm 4mm;margin:0 0 3mm 1mm} .opts.two{grid-template-columns:1fr 1fr} .opts.one{grid-template-columns:1fr} .o{display:flex;gap:1.5mm} .m{color:var(--ac);font-weight:700}
 .space{height:14mm}
+.pas{border:1px solid var(--line);border-radius:6px;padding:2.5mm 3mm;margin:0 0 3mm;font-size:10pt;line-height:1.5;white-space:pre-wrap;background:#FAFAFA}
+.fig{margin:1mm 0 3mm} .fig svg{max-width:100%;max-height:60mm;height:auto;display:block}
 .short{margin:2mm 0 4mm 1mm;font-size:10.5pt} .short .line{display:inline-block;width:70mm;border-bottom:1px solid var(--ink);vertical-align:-1mm}
 .essay{margin:2mm 0 4mm;border:1px solid var(--line);border-radius:6px;padding:2mm 3mm} .essay i{display:block;height:7mm;border-bottom:1px dashed var(--line)} .essay i:last-child{border-bottom:none}
 .badge{flex:0 0 auto;background:var(--ac);color:#fff;font-size:8pt;font-weight:800;border-radius:999px;padding:.6mm 2.5mm;margin-top:.6mm} .av{font-weight:800;flex:0 0 auto} .ex{white-space:pre-wrap;color:#3A3A3C}
@@ -1696,6 +1745,11 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
   const server = remote().kind === "server";
   const [mode, setMode] = useState(genAvail ? "fast" : "pro");   // fast = Gemini 즉시, pro = Claude 워커(고급)
   const [photos, setPhotos] = useState([]);   // 고급: 사진으로 만들기
+  const [explainLen, setExplainLen] = useState("normal");
+  const [tbs, setTbs] = useState([]);          // 학교 교과서 목록
+  const [tbSel, setTbSel] = useState("auto");   // auto | 번호 | none
+  const sc = schoolGet();
+  useEffect(() => { if (!server) return; let alive = true; remote().textbookGet(sc.school, sc.year).then((r) => { if (alive && r.ok) setTbs(r.items || []); }); return () => { alive = false; }; }, []);
   const [prog, setProg] = useState("");
   const [scope, setScope] = useState(initScope || "");
   const [material, setMaterial] = useState("");
@@ -1709,13 +1763,16 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
   const [result, setResult] = useState(null);
   const [sel, setSel] = useState({});
 
+  const sugIdx = pickTextbook(tbs, subject || scope, sc.grade);
+  const tbIdx = tbSel === "auto" ? sugIdx : tbSel === "none" ? -1 : Number(tbSel);
+  const textbook = tbIdx >= 0 && tbs[tbIdx] ? tbLabel(tbs[tbIdx]) : "";
   const run = async () => {
     if (busy || (!scope.trim() && !(mode === "pro" && photos.length))) return;
     setBusy(true);
     setErr("");
     if (mode === "pro") {
       const type = photos.length ? "photo" : "gen";
-      const rq = await remote().jobCreate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, subject: subject || "" }, type, photos.length);
+      const rq = await remote().jobCreate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, subject: subject || "", textbook, explainLen }, type, photos.length);
       if (!rq.ok) { setBusy(false); setErr(errMsg(rq)); return; }
       if (type === "photo") {
         for (let i = 0; i < photos.length; i++) {
@@ -1733,7 +1790,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
       onQueue && onQueue(rq.job);
       return;
     }
-    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, pw });
+    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, pw, textbook, explainLen });
     setBusy(false);
     if (!r.ok) {
       setErr(errMsg(r));
@@ -1783,12 +1840,28 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           )}
           <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
           {label("문제 수")}
-          <Seg value={custom ? "custom" : count} onChange={(v) => { if (v === "custom") setCustom(true); else { setCustom(false); setCount(v); } }} items={[[10, "10개"], [20, "20개"], ["custom", "직접 입력"]]} />
+          <Seg value={custom ? "custom" : count} onChange={(v) => { if (v === "custom") setCustom(true); else { setCustom(false); setCount(v); } }} items={[[10, "10개"], [25, "25개"], ["custom", "직접 입력"]]} />
           {custom && <input type="number" min="1" max="40" value={count} onChange={(e) => setCount(Math.max(1, Math.min(40, parseInt(e.target.value, 10) || 1)))} className="em-in" aria-label="문제 수" style={{ marginTop: 8, width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 15, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px" }} />}
           {label("난이도 (인쇄 색: 기초 초록 · 기본 파랑 · 발전 노랑 · 심화 빨강)")}
           <Seg value={difficulty} onChange={setDifficulty} items={[["기초", "기초"], ["기본", "기본"], ["발전", "발전"], ["심화", "심화"]]} />
           {label("유형")}
           <Seg value={kind} onChange={setKind} items={[["single", "객관식 (정답 1개)"], ["multi", "객관식 (복수 정답)"], ["tf", "참·거짓"], ["real", "실전형 (5지선다·ㄱㄴㄷ 조합)"], ["short", "주관식"], ["essay", "서술형"]]} />
+          {label("해설 길이")}
+          <Seg value={explainLen} onChange={setExplainLen} items={[["short", "짧게 (한 문장)"], ["normal", "보통 (2~3문장)"], ["long", "자세히 (오답 이유까지)"]]} />
+          {server && (
+            <>
+              {label(`교과서 (${sc.school} ${sc.grade}학년 ${sc.year}학년도 기준 · 계정 창에서 학교를 바꿀 수 있음)`)}
+              {tbs.length === 0 ? (
+                <p style={{ fontSize: 13.5, color: C.sub, margin: 0 }}>이 학교의 교과서 목록이 아직 없습니다. 계정 창에서 학교를 저장하면 찾아 둡니다.</p>
+              ) : (
+                <select value={tbSel} onChange={(e) => setTbSel(e.target.value)} className="em-in" aria-label="교과서" style={{ width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 14.5, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px" }}>
+                  <option value="auto">{sugIdx >= 0 ? `자동 · ${tbLabel(tbs[sugIdx])}` : "자동 (과목을 적으면 고릅니다)"}</option>
+                  {tbs.map((t, i) => <option key={i} value={String(i)}>{t.grade ? `${t.grade}학년 · ` : ""}{tbLabel(t)}</option>)}
+                  <option value="none">교과서 지정 안 함</option>
+                </select>
+              )}
+            </>
+          )}
 
           {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
@@ -1809,6 +1882,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
                   <Check on={on} size={20} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{i + 1}. {q.text}</div>
+                    <Figure svg={q.svg} style={{ maxWidth: 300 }} />
                     {(q.options || []).map((o, oi) => {
                       const ans = q.answers.includes(oi);
                       return (
@@ -1845,6 +1919,8 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   const [manualMode] = useState(!!genAuto && !genInit);   // 새 시험지: 닫기 대신 "직접 문제 만들기"
   useEffect(() => { if ((genInit || genAuto) && onGenInitUsed) onGenInitUsed(); }, []);
   const [tagsRaw, setTagsRaw] = useState({});   // 문항별 태그 입력 중 문자열(쉼표 입력 중에도 유지)
+  const [figOpen, setFigOpen] = useState({});   // 문항별 그림(SVG) 입력칸 열림
+  const [pasOpen, setPasOpen] = useState({});   // 문항별 지문 입력칸 열림
   const inStyle = { width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 15, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 11px", outline: "none", marginTop: 4 };
   const labStyle = { display: "block", fontSize: 12.5, color: C.sub, fontWeight: 600 };
   const [genAvail, setGenAvail] = useState(false); // 서버가 생성 기능을 켰을 때만 버튼 표시(기본 숨김 = 비용 0)
@@ -1979,7 +2055,18 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
               </div>
             </div>
             <div style={{ margin: "0 0 10px" }}><Seg value={q.type || "mc"} onChange={(v) => setQType(qi, v)} items={[["mc", "객관식"], ["short", "주관식"], ["essay", "서술형"]]} /></div>
+            {(q.passage || pasOpen[q.id]) && (
+              <Field value={q.passage || ""} onChange={(v) => setQ(qi, { passage: v })} placeholder="지문 (같은 지문을 이어지는 문항에도 넣으면 화면·인쇄에서 한 번만 보입니다)" multiline rows={4} maxLength={4000} style={{ marginBottom: 8, fontSize: 14.5, background: C.lineSoft }} ariaLabel={`${qi + 1}번 지문`} />
+            )}
             <Field value={q.text} onChange={(v) => setQ(qi, { text: v })} placeholder="문제를 입력하세요" multiline />
+            {q.svg && !figOpen[q.id] && <Figure svg={q.svg} />}
+            <div style={{ marginTop: 6 }}><TextBtn tone="sub" onClick={() => setFigOpen({ ...figOpen, [q.id]: !figOpen[q.id] })} style={{ padding: 0, fontSize: 13 }}>{figOpen[q.id] ? "그림 코드 닫기" : q.svg ? "그림(SVG) 고치기" : "그림(SVG) 넣기"}</TextBtn>{!q.passage && !pasOpen[q.id] && <TextBtn tone="sub" onClick={() => { setPasOpen({ ...pasOpen, [q.id]: true }); if (qi > 0 && draft.questions[qi - 1].passage) setQ(qi, { passage: draft.questions[qi - 1].passage }); }} style={{ padding: 0, fontSize: 13, marginLeft: 10 }}>지문 넣기{qi > 0 && draft.questions[qi - 1].passage ? " (앞 문항과 같은 지문)" : ""}</TextBtn>}</div>
+            {figOpen[q.id] && (
+              <div style={{ marginTop: 6 }}>
+                <Field value={q.svg || ""} onChange={(v) => setQ(qi, { svg: sanitizeSvg(v) || (v.trim() ? q.svg : "") })} placeholder={'<svg viewBox="0 0 320 200" ...> … </svg>  (도형·그래프·표. AI가 만든 문제는 자동으로 들어옵니다)'} multiline rows={4} maxLength={20000} style={{ fontSize: 12.5, fontFamily: "ui-monospace, Consolas, monospace" }} ariaLabel={`${qi + 1}번 그림 코드`} />
+                <Figure svg={q.svg} />
+              </div>
+            )}
             {(q.type || "mc") === "short" && (
               <Field value={q.answerText || ""} onChange={(v) => setQ(qi, { answerText: v })} placeholder="정답 (여러 개를 인정하면 | 로 구분) 예: 이온 결합|이온결합" maxLength={300} style={{ marginTop: 10, fontSize: 15 }} ariaLabel={`${qi + 1}번 정답`} />
             )}
@@ -2173,10 +2260,14 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
       <div style={{ display: "grid", gap: 12 }}>
         {run.questions.map((q, qi) => {
           const mine = picked[q.id] || [];
+          const prev = run.questions[qi - 1];
           return (
-            <Card key={q.id} style={{ padding: 16 }}>
+            <React.Fragment key={q.id}>
+            {q.passage && (!prev || prev.passage !== q.passage) && <PassageBox text={q.passage} />}
+            <Card style={{ padding: 16 }}>
               <div style={{ fontSize: 14.5, fontWeight: 700, color: C.accent, marginBottom: 8 }}>{qi + 1}번</div>
               <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}{q.type && q.type !== "mc" && <span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}> · {QTYPE_KO[q.type]}</span>}</p>
+              <Figure svg={q.svg} />
               {(q.type || "mc") !== "mc" && (
                 <Field value={(typed || {})[q.id] || ""} onChange={(v) => setTyped({ ...(typed || {}), [q.id]: v })} placeholder={q.type === "essay" ? "답을 문장으로 적어 주세요" : "답을 적어 주세요"} multiline={q.type === "essay"} rows={q.type === "essay" ? 5 : 2} maxLength={q.type === "essay" ? 2000 : 200} ariaLabel={`${qi + 1}번 답`} />
               )}
@@ -2193,6 +2284,7 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
                 })}
               </div>}
             </Card>
+            </React.Fragment>
           );
         })}
       </div>
@@ -2264,17 +2356,21 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
       </div>
 
       <div style={{ display: "grid", gap: 12 }}>
-        {rows.map(({ q, mine, ok, typed: t, pending }) => {
+        {rows.map(({ q, mine, ok, typed: t, pending }, ri) => {
           const qi = result.rows.findIndex((r) => r.q.id === q.id);
           const textQ = q.type === "short" || q.type === "essay";
+          const prevQ = ri > 0 ? rows[ri - 1].q : null;
           return (
-            <Card key={q.id} style={{ padding: 16, borderColor: ok ? C.line : C.badSoft }}>
+            <React.Fragment key={q.id}>
+            {q.passage && (!prevQ || prevQ.passage !== q.passage) && <PassageBox text={q.passage} />}
+            <Card style={{ padding: 16, borderColor: ok ? C.line : C.badSoft }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
                 <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span>
                 <Badge tone={pending ? "warn" : ok ? "good" : "bad"}>{pending ? "채점 대기 (서술형)" : ok ? "정답" : "오답"}</Badge>
                 {textQ && <Badge>{QTYPE_KO[q.type]}</Badge>}
               </div>
               <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}</p>
+              <Figure svg={q.svg} />
               {textQ && (
                 <div style={{ display: "grid", gap: 8, marginBottom: 6 }}>
                   <div style={{ padding: "10px 12px", border: `1px solid ${pending ? C.line : ok ? C.good : C.bad}`, background: pending ? C.field : ok ? C.goodSoft : C.badSoft, borderRadius: 10, fontSize: 15, whiteSpace: "pre-wrap" }}><span style={{ fontSize: 12.5, color: C.sub, display: "block" }}>내 답</span>{t || "(비어 있음)"}</div>
@@ -2319,6 +2415,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
                 </div>
               )}
             </Card>
+            </React.Fragment>
           );
         })}
       </div>
@@ -2597,6 +2694,17 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
 function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   const [theme, setTheme] = useState(themeGet);
   const [subj, setSubj] = useState((user.subjects || []).join(", "));
+  const [sch, setSch] = useState(schoolGet);
+  const [schMsg, setSchMsg] = useState("");
+  const saveSchool = async () => {
+    const v = { school: String(sch.school || "").trim() || SCHOOL_DEFAULT.school, grade: Number(sch.grade) || 1, year: Number(sch.year) || SCHOOL_DEFAULT.year };
+    schoolSet(v); setSch(v);
+    if (remote().kind !== "server") return flash("저장했습니다.");
+    const r = await remote().schoolLookup({ school: v.school, year: v.year, grade: v.grade });
+    if (!r.ok) return flash(errMsg(r));
+    setSchMsg(r.found ? `교과서 ${r.items.length}과목 있음` : "교과서 목록을 찾는 중 — 찾으면 알림이 옵니다 (관리자 PC 가 켜져 있을 때)");
+    flash(r.found ? `저장했습니다. 교과서 ${r.items.length}과목이 등록되어 있습니다.` : "저장했습니다. 이 학교의 교과서 목록을 찾아 두겠습니다.");
+  };
   const [subjBusy, setSubjBusy] = useState(false);
   const saveSubj = async () => {
     setSubjBusy(true);
@@ -2623,6 +2731,14 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
         <Avatar size={52} />
         <p style={{ fontSize: 15, margin: 0, lineHeight: 1.5 }}><b>{user.name}</b> <Badge tone="accent">{ROLE_KO[user.role] || user.role}</Badge><br /><span style={{ color: C.sub, fontSize: 13.5 }}>{user.id}</span></p>
       </div>
+      <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>학교 · 학년 · 학년도 <span style={{ fontSize: 12 }}>(AI 문제의 교과서 자동 선택에 쓰임)</span></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 72px 84px auto", gap: 6, marginBottom: schMsg ? 4 : 12 }}>
+        <Field value={sch.school} onChange={(v) => setSch({ ...sch, school: v })} placeholder="학교 (예: 상현고)" ariaLabel="학교" maxLength={40} style={{ fontSize: 14.5 }} onEnter={saveSchool} />
+        <select value={sch.grade} onChange={(e) => setSch({ ...sch, grade: Number(e.target.value) })} className="em-in" aria-label="학년" style={{ fontFamily: FONT, fontSize: 14.5, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 8px" }}>{[1, 2, 3].map((g) => <option key={g} value={g}>{g}학년</option>)}</select>
+        <input type="number" min="2020" max="2040" value={sch.year} onChange={(e) => setSch({ ...sch, year: Number(e.target.value) || SCHOOL_DEFAULT.year })} className="em-in" aria-label="학년도" style={{ fontFamily: FONT, fontSize: 14.5, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 8px", width: "100%", boxSizing: "border-box" }} />
+        <Btn kind="soft" onClick={saveSchool} style={{ width: "auto", padding: "10px 14px", fontSize: 14 }}>저장</Btn>
+      </div>
+      {schMsg && <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 12 }}>{schMsg}</div>}
       {remote().kind === "server" && (
         <>
           <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>수강 과목 <span style={{ fontSize: 12 }}>(쉼표로 구분)</span></div>
@@ -2727,6 +2843,51 @@ function ResultEditModal({ item, onClose, onSaved, flash }) {
   );
 }
 
+/* 관리자: 학교 교과서 목록 보기·붙여넣기 저장. 한 줄에 "과목[탭]출판사[탭]저자" (학년은 위에서 고름) */
+function TextbookAdmin({ flash }) {
+  const sc0 = schoolGet();
+  const [school, setSchool] = useState(sc0.school);
+  const [year, setYear] = useState(sc0.year);
+  const [grade, setGrade] = useState(1);
+  const [text, setText] = useState("");
+  const [items, setItems] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = async () => { setBusy(true); const r = await remote().textbookGet(school.trim(), year); setBusy(false); if (!r.ok) return flash(errMsg(r)); setItems(r.items || []); };
+  useEffect(() => { load(); }, []);
+  const parseLines = () => text.split(/\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const c = l.split(/\t| {2,}|\|/).map((x) => x.trim()).filter(Boolean); return c.length >= 2 ? { subject: c[0], publisher: c[1], author: c[2] || "", grade } : null; }).filter(Boolean);
+  const add = async () => {
+    const add = parseLines(); if (!add.length) return flash("한 줄에 '과목 탭 출판사 탭 저자' 형식으로 붙여 넣어 주세요.");
+    const merged = [...(items || []).filter((x) => !add.some((a) => a.subject === x.subject && a.grade === x.grade)), ...add];
+    setBusy(true); const r = await remote().textbookSet({ school: school.trim(), year, items: merged }); setBusy(false);
+    if (!r.ok) return flash(errMsg(r)); setText(""); flash(`${r.count}과목을 저장했습니다.`); load();
+  };
+  const removeOne = async (i) => { const next = (items || []).filter((_, k) => k !== i); setBusy(true); const r = await remote().textbookSet({ school: school.trim(), year, items: next }); setBusy(false); if (!r.ok) return flash(errMsg(r)); load(); };
+  const inStyle = { fontFamily: FONT, fontSize: 14.5, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 10px", width: "100%", boxSizing: "border-box" };
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 90px auto", gap: 6, marginBottom: 10 }}>
+        <Field value={school} onChange={setSchool} placeholder="학교" ariaLabel="학교" maxLength={40} onEnter={load} />
+        <input type="number" value={year} onChange={(e) => setYear(Number(e.target.value) || year)} className="em-in" aria-label="학년도" style={inStyle} />
+        <Btn kind="soft" onClick={load} disabled={busy} style={{ width: "auto", padding: "10px 14px", fontSize: 14 }}>불러오기</Btn>
+      </div>
+      {items === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : items.length === 0 ? <p style={{ color: C.sub, fontSize: 14 }}>등록된 교과서가 없습니다. 아래에 붙여 넣어 저장하세요. 학생이 계정 창에서 학교를 저장하면 워커가 자동으로 찾아 채우기도 합니다.</p> : (
+        <Card style={{ padding: 8, marginBottom: 12 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead><tr>{["학년", "과목", "출판사", "저자", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+            <tbody>{items.map((t, i) => <tr key={i}><td style={{ padding: "5px 8px" }}>{t.grade || "-"}</td><td style={{ padding: "5px 8px" }}>{t.subject}</td><td style={{ padding: "5px 8px" }}>{t.publisher}</td><td style={{ padding: "5px 8px" }}>{t.author}</td><td style={{ padding: "5px 8px" }}><TextBtn tone="sub" onClick={() => removeOne(i)} style={{ fontSize: 13 }}>삭제</TextBtn></td></tr>)}</tbody>
+          </table>
+        </Card>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+        <span style={{ fontSize: 13.5, color: C.sub }}>추가 (학년 선택 후 붙여넣기)</span>
+        <select value={grade} onChange={(e) => setGrade(Number(e.target.value))} className="em-in" aria-label="학년" style={{ ...inStyle, width: "auto", padding: "6px 8px" }}>{[1, 2, 3].map((g) => <option key={g} value={g}>{g}학년</option>)}</select>
+      </div>
+      <Field multiline rows={5} value={text} onChange={setText} placeholder={"과목\t출판사\t저자  (한 줄에 하나, 탭이나 | 로 구분)\n통합과학1\t㈜미래엔\t오현선"} maxLength={5000} style={{ fontSize: 13.5 }} />
+      <div style={{ marginTop: 8 }}><Btn onClick={add} disabled={busy}>붙여 넣은 목록 저장</Btn></div>
+    </div>
+  );
+}
+
 /* 관리자: 계정 관리 + 전체 기록 */
 function AdminScreen({ onBack, toast, flash }) {
   const [users, setUsers] = useState(null);
@@ -2794,7 +2955,8 @@ function AdminScreen({ onBack, toast, flash }) {
   return (
     <Shell back="처음으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
-      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); }} items={[["users", "계정"], ["results", "전체 기록"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); }} items={[["users", "계정"], ["results", "전체 기록"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      {tab === "textbook" && <TextbookAdmin flash={flash} />}
 
       {tab === "users" && (
         <>
