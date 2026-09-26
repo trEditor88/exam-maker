@@ -1356,7 +1356,9 @@ function jobResult(body) {
     logAct(j.userId, 'job_done', 'note · ' + ws);
     return { ok: true, worksheet: ws };
   }
-  const made = examFromQuiz(j.userId, body.quiz || {}, j.params.scope || (j.type === 'photo' ? '사진으로 만든 문제' : 'AI 문제'), j.params.subject || '', j.type === 'photo' ? 'photo' : 'gen', 60);
+  const qz = body.quiz || {};
+  if (!qz.level) qz.level = { '하': '기초', '중': '기본', '상': '발전' }[j.params.difficulty] || '';
+  const made = examFromQuiz(j.userId, qz, j.params.scope || (j.type === 'photo' ? '사진으로 만든 문제' : 'AI 문제'), j.params.subject || '', j.type === 'photo' ? 'photo' : 'gen', 60);
   if (made.error) return jobResult(Object.assign({}, body, { ok: false, error: made.error }));
   const exam = made.exam, examId = made.examId;
   const result = { examId: examId, title: exam.title, count: exam.questions.length };
@@ -1379,6 +1381,7 @@ function examFromQuiz(userId, q, fallbackTitle, fallbackSubject, prefix, maxQ) {
     id: examId, title: safeText(String(q.title || fallbackTitle || '문제'), 80), desc: safeText(String(q.desc || ''), 300), subject: safeText(String(q.subject || fallbackSubject || ''), 20),
     options: shared,
     questions: qs.map((x, i) => ({ id: 'q' + (i + 1) + '_' + randomKey(4), text: String(x.text).slice(0, 2000), explain: String(x.explain || '').slice(0, 500), options: same(x.options.map(String)) ? null : x.options.map(String), answers: x.answers.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < x.options.length), tags: Array.isArray(x.tags) ? x.tags.map(String).slice(0, 8) : [] })),
+    level: ['기초', '기본', '발전', '심화'].indexOf(q.level) >= 0 ? q.level : '',
     shuffle: false, createdAt: now, updatedAt: now,
   };
   const json = JSON.stringify(exam); if (json.length > EXAM_MAX_CHARS) return { error: '결과가 너무 큽니다.' };

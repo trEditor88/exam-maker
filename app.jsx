@@ -418,6 +418,10 @@ function aggregateResults(items, quizzes) {
     tags: Object.entries(byTag).filter(([, v]) => v.t >= 2).map(([k, v]) => ({ k, pct: pct(v), n: v.t })).sort((a, b) => a.pct - b.pct),
   };
 }
+/* 난이도: 기초 → 기본 → 발전 → 심화. 인쇄 양식 색(초록·파랑·노랑·빨강)에 쓰인다 */
+const LEVELS = ["기초", "기본", "발전", "심화"];
+const LEVEL_COLOR = { 기초: "#15803D", 기본: "#0066CC", 발전: "#D4A017", 심화: "#C0392B" };
+const LEVEL_SOFT = { 기초: "#E6F4EA", 기본: "#E8F1FB", 발전: "#FBF3D6", 심화: "#FBE9E7" };
 const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫"];
 const mark = (i) => CIRCLED[i] || `(${i + 1})`;
 
@@ -455,6 +459,7 @@ function normalizeExam(x) {
     questions: questionsRaw.map((q) => normalizeQuestion(q, options.length)),
     shuffle: !!src.shuffle,
     subject: asStr(src.subject),
+    level: LEVELS.indexOf(src.level) >= 0 ? src.level : "기본",
     timeLimit: Math.max(0, Math.min(300, Math.floor(Number(src.timeLimit) || 0))),
     openAt: Number(src.openAt) || 0,
     closeAt: Number(src.closeAt) || 0,
@@ -488,6 +493,7 @@ function payloadOf(exam) {
     ...(exam.timeLimit ? { timeLimit: exam.timeLimit } : {}),
     ...(exam.openAt ? { openAt: exam.openAt } : {}),
     ...(exam.closeAt ? { closeAt: exam.closeAt } : {}),
+    ...(exam.level && exam.level !== "기본" ? { level: exam.level } : {}),
   };
 }
 const hashOf = (exam) => JSON.stringify(payloadOf(exam));
@@ -514,6 +520,7 @@ function parsePayload(raw) {
     timeLimit: Math.max(0, Math.floor(Number(data.timeLimit) || 0)),
     openAt: Number(data.openAt) || 0,
     closeAt: Number(data.closeAt) || 0,
+    level: LEVELS.indexOf(data.level) >= 0 ? data.level : "기본",
   };
 }
 
@@ -568,6 +575,7 @@ function buildRun(src, code, onlyIds) {
     timeLimit: src.timeLimit || 0,
     openAt: src.openAt || 0,
     closeAt: src.closeAt || 0,
+    level: src.level || "기본",
   };
 }
 
@@ -1527,16 +1535,22 @@ function SettingsModal({ onClose, flash }) {
 /* ── 인쇄·PDF: A4 한 장에 3~4문항, 마지막에 해설지. 브라우저 인쇄 창에서 "PDF로 저장" ── */
 function printableItems(src) {
   const shared = src.options || [];
-  return (src.questions || []).map((q, i) => ({ no: i + 1, text: q.text || "", options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared, answers: q.answers || [], explain: q.explain || "" }));
+  const strip = (t) => String(t || "").replace(/\s*[\(（]\s*정답\s*\d+\s*개\s*[\)）]\s*$/, "");   // 본문 끝의 "(정답 N개)"는 지우고 양식이 한 번만 붙인다
+  return (src.questions || []).map((q, i) => ({ no: i + 1, text: strip(q.text), options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared, answers: q.answers || [], explain: q.explain || "" }));
 }
-/* 개념완성형 A4 양식: 헤더 띠(과목 태그·제목) → 이름 칸 → 개념 상자(안내문) → 2단 문항(한 장 최대 N개, 넘치면 다음 장) → 마지막 장 정답표 + 해설(별지 고정).
-   페이지 나눔은 새 창에서 글꼴이 로드된 뒤 실제 높이를 재서 한다. */
+function quizKindLabel(items) {
+  if (items.length && items.every((q) => q.options.length === 2 && /^(참|거짓|O|X|맞다|틀리다)$/i.test(String(q.options[0]).trim()))) return "참·거짓";
+  return items.some((q) => q.answers.length > 1) ? "객관식 · 복수 정답" : "객관식";
+}
+/* 인쇄 양식: 헤더 띠(과목·난이도 태그, 제목, 문제 유형) → 이름 칸 → 개념 상자(안내문) → 2단 문항을 왼쪽 단부터 세로로 채움(1 4 / 2 5 / 3), 한 장에 들어가는 만큼 → 마지막에 정답표 + 해설(해설도 장을 나눔).
+   페이지 나눔은 새 창에서 글꼴이 로드된 뒤 실제 높이를 재서 한다. 색은 난이도(기초 초록·기본 파랑·발전 노랑·심화 빨강). */
 function buildPrintHtml(src, opts) {
   const esc = (v) => String(v || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const items = printableItems(src);
-  const per = opts.perPage || 4;
+  const level = LEVELS.indexOf(src.level) >= 0 ? src.level : "기본";
+  const ac = LEVEL_COLOR[level], acSoft = LEVEL_SOFT[level];
   const title = src.title || "시험지", subject = src.subject || "", desc = src.desc || "", code = src.code || "";
-  const head = `<header class="hd"><div class="tag"><span class="tag1">${esc(subject || "시험지")}</span><span class="tag2">확인 문제</span></div><div class="ttl">${esc(title)}</div><div class="logo">시험지</div></header>`;
+  const head = `<header class="hd"><div class="tag"><span class="tag1">${esc(subject || "시험지")}</span><span class="tag2">${level}</span></div><div class="ttl">${esc(title)}</div><div class="logo">${quizKindLabel(items)}</div></header>`;
   let first = "";
   if (opts.nameLine) first += `<div class="name">이름 <span class="blank"></span> 날짜 <span class="blank"></span> 점수 <span class="blank short"></span> / ${items.length}</div>`;
   if (desc) first += `<div class="sec">안내 · 개념 정리</div><div class="box"><div class="boxh">읽고 시작하기</div><p>${esc(desc)}</p></div>`;
@@ -1548,72 +1562,80 @@ function buildPrintHtml(src, opts) {
     const ch = items.slice(i, i + 10);
     tbl += `<table class="anst"><tr>${ch.map((q) => `<th>${q.no}</th>`).join("")}</tr><tr>${ch.map((q) => `<td>${q.answers.map(mark).join("")}</td>`).join("")}</tr></table>`;
   }
-  const exs = items.filter((q) => q.explain).map((q) => `<div class="kx"><span class="badge">Q${q.no}</span><span class="av">${q.answers.map(mark).join("")}</span><span class="ex">${esc(q.explain)}</span></div>`).join("");
-  const keyPage = `<section class="page key"><div class="pill">정답 및 해설</div>${tbl}<div class="keys">${exs}</div></section>`;
+  const keyFirst = `<div class="pill">정답 및 해설</div><div class="tbls">${tbl}</div>`;
+  const kxHtml = items.filter((q) => q.explain).map((q) => `<div class="kx"><span class="badge">Q${q.no}</span><span class="av">${q.answers.map(mark).join("")}</span><span class="ex">${esc(q.explain)}</span></div>`).join("");
   const css = `
 @page{size:A4;margin:0}
-:root{--ac:#0066CC;--acSoft:#E8F1FB;--ink:#1D1D1F;--sub:#6E6E73;--line:#D5D5DA}
+:root{--ac:${ac};--acSoft:${acSoft};--ink:#1D1D1F;--sub:#6E6E73;--line:#D5D5DA}
 html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:11pt;line-height:1.55}
 .page{position:relative;width:210mm;height:297mm;box-sizing:border-box;padding:12mm 13mm 16mm;page-break-after:always;break-after:page;overflow:hidden}
 .page:last-child{page-break-after:auto;break-after:auto}
 .hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;border:2px solid var(--ac);border-radius:14px;padding:5mm 6mm;margin:0 0 6mm}
 .tag{display:flex;flex-direction:column;gap:1mm;font-size:8.5pt;font-weight:800} .tag1{background:var(--acSoft);color:var(--ac);border-radius:6px;padding:1mm 3mm} .tag2{background:var(--ac);color:#fff;border-radius:6px;padding:1mm 3mm}
-.ttl{text-align:center;font-size:15pt;font-weight:800;letter-spacing:-.01em} .logo{font-size:9pt;font-weight:800;color:var(--ac);border:1.5px solid var(--ac);border-radius:999px;padding:1mm 3mm}
+.ttl{text-align:center;font-size:15pt;font-weight:800;letter-spacing:-.01em} .logo{font-size:9pt;font-weight:800;color:var(--ac);border:1.5px solid var(--ac);border-radius:999px;padding:1mm 3mm;white-space:nowrap}
 .name{font-size:10.5pt;margin:0 0 5mm} .blank{display:inline-block;width:32mm;border-bottom:1px solid var(--ink);margin:0 4mm 0 2mm;vertical-align:-1mm} .blank.short{width:14mm}
 .sec{display:inline-block;background:var(--ac);color:#fff;font-weight:800;font-size:10.5pt;border-radius:999px 999px 999px 0;padding:1.5mm 6mm;margin:0 0 2mm}
 .box{border:1.5px solid var(--ac);border-radius:0 10px 10px 10px;padding:3mm 5mm;margin:0 0 5mm;font-size:10pt} .boxh{font-weight:800;border-left:3px solid var(--ac);padding-left:2mm;margin-bottom:1.5mm} .box p{margin:0;white-space:pre-wrap}
 .pill{display:inline-block;border:1.5px solid var(--ac);color:var(--ac);font-weight:800;font-size:10.5pt;border-radius:999px;padding:1.2mm 6mm;margin:0 0 4mm}
-.grid{display:grid;grid-template-columns:1fr 1fr;column-gap:7mm;row-gap:5mm;align-items:start}
-.q{border-top:1px dashed var(--line);padding-top:3mm;break-inside:avoid;page-break-inside:avoid} .grid .q:nth-child(-n+2){border-top:none;padding-top:0}
+.cols{display:flex;gap:7mm;align-items:flex-start} .col{flex:1 1 0;min-width:0}
+.q{border-top:1px dashed var(--line);padding-top:3mm;margin-top:4mm} .col .q:first-child{border-top:none;padding-top:0;margin-top:0}
 .qh{display:flex;gap:2.5mm;margin:0 0 2.5mm} .qn{font-weight:800;font-size:12pt;white-space:nowrap} .qt{font-weight:700;white-space:pre-wrap} .sub{color:var(--sub);font-weight:400;font-size:9.5pt}
 .opts{display:grid;gap:1.2mm 4mm;margin:0 0 3mm 1mm} .opts.two{grid-template-columns:1fr 1fr} .opts.one{grid-template-columns:1fr} .o{display:flex;gap:1.5mm} .m{color:var(--ac);font-weight:700}
-.space{height:16mm}
+.space{height:14mm}
 .badge{flex:0 0 auto;background:var(--ac);color:#fff;font-size:8pt;font-weight:800;border-radius:999px;padding:.6mm 2.5mm;margin-top:.6mm} .av{font-weight:800;flex:0 0 auto} .ex{white-space:pre-wrap;color:#3A3A3C}
-.anst{border-collapse:collapse;margin:0 0 3mm;font-size:10.5pt} .anst th,.anst td{border:1px solid var(--line);padding:1.2mm 2.6mm;text-align:center;min-width:6mm} .anst th{background:#F5F5F7}
-.keys{columns:2;column-gap:7mm;margin-top:3mm} .kx{display:flex;gap:2mm;align-items:flex-start;break-inside:avoid;margin:0 0 2.5mm;font-size:10pt}
+.tbls{margin:0 0 4mm} .anst{border-collapse:collapse;margin:0 0 3mm;font-size:10.5pt} .anst th,.anst td{border:1px solid var(--line);padding:1.2mm 2.6mm;text-align:center;min-width:6mm} .anst th{background:#F5F5F7}
+.kx{display:flex;gap:2mm;align-items:flex-start;margin:0 0 2.5mm;font-size:10pt}
 .ft{position:absolute;left:13mm;right:13mm;bottom:8mm;display:flex;justify-content:space-between;font-size:8.5pt;color:var(--sub);border-top:1px solid var(--line);padding-top:2mm} .mono{font-family:ui-monospace,Consolas,monospace;letter-spacing:.06em}
-@media screen{body{background:#EEE;padding:14mm 0 10mm} .page{background:#fff;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:#0066CC;color:#fff;cursor:pointer}}
+@media screen{body{background:#EEE;padding:14mm 0 10mm} .page{background:#fff;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:${ac};color:#fff;cursor:pointer}}
 @media print{.bar{display:none}}`;
   const script = `
 function paginate(){
-  var per=${per}, hd=document.getElementById('hd').innerHTML, first=document.getElementById('first').innerHTML, code=${JSON.stringify(code)};
-  var pool=Array.prototype.slice.call(document.querySelectorAll('#pool .q')), pagesEl=document.getElementById('pages');
-  function newPage(n){ var s=document.createElement('section'); s.className='page'; s.innerHTML=hd+(n===1?first:'')+'<div class="grid"></div><footer class="ft"><span class="mono">'+code+'</span><span class="pn"></span></footer>'; pagesEl.appendChild(s); return s; }
-  var n=0, page=null, grid=null, count=0;
-  while(pool.length){
-    if(!page||count>=per){ page=newPage(++n); grid=page.querySelector('.grid'); count=0; }
-    var q=pool.shift(); grid.appendChild(q); count++;
-    if(page.scrollHeight>page.clientHeight+1 && count>1){ grid.removeChild(q); pool.unshift(q); page=null; }
+  var hd=document.getElementById('hd').innerHTML, first=document.getElementById('first').innerHTML, keyFirst=document.getElementById('keyfirst').innerHTML, code=${JSON.stringify(code)};
+  var pagesEl=document.getElementById('pages');
+  function newPage(n, cls, top){ var s=document.createElement('section'); s.className='page'+(cls?' '+cls:''); s.innerHTML=hd+(n===1?top:'')+'<div class="cols"><div class="col"></div><div class="col"></div></div><footer class="ft"><span class="mono">'+code+'</span><span class="pn"></span></footer>'; pagesEl.appendChild(s); return s; }
+  function fits(p){ return p.scrollHeight<=p.clientHeight+1; }
+  /* 왼쪽 단부터 세로로 채우고, 안 들어가면 오른쪽 단, 그것도 차면 새 장 */
+  function fill(pool, cls, top){
+    var n=0, page=null, col=0;
+    while(pool.length){
+      if(!page){ page=newPage(++n, cls, top); col=0; }
+      var cols=page.querySelectorAll('.col'); var it=pool.shift(); cols[col].appendChild(it);
+      if(fits(page)) continue;
+      cols[col].removeChild(it); pool.unshift(it);
+      if(cols[col].children.length===0){ cols[col].appendChild(pool.shift()); }   /* 항목 하나가 단보다 커도 잘리지 않게 그대로 둔다 */
+      if(col===0) col=1; else page=null;
+    }
   }
-  var key=document.querySelector('.page.key'); if(key){ key.insertAdjacentHTML('afterbegin',hd); key.insertAdjacentHTML('beforeend','<footer class="ft"><span class="mono">'+code+'</span><span class="pn"></span></footer>'); }
+  fill(Array.prototype.slice.call(document.querySelectorAll('#pool .q')), '', first);
+  fill(Array.prototype.slice.call(document.querySelectorAll('#kpool .kx')), 'key', keyFirst);
+  if(!document.querySelector('.page.key')) newPage(1, 'key', keyFirst);
   var all=document.querySelectorAll('.page'); all.forEach(function(p,i){ p.querySelector('.pn').textContent='- '+(i+1)+' / '+all.length+' -'; });
-  document.getElementById('pool').remove();
+  document.getElementById('pool').remove(); document.getElementById('kpool').remove();
   setTimeout(function(){ window.print(); }, 300);
 }
 (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(paginate);`;
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="pages"></div>${keyPage}<script>${script}</script></body></html>`;
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><template id="keyfirst">${keyFirst}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="kpool" hidden>${kxHtml}</div><div id="pages"></div><script>${script}</script></body></html>`;
 }
 function PrintModal({ src, onClose, flash }) {
-  const [per, setPer] = useState(4);
   const [nameLine, setNameLine] = useState(true);
   const n = (src.questions || []).length;
+  const level = LEVELS.indexOf(src.level) >= 0 ? src.level : "기본";
   const go = () => {
     const w = window.open("", "_blank");
     if (!w) return flash("팝업이 막혀 있습니다. 이 사이트의 팝업을 허용한 뒤 다시 눌러 주세요.");
-    w.document.write(buildPrintHtml(src, { perPage: per, nameLine }));
+    w.document.write(buildPrintHtml(src, { nameLine }));
     w.document.close();
     onClose();
   };
   const lab = (t) => <div style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 6px" }}>{t}</div>;
   return (
     <Modal title="인쇄 · PDF 저장" onClose={onClose}>
-      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: 0 }}>A4 시험지로 만듭니다. 문제는 2단으로 한 장에 최대 {per}문항, 안내문은 첫 장 개념 상자에, 정답표와 해설은 마지막 장(별지)에 들어갑니다. 열리는 인쇄 창에서 프린터 대신 <b>PDF로 저장</b>을 고르면 파일로 받을 수 있습니다.</p>
-      {lab("한 장에 넣을 문항 수 (긴 문항은 자동으로 다음 장)")}
-      <Seg value={per} onChange={setPer} items={[[3, "3문항"], [4, "4문항"]]} />
+      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: 0 }}>A4 시험지로 만듭니다. 문제는 2단(왼쪽 단부터 세로로)에 잘리지 않는 만큼 채우고, 안내문은 첫 장 개념 상자에, 정답표와 해설은 뒤쪽 별지에 들어갑니다. 열리는 인쇄 창에서 프린터 대신 <b>PDF로 저장</b>을 고르면 파일로 받을 수 있습니다.</p>
+      <p style={{ fontSize: 13.5, margin: "10px 0 0", display: "flex", alignItems: "center", gap: 8 }}>양식 색 <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: 4, background: LEVEL_COLOR[level] }} /> <b>{level}</b> <span style={{ color: C.sub }}>— 편집 화면 "응시 조건"의 난이도로 바뀝니다 (기초 초록 · 기본 파랑 · 발전 노랑 · 심화 빨강)</span></p>
       <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
         <CheckRow on={nameLine} onToggle={() => setNameLine((v) => !v)}><Check on={nameLine} size={20} /><span style={{ fontSize: 14.5 }}>첫 장에 이름·날짜·점수 칸</span></CheckRow>
       </div>
-      <p style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 0" }}>문제 {n}개 · 약 {Math.ceil(n / per) + 1}쪽{n === 0 ? " — 문제가 없습니다" : ""}</p>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 0" }}>문제 {n}개{n === 0 ? " — 문제가 없습니다" : ""}</p>
       <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
         <Btn onClick={go} disabled={n === 0}>인쇄 창 열기</Btn>
         <Btn kind="ghost" onClick={onClose}>닫기</Btn>
@@ -1902,6 +1924,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           <label style={labStyle}>제한 시간(분)<input type="number" min="0" max="300" className="em-in" style={inStyle} value={draft.timeLimit || ""} placeholder="없음" onChange={(e) => upd({ timeLimit: Math.max(0, Math.min(300, parseInt(e.target.value, 10) || 0)) })} /></label>
           <label style={labStyle}>응시 시작<input type="datetime-local" className="em-in" style={inStyle} value={toLocalInput(draft.openAt)} onChange={(e) => upd({ openAt: fromLocalInput(e.target.value) })} /></label>
           <label style={labStyle}>응시 마감<input type="datetime-local" className="em-in" style={inStyle} value={toLocalInput(draft.closeAt)} onChange={(e) => upd({ closeAt: fromLocalInput(e.target.value) })} /></label>
+          <label style={labStyle}>난이도 (인쇄 색)<select className="em-in" style={inStyle} value={draft.level || "기본"} onChange={(e) => upd({ level: e.target.value })} aria-label="난이도">{LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}</select></label>
         </div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8, lineHeight: 1.5 }}>비워 두면 제한 없음. 시작 전·마감 뒤에는 코드로 열 수 없습니다(출제자는 언제나 열림). 시간이 끝나면 자동 제출됩니다.</div>
       </Card>
@@ -2107,7 +2130,7 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
       {run.desc && <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{run.desc}</p>}
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
         {run.owner ? `${run.owner} 출제 · ` : ""}{run.partial ? "틀린 문제만 다시 풉니다 · " : ""}문제 {run.questions.length}개{run.timeLimit ? ` · 제한 ${run.timeLimit}분` : ""} · 정답이 여러 개일 수 있습니다{run.preview ? " · 응시 기간 밖(출제자 미리 보기)" : ""}
-        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, options: run.options, questions: run.questions })} style={{ padding: 0, fontSize: 14 }}>인쇄·PDF</TextBtn></>}
+        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, level: run.level, options: run.options, questions: run.questions })} style={{ padding: 0, fontSize: 14 }}>인쇄·PDF</TextBtn></>}
       </p>
 
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
