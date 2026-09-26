@@ -2748,7 +2748,8 @@ function AdminScreen({ onBack, toast, flash }) {
   const [actType, setActType] = useState("");
   const [actUser, setActUser] = useState("");
   const [editRes, setEditRes] = useState(null);
-  const loadActs = async (t, uid) => { setActs(null); const r = await remote().activityList({ limit: 300, type: t || "", userId: (uid || "").trim() }); if (!r.ok) return flash(errMsg(r)); setActs(r.items); };
+  const [actShow, setActShow] = useState(10);   // 모든 활동: 10건씩 더 보기
+  const loadActs = async (t, uid) => { setActs(null); setActShow(10); const r = await remote().activityList({ limit: 300, type: t || "", userId: (uid || "").trim() }); if (!r.ok) return flash(errMsg(r)); setActs(r.items); };
 
   const create = async () => {
     if (!form.id.trim() || form.pw.length < 4) return flash("아이디와 4자 이상 비밀번호를 넣어 주세요.");
@@ -2852,7 +2853,7 @@ function AdminScreen({ onBack, toast, flash }) {
                 <Card style={{ padding: 8 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
                     <thead><tr>{["때", "계정", "활동", "내용"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
-                    <tbody>{acts.map((a, i) => (
+                    <tbody>{acts.slice(0, actShow).map((a, i) => (
                       <tr key={i}>
                         <td style={{ padding: "5px 8px", whiteSpace: "nowrap", color: C.sub }}>{fmtDateTime(a.at)}</td>
                         <td style={{ padding: "5px 8px", whiteSpace: "nowrap" }}>{a.name}</td>
@@ -2861,7 +2862,10 @@ function AdminScreen({ onBack, toast, flash }) {
                       </tr>
                     ))}</tbody>
                   </table>
-                  <p style={{ fontSize: 12.5, color: C.sub, margin: "8px 8px 2px" }}>최근 {acts.length}건 · 6,000건이 넘으면 오래된 것부터 지워집니다.</p>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "8px 8px 2px", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12.5, color: C.sub }}>{Math.min(actShow, acts.length)} / {acts.length}건 표시 · 6,000건이 넘으면 오래된 것부터 지워집니다.</span>
+                    {acts.length > actShow && <TextBtn onClick={() => setActShow((n) => n + 10)} style={{ fontSize: 13 }}>10건 더 보기</TextBtn>}
+                  </div>
                 </Card>
               )}
             </div>
@@ -2886,19 +2890,43 @@ function AdminScreen({ onBack, toast, flash }) {
         </div>
       )}
 
-      {tab === "usage" && (
-        <Card style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>AI 문제 생성 사용량</div>
-          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>Gemini 무료 등급이라 요금은 0원이지만, 하루 한도 관리를 위해 호출 수를 기록합니다.</p>
-          {usage === null ? <Btn kind="soft" onClick={loadUsage}>불러오기</Btn> : (
+      {tab === "usage" && (() => {
+        const modelKo = (m) => (m.startsWith("claude:") ? `Claude · ${m.slice(7)}` : m.startsWith("gemini") ? `Gemini · ${m}` : m);
+        const Tbl = ({ by }) => {
+          const ents = Object.entries(by || {});
+          if (!ents.length) return <p style={{ color: C.sub, fontSize: 14, margin: "4px 0 0" }}>기록 없음</p>;
+          return (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
               <thead><tr>{["모델", "호출", "성공", "입력 토큰", "출력 토큰"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
-              <tbody>{Object.entries(usage.byModel || {}).map(([m, v]) => <tr key={m}><td style={{ padding: "6px 8px" }}>{m}</td><td style={{ padding: "6px 8px" }}>{v.calls}</td><td style={{ padding: "6px 8px" }}>{v.ok}</td><td style={{ padding: "6px 8px" }}>{v.inputTokens}</td><td style={{ padding: "6px 8px" }}>{v.outputTokens}</td></tr>)}</tbody>
+              <tbody>{ents.map(([m, v]) => <tr key={m}><td style={{ padding: "6px 8px" }}>{modelKo(m)}</td><td style={{ padding: "6px 8px" }}>{v.calls}</td><td style={{ padding: "6px 8px" }}>{v.ok}</td><td style={{ padding: "6px 8px" }}>{v.inputTokens.toLocaleString()}</td><td style={{ padding: "6px 8px" }}>{v.outputTokens.toLocaleString()}</td></tr>)}</tbody>
             </table>
-          )}
-          {usage && <div style={{ fontSize: 13, color: C.sub, marginTop: 8 }}>기록 {usage.rows}건 · <TextBtn tone="sub" onClick={loadUsage} style={{ fontSize: 13 }}>새로고침</TextBtn></div>}
-        </Card>
-      )}
+          );
+        };
+        return (
+          <Card style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>AI 문제 생성 사용량</div>
+            <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>Gemini(기본 방식)는 무료 등급이라 요금 0원, Claude(고급 방식·오답노트·리포트)는 관리자 PC의 구독 예약 작업이라 요금 0원입니다. "오늘"은 매일 0시(한국 시간)에 새로 셉니다.</p>
+            {usage === null ? <Btn kind="soft" onClick={loadUsage}>불러오기</Btn> : (
+              <>
+                <div style={{ fontSize: 14.5, fontWeight: 700, margin: "6px 0 4px" }}>오늘 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>({usage.today}) · {usage.todayRows}건</span></div>
+                <Tbl by={usage.todayByModel} />
+                <div style={{ fontSize: 14.5, fontWeight: 700, margin: "16px 0 4px" }}>누적 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>{usage.rows}건{usage.first ? ` · ${fmtDate(new Date(usage.first).getTime())}부터` : ""}</span></div>
+                <Tbl by={usage.byModel} />
+                {Array.isArray(usage.recent) && usage.recent.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 14.5, fontWeight: 700, margin: "16px 0 4px" }}>최근 호출 {usage.recent.length}건</div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                      <thead><tr>{["때", "모델", "대상", "토큰", "상태"].map((h) => <th key={h} style={{ textAlign: "left", padding: "5px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+                      <tbody>{usage.recent.map((r, k) => <tr key={k}><td style={{ padding: "5px 8px", whiteSpace: "nowrap", color: C.sub }}>{fmtDateTime(r.at)}</td><td style={{ padding: "5px 8px", whiteSpace: "nowrap" }}>{modelKo(r.model)}</td><td style={{ padding: "5px 8px", wordBreak: "break-all" }}>{r.scope}</td><td style={{ padding: "5px 8px", whiteSpace: "nowrap" }}>{(r.inputTokens + r.outputTokens).toLocaleString()}</td><td style={{ padding: "5px 8px" }}><Badge tone={r.status === "ok" ? "good" : "bad"}>{r.status}</Badge></td></tr>)}</tbody>
+                    </table>
+                  </>
+                )}
+                <div style={{ fontSize: 13, color: C.sub, marginTop: 8 }}><TextBtn tone="sub" onClick={loadUsage} style={{ fontSize: 13 }}>새로고침</TextBtn></div>
+              </>
+            )}
+          </Card>
+        );
+      })()}
 
       {tab === "worker" && (
         <Card style={{ marginTop: 14 }}>
