@@ -242,6 +242,10 @@ const serverRemote = {
   ping: () => apiGet({ action: "ping" }),
   setup: (b) => apiPost({ action: "setup", ...b }),
   login: (b) => apiPost({ action: "login", ...b }),
+  signup: (b) => apiPost({ action: "signup", ...b }),
+  permRequest: (b) => apiPost({ action: "permRequest", ...b }),
+  adminNotify: (b) => apiPost({ action: "adminNotify", ...b }),
+  examListAll: () => apiGet({ action: "examList", all: "1" }),
   logout: () => apiPost({ action: "logout" }),
   me: () => apiGet({ action: "me" }),
   changePw: (b) => apiPost({ action: "changePw", ...b }),
@@ -348,6 +352,15 @@ const ERR = {
   sh_forbidden: "오답노트 사용 권한이 없습니다. 관리자에게 문의하세요.",
   rep_forbidden: "이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.",
   job_limit: "이미 요청한 작업이 3개 있습니다. 끝난 뒤 다시 요청해 주세요.",
+  perm_share: "이 계정은 문제 공유 권한이 없습니다. 내 계정에서 관리자에게 권한을 요청하세요.",
+  perm_gen: "이 계정은 문제 생성 권한이 없습니다. 내 계정에서 관리자에게 권한을 요청하세요.",
+  perm_solve: "이 계정은 문제 풀기 권한이 없습니다. 내 계정에서 관리자에게 권한을 요청하세요.",
+  perm_rename: "이 계정은 이름·아이디·비밀번호 변경 권한이 없습니다. 관리자에게 권한을 요청하세요.",
+  perm_custom: "이 계정은 맞춤 설정 권한이 없습니다. 관리자에게 권한을 요청하세요.",
+  req_limit: "권한 요청은 하루에 한 번만 보낼 수 있습니다. 내일 다시 보내 주세요.",
+  need_setup: "아직 관리자 계정이 없습니다. 관리자가 먼저 만들어야 합니다.",
+  no_admin: "알림을 받을 관리자 계정이 없습니다.",
+  bad_note: "알림 제목이나 내용을 적어 주세요.",
   job_started: "이미 처리가 시작된 작업이라 취소할 수 없습니다.",
   bad_scope: "범위를 적어 주세요.",
   no_photo: "사진을 한 장 이상 골라 주세요.",
@@ -1084,13 +1097,13 @@ function NavIcon({ name }) {
 function NavBar({ screen, role, go, onAccount, user, badge }) {
   const items = [
     { k: "home", t: "홈", i: "home" },
-    { k: "code", t: "풀기", i: "play" },
+    ...(user && remote().kind === "server" && !can(user, "solve") ? [] : [{ k: "code", t: "풀기", i: "play" }]),
     { k: "myresults", t: "내 결과", i: "chart" },
     { k: "study", t: "오답노트", i: "note" },
     { k: "list", t: "내 시험지", i: "doc", more: true },
   ];
   if (role !== "student") items.push({ k: "students", t: "내 학생", i: "people", more: true });
-  if (role === "admin") items.push({ k: "admin", t: "관리자", i: "gear", more: true });
+  if (role === "admin" || (user && isLite(user))) items.push({ k: "admin", t: "관리자", i: "gear", more: true });
   items.push({ k: "account", t: "계정", i: "user", acct: true });
   return (
     <nav className="em-nav" aria-label="주요 메뉴">
@@ -1240,7 +1253,7 @@ function AssignModal({ exam, onClose, flash }) {
 }
 
 /* ── 홈: 알림(워커가 끝낸 일) ───────────────────── */
-const NOTE_ICON = { gen: "ai", note: "book", report: "book" };
+const NOTE_ICON = { gen: "ai", note: "book", report: "book", perm: "book", admin: "book" };
 function NoteList({ notes, onOpen, onSeenAll }) {
   const [showAll, setShowAll] = useState(false);
   const unseen = notes.filter((n) => !n.seen);
@@ -1317,14 +1330,15 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
   const role = (user && user.role) || "admin";
   const [d] = useHomeData(user, mode);
   const items = [];
-  items.push({ t: "새 시험지 만들기", d: "AI로 문제를 만들거나(기본) 직접 입력합니다. 객관식·주관식·서술형.", go: onNew });
+  const server = mode === "server" && !!user;
+  const allow = (k) => !server || can(user, k);
+  if (allow("gen")) items.push({ t: "새 시험지 만들기", d: "AI로 문제를 만들거나(기본) 직접 입력합니다. 객관식·주관식·서술형.", go: onNew });
   items.push({ t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
-  items.push({ t: "코드로 문제 풀기", d: role === "student" ? "선생님이 준 코드를 입력해 문제를 풉니다." : "받은 코드를 입력해 문제를 풉니다.", go: onCode });
+  if (allow("solve")) items.push({ t: "코드로 문제 풀기", d: role === "student" ? "선생님이 준 코드를 입력해 문제를 풉니다." : "받은 코드를 입력해 문제를 풉니다.", go: onCode });
   items.push({ t: "내 결과·리포트", d: "내가 푼 시험지의 점수·기록과 나의 분석 리포트를 봅니다.", go: onMyResults });
   if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
   items.push({ t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy });
-  if (role === "admin") items.push({ t: "관리자", d: "계정 등록·수정, 전체 기록 열람, 리포트 워커 연결.", go: onAdmin });
-  const server = mode === "server" && !!user;
+  if (role === "admin" || (server && isLite(user))) items.push({ t: "관리자", d: role === "admin" ? "계정·권한 관리, 전체 기록·시험지 열람, 알림 보내기." : "계정·기록·시험지 열람(제한 관리자).", go: onAdmin });
   const scrollAssign = () => { const el = [...document.querySelectorAll(".em-assign")].find((x) => x.offsetParent !== null); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
   const assignEl = server ? <AssignList d={d} onOpen={onOpenRecent} /> : null;
   const recentEl = recent.length > 0 ? (
@@ -2658,16 +2672,40 @@ function StudyScreen({ onBack, flash, toast, user }) {
 const authGet = () => { try { return JSON.parse(localStorage.getItem(LS_PREFIX + "auth") || "null"); } catch (e) { return null; } };
 const authSet = (a) => { try { a ? localStorage.setItem(LS_PREFIX + "auth", JSON.stringify(a)) : localStorage.removeItem(LS_PREFIX + "auth"); } catch (e) {} };
 const ROLE_KO = { admin: "관리자", teacher: "선생", student: "학생" };
+/* 계정 권한: 관리자는 전부, 그 외는 서버가 준 perms */
+const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", adminLite: "제한 관리자(열람)" };
+const PERM_KEYS = Object.keys(PERM_KO);
+const can = (u, k) => !!u && (u.role === "admin" || !!((u.perms || {})[k]));
+const isLite = (u) => !!u && (u.role === "admin" || !!((u.perms || {}).adminLite));
+function PermPicker({ value, onChange, hideLite }) {
+  const v = value || {};
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }} role="group" aria-label="권한">
+      {PERM_KEYS.filter((k) => !(hideLite && k === "adminLite")).map((k) => {
+        const on = !!v[k];
+        return <button key={k} type="button" className="em-btn" aria-pressed={on} onClick={() => onChange({ ...v, [k]: !on })} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: "6px 10px", borderRadius: 999, cursor: "pointer", border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? C.accentSoft : C.field, color: on ? C.accent : C.sub }}>{on ? "✓ " : ""}{PERM_KO[k]}</button>;
+      })}
+    </div>
+  );
+}
+const PERMS_ALL = { custom: true, gen: true, solve: true, share: true, rename: true, adminLite: false };
 
 function LoginScreen({ needSetup, onDone, toast, flash }) {
+  const [mode, setMode] = useState("login");   // login | signup
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const signup = mode === "signup" && !needSetup;
   const go = async () => {
     if (!id.trim() || !pw) return flash("아이디와 비밀번호를 넣어 주세요.");
+    if (signup && pw !== pw2) return flash("비밀번호 확인이 다릅니다.");
+    if (signup && !name.trim()) return flash("이름을 넣어 주세요.");
     setBusy(true);
-    const r = needSetup ? await remote().setup({ id: id.trim(), pw, name: name.trim() || id.trim() }) : await remote().login({ id: id.trim(), pw });
+    const r = needSetup ? await remote().setup({ id: id.trim(), pw, name: name.trim() || id.trim() })
+      : signup ? await remote().signup({ id: id.trim(), pw, name: name.trim() })
+      : await remote().login({ id: id.trim(), pw });
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
     authSet({ token: r.token, user: r.user });
@@ -2677,14 +2715,16 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
     <Shell toast={toast}>
       <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", margin: "26px 0 8px" }}>시험지</h1>
       <p style={{ fontSize: 15.5, color: C.sub, lineHeight: 1.6, margin: "0 0 20px" }}>
-        {needSetup ? "처음 실행입니다. 관리자 계정을 만들어 주세요. 이 계정으로 선생·학생 계정을 등록합니다." : "아이디와 비밀번호로 들어갑니다. 계정이 없으면 관리자에게 문의하세요."}
+        {needSetup ? "처음 실행입니다. 관리자 계정을 만들어 주세요. 이 계정으로 선생·학생 계정을 등록합니다." : signup ? "회원가입 뒤 바로 문제를 풀 수 있습니다. 문제 만들기·공유 같은 기능은 관리자가 권한을 열어 주면 쓸 수 있습니다(내 계정에서 요청)." : "아이디와 비밀번호로 들어갑니다. 계정이 없으면 회원가입하세요."}
       </p>
       <Card>
         <div style={{ display: "grid", gap: 10 }}>
-          {needSetup && <Field value={name} onChange={setName} placeholder="이름 (표시용)" ariaLabel="이름" />}
-          <Field value={id} onChange={setId} placeholder="아이디 (한글·영문·숫자 2~30자)" ariaLabel="아이디" autoFocus />
-          <Field type="password" value={pw} onChange={setPw} placeholder="비밀번호" onEnter={go} ariaLabel="비밀번호" />
-          <Btn onClick={go} disabled={busy}>{busy ? "확인 중…" : needSetup ? "관리자 계정 만들기" : "들어가기"}</Btn>
+          {(needSetup || signup) && <Field value={name} onChange={setName} placeholder="이름 (표시용)" ariaLabel="이름" autoFocus />}
+          <Field value={id} onChange={setId} placeholder="아이디 (한글·영문·숫자 2~30자)" ariaLabel="아이디" autoFocus={!signup && !needSetup} />
+          <Field type="password" value={pw} onChange={setPw} placeholder={signup ? "비밀번호 (4자 이상)" : "비밀번호"} onEnter={signup ? undefined : go} ariaLabel="비밀번호" />
+          {signup && <Field type="password" value={pw2} onChange={setPw2} placeholder="비밀번호 확인" onEnter={go} ariaLabel="비밀번호 확인" />}
+          <Btn onClick={go} disabled={busy}>{busy ? "확인 중…" : needSetup ? "관리자 계정 만들기" : signup ? "회원가입" : "들어가기"}</Btn>
+          {!needSetup && <Btn kind="ghost" onClick={() => { setMode(signup ? "login" : "signup"); setPw2(""); }}>{signup ? "이미 계정이 있어요 · 로그인" : "회원가입"}</Btn>}
         </div>
       </Card>
     </Shell>
@@ -2713,6 +2753,46 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
     if (!r.ok) return flash(errMsg(r));
     if (onUser && r.user) onUser(r.user);
     flash("수강 과목을 저장했습니다.");
+  };
+  const [pname, setPname] = useState(user.name || "");
+  const [pid, setPid] = useState(user.id || "");
+  const [pscope, setPscope] = useState(user.scope || "");
+  const [pprompt, setPprompt] = useState(user.prompt || "");
+  const [reqMsg, setReqMsg] = useState("");
+  const [reqSel, setReqSel] = useState({});
+  const [pBusy, setPBusy] = useState(false);
+  const locked = PERM_KEYS.filter((k) => k !== "adminLite" && !can(user, k)).concat(user.role === "admin" ? [] : [!user.shOn ? "shOn" : null, !user.repOn ? "repOn" : null].filter(Boolean));
+  const lockKo = { ...PERM_KO, shOn: "오답노트", repOn: "분석 리포트" };
+  const saveProfile = async () => {
+    const body = {};
+    if (pname.trim() && pname.trim() !== user.name) body.name = pname.trim();
+    if (pid.trim() && pid.trim() !== user.id) body.newId = pid.trim();
+    if (!Object.keys(body).length) return flash("바뀐 내용이 없습니다.");
+    if (body.newId && !confirm(`아이디를 "${body.newId}"(으)로 바꿀까요? 기록·시험지·배정이 모두 새 아이디로 옮겨집니다.`)) return;
+    setPBusy(true);
+    const r = await remote().profileUpdate(body);
+    setPBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    if (onUser && r.user) onUser(r.user);
+    flash("저장했습니다." + (body.newId ? ` 아이디가 ${r.user.id}(으)로 바뀌었습니다.` : ""));
+  };
+  const saveCustom = async () => {
+    setPBusy(true);
+    const r = await remote().profileUpdate({ scope: pscope, prompt: pprompt });
+    setPBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    if (onUser && r.user) onUser(r.user);
+    flash("맞춤 설정을 저장했습니다. AI 문제 만들기에 반영됩니다.");
+  };
+  const sendReq = async () => {
+    const perms = Object.keys(reqSel).filter((k) => reqSel[k]);
+    if (!perms.length && !reqMsg.trim()) return flash("요청할 권한을 고르거나 한 줄을 적어 주세요.");
+    setPBusy(true);
+    const r = await remote().permRequest({ perms, message: reqMsg.trim() });
+    setPBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    setReqMsg(""); setReqSel({});
+    flash("관리자에게 요청을 보냈습니다. 하루에 한 번만 보낼 수 있습니다.");
   };
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
@@ -2748,6 +2828,34 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
           </div>
         </>
       )}
+      {remote().kind === "server" && (
+        <>
+          <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>이름 · 아이디{can(user, "rename") ? "" : " (변경 권한 없음)"}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6, marginBottom: 12 }}>
+            <Field value={pname} onChange={setPname} placeholder="이름" ariaLabel="이름" maxLength={20} style={{ fontSize: 14.5 }} />
+            <Field value={pid} onChange={setPid} placeholder="아이디" ariaLabel="아이디" maxLength={30} style={{ fontSize: 14.5 }} />
+            <Btn kind="soft" onClick={saveProfile} disabled={pBusy || !can(user, "rename")} style={{ width: "auto", padding: "10px 14px", fontSize: 14 }}>저장</Btn>
+          </div>
+          <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>학습 범위 · 개인 맞춤 지시{can(user, "custom") ? "" : " (권한 없음)"} <span style={{ fontSize: 12 }}>(AI 문제 만들기에 자동으로 반영)</span></div>
+          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+            <Field value={pscope} onChange={setPscope} placeholder="범위 예: 고1 통합과학 2단원, 한국사 1-1" ariaLabel="학습 범위" maxLength={200} style={{ fontSize: 14.5 }} />
+            <Field value={pprompt} onChange={setPprompt} placeholder="맞춤 지시 예: 해설은 쉬운 말로 길게, 계산 문제는 풀이 과정까지, 영어 지시문은 한국어로" ariaLabel="개인 맞춤 지시" multiline rows={3} maxLength={1000} style={{ fontSize: 14 }} />
+            <Btn kind="soft" onClick={saveCustom} disabled={pBusy || !can(user, "custom")} style={{ fontSize: 14 }}>맞춤 설정 저장</Btn>
+          </div>
+          {locked.length > 0 && (
+            <>
+              <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>관리자에게 권한 요청 <span style={{ fontSize: 12 }}>(하루 1회, 관리자에게 알림이 갑니다)</span></div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                {locked.map((k) => <button key={k} type="button" className="em-btn" aria-pressed={!!reqSel[k]} onClick={() => setReqSel({ ...reqSel, [k]: !reqSel[k] })} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: "6px 10px", borderRadius: 999, cursor: "pointer", border: `1.5px solid ${reqSel[k] ? C.accent : C.line}`, background: reqSel[k] ? C.accentSoft : C.field, color: reqSel[k] ? C.accent : C.sub }}>{reqSel[k] ? "✓ " : "🔒 "}{lockKo[k]}</button>)}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                <Field value={reqMsg} onChange={setReqMsg} placeholder="한 줄 메모 (선택) 예: 수행평가 문제를 만들어야 해요" ariaLabel="요청 메모" maxLength={200} style={{ fontSize: 14 }} onEnter={sendReq} />
+                <Btn kind="soft" onClick={sendReq} disabled={pBusy} style={{ width: "auto", padding: "10px 14px", fontSize: 14 }}>요청</Btn>
+              </div>
+            </>
+          )}
+        </>
+      )}
       <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>화면 색</div>
       <div role="radiogroup" aria-label="화면 색" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 14 }}>
         {[["auto", "기기 설정"], ["light", "밝게"], ["dark", "어둡게"]].map(([k, t]) => (
@@ -2755,6 +2863,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
             style={{ fontFamily: FONT, fontSize: 14, fontWeight: 600, padding: "10px 6px", borderRadius: 999, border: `1px solid ${theme === k ? C.accent : C.line}`, background: theme === k ? C.accentSoft : C.field, color: theme === k ? C.accent : C.sub, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
+      <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>비밀번호 변경{can(user, "rename") ? " (현재 비밀번호 확인 후)" : " (권한 없음 · 관리자에게 요청)"}</div>
       <div style={{ display: "grid", gap: 8 }}>
         <Field type="password" value={oldPw} onChange={setOldPw} placeholder="현재 비밀번호" ariaLabel="현재 비밀번호" />
         <Field type="password" value={newPw} onChange={setNewPw} placeholder="새 비밀번호 (4자 이상)" ariaLabel="새 비밀번호" onEnter={change} />
@@ -2889,10 +2998,18 @@ function TextbookAdmin({ flash }) {
 }
 
 /* 관리자: 계정 관리 + 전체 기록 */
-function AdminScreen({ onBack, toast, flash }) {
+function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
   const [users, setUsers] = useState(null);
   const [tab, setTab] = useState("users");
-  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false, repOn: false });
+  const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false, repOn: false, perms: { ...PERMS_ALL } });
+  const [allExams, setAllExams] = useState(null);
+  const [bc, setBc] = useState({ title: "", body: "" });   // 전체 알림
+  const [showPw, setShowPw] = useState(false);
+  const loadExams = async () => { const r = await remote().examListAll(); if (!r.ok) return flash(errMsg(r)); setAllExams(r.exams); };
+  const delExam = async (e) => { if (!confirm(`"${e.title || "제목 없음"}" (${e.ownerName || e.ownerId}) 시험지를 지울까요? 공유 코드와 응시 기록도 지워집니다.`)) return; const r = await remote().examDelete(e.id); if (!r.ok) return flash(errMsg(r)); setAllExams(allExams.filter((x) => x.id !== e.id)); };
+  const sendAll = async () => { if (!bc.title.trim() && !bc.body.trim()) return flash("제목이나 내용을 적어 주세요."); if (!confirm("모든 계정에 알림을 보낼까요?")) return; const r = await remote().adminNotify({ all: true, title: bc.title.trim(), body: bc.body.trim() }); if (!r.ok) return flash(errMsg(r)); setBc({ title: "", body: "" }); flash(`${r.sent}명에게 보냈습니다.`); };
+  const [msg, setMsg] = useState({ title: "", body: "" });   // 계정 수정 창의 알림
+  const sendOne = async () => { if (!msg.title.trim() && !msg.body.trim()) return flash("제목이나 내용을 적어 주세요."); const r = await remote().adminNotify({ userId: edit.id, title: msg.title.trim(), body: msg.body.trim() }); if (!r.ok) return flash(errMsg(r)); setMsg({ title: "", body: "" }); flash("알림을 보냈습니다."); };
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
@@ -2918,13 +3035,13 @@ function AdminScreen({ onBack, toast, flash }) {
     const r = await remote().userCreate({ ...form, id: form.id.trim(), name: form.name.trim() });
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
-    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "", shOn: form.shOn, repOn: form.repOn });
+    setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "", shOn: form.shOn, repOn: form.repOn, perms: form.perms });
     flash(`${r.user.name} (${ROLE_KO[r.user.role]}) 계정을 만들었습니다.`);
     load();
   };
   const save = async () => {
     setBusy(true);
-    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, repOn: !!edit.repOn, subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
+    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, repOn: !!edit.repOn, perms: edit.perms || PERMS_ALL, scope: edit.scope || "", prompt: edit.prompt || "", ...(edit.newId && edit.newId.trim() !== edit.id ? { newId: edit.newId.trim() } : {}), subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
     if (edit.pw) body.pw = edit.pw;
     const r = await remote().userUpdate(body);
     setBusy(false);
@@ -2955,12 +3072,45 @@ function AdminScreen({ onBack, toast, flash }) {
   return (
     <Shell back="처음으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
-      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); }} items={[["users", "계정"], ["results", "전체 기록"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"]] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      {lite && <p style={{ fontSize: 13, color: C.sub, margin: "8px 0 0" }}>제한 관리자: 열람만 할 수 있습니다.</p>}
+      {tab === "exams" && (
+        <div style={{ marginTop: 14 }}>
+          {allExams === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : allExams.length === 0 ? <p style={{ color: C.sub }}>시험지가 없습니다.</p> : (
+            <Card style={{ padding: 8 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                <thead><tr>{["주인", "제목", "문제", "코드", "수정", ""].map((h, i) => <th key={i} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+                <tbody>{allExams.map((e) => (
+                  <tr key={e.id}>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{e.ownerName || e.ownerId}</td>
+                    <td style={{ padding: "6px 8px" }}>{e.title || "제목 없음"}{e.subject ? <span style={{ color: C.sub, fontSize: 12.5 }}> · {e.subject}</span> : null}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{(e.questions || []).length}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{e.code || "-"}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap", color: C.sub }}>{fmtDate(e.updatedAt)}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{!lite && onOpenExam && <TextBtn onClick={() => onOpenExam(e)} style={{ fontSize: 13 }}>편집</TextBtn>}{!lite && <TextBtn tone="sub" onClick={() => delExam(e)} style={{ fontSize: 13 }}>삭제</TextBtn>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              <p style={{ fontSize: 12.5, color: C.sub, margin: "8px 8px 2px" }}>모든 계정의 시험지 {allExams.length}개 · <TextBtn tone="sub" onClick={loadExams} style={{ fontSize: 12.5 }}>새로고침</TextBtn></p>
+            </Card>
+          )}
+        </div>
+      )}
       {tab === "textbook" && <TextbookAdmin flash={flash} />}
 
+      {tab === "users" && !lite && (
+        <Card style={{ margin: "14px 0" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>전체 알림 보내기</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <Field value={bc.title} onChange={(v) => setBc({ ...bc, title: v })} placeholder="제목" ariaLabel="알림 제목" maxLength={80} />
+            <Field value={bc.body} onChange={(v) => setBc({ ...bc, body: v })} placeholder="내용" ariaLabel="알림 내용" multiline rows={2} maxLength={300} />
+            <Btn kind="soft" onClick={sendAll}>모든 계정에 보내기</Btn>
+          </div>
+        </Card>
+      )}
       {tab === "users" && (
         <>
-          <Card style={{ margin: "14px 0" }}>
+          {!lite && <Card style={{ margin: "14px 0" }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>계정 만들기</div>
             <div style={{ display: "grid", gap: 8 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -2982,17 +3132,18 @@ function AdminScreen({ onBack, toast, flash }) {
               <Field value={form.subjects} onChange={(v) => setForm({ ...form, subjects: v })} placeholder="수강 과목 (선택, 쉼표로) 예: 통합과학, 수학" ariaLabel="수강 과목" maxLength={200} />
               {form.role !== "admin" && <CheckRow on={!!form.shOn} onToggle={() => setForm({ ...form, shOn: !form.shOn })}><Check on={!!form.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
               {form.role !== "admin" && <CheckRow on={!!form.repOn} onToggle={() => setForm({ ...form, repOn: !form.repOn })}><Check on={!!form.repOn} size={20} /><span style={{ fontSize: 14.5 }}>분석 리포트 허용</span></CheckRow>}
+              {form.role !== "admin" && <><div style={{ fontSize: 13, color: C.sub }}>기능 권한</div><PermPicker value={form.perms} onChange={(v) => setForm({ ...form, perms: v })} /></>}
               <Btn onClick={create} disabled={busy}>계정 만들기</Btn>
             </div>
-          </Card>
+          </Card>}
           <h3 style={{ fontSize: 16, fontWeight: 700, margin: "18px 0 8px", color: C.inkMid }}>계정 목록 {users ? `(${users.length})` : ""}</h3>
           {users === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
           {(users || []).map((u) => (
-            <button key={u.id} className="em-btn em-row" onClick={() => setEdit({ ...u, pw: "" })}
+            <button key={u.id} className="em-btn em-row" onClick={() => { if (lite) return flash("제한 관리자는 열람만 할 수 있습니다."); setEdit({ ...u, pw: "", newId: u.id, perms: u.perms || { ...PERMS_ALL } }); setShowPw(false); setMsg({ title: "", body: "" }); }}
               style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
               <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
               <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
-              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}</span>
+              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && PERM_KEYS.some((k) => k !== "adminLite" && !u.perms[k]) ? ` · 잠김 ${PERM_KEYS.filter((k) => k !== "adminLite" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
             </button>
           ))}
         </>
@@ -3102,7 +3253,13 @@ function AdminScreen({ onBack, toast, flash }) {
       {edit && (
         <Modal title={`계정 수정 · ${edit.id}`} onClose={() => setEdit(null)}>
           <div style={{ display: "grid", gap: 8 }}>
-            <Field value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="이름" ariaLabel="이름" />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <Field value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="이름" ariaLabel="이름" />
+              <Field value={edit.newId !== undefined ? edit.newId : edit.id} onChange={(v) => setEdit({ ...edit, newId: v })} placeholder="아이디" ariaLabel="아이디" maxLength={30} />
+            </div>
+            {edit.pwNote ? (
+              <div style={{ fontSize: 13.5, color: C.inkMid, display: "flex", alignItems: "center", gap: 8 }}>관리자가 정한 비밀번호: <b style={{ fontFamily: "ui-monospace, Consolas, monospace" }}>{showPw ? edit.pwNote : "••••••"}</b><TextBtn tone="sub" onClick={() => setShowPw((v) => !v)} style={{ fontSize: 12.5 }}>{showPw ? "숨기기" : "보기"}</TextBtn></div>
+            ) : <div style={{ fontSize: 12.5, color: C.sub }}>비밀번호: 본인이 정한 값이라 볼 수 없습니다(암호화 저장). 아래에서 새로 정하면 여기에 표시됩니다.</div>}
             <select value={edit.role} onChange={(e) => setEdit({ ...edit, role: e.target.value })} style={sel} aria-label="역할">
               <option value="student">학생</option><option value="teacher">선생</option><option value="admin">관리자</option>
             </select>
@@ -3117,7 +3274,19 @@ function AdminScreen({ onBack, toast, flash }) {
             {edit.role !== "admin" && <CheckRow on={!!edit.shOn} onToggle={() => setEdit({ ...edit, shOn: !edit.shOn })}><Check on={!!edit.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
             {edit.role !== "admin" && <CheckRow on={!!edit.repOn} onToggle={() => setEdit({ ...edit, repOn: !edit.repOn })}><Check on={!!edit.repOn} size={20} /><span style={{ fontSize: 14.5 }}>분석 리포트 허용</span></CheckRow>}
             <CheckRow on={edit.active !== false} onToggle={() => setEdit({ ...edit, active: edit.active === false })}>로그인 허용</CheckRow>
+            {edit.role !== "admin" && <><div style={{ fontSize: 13, color: C.sub }}>기능 권한</div><PermPicker value={edit.perms || PERMS_ALL} onChange={(v) => setEdit({ ...edit, perms: v })} /></>}
+            <div style={{ fontSize: 13, color: C.sub, marginTop: 4 }}>학습 범위 · 개인 맞춤 지시 (열람·수정)</div>
+            <Field value={edit.scope || ""} onChange={(v) => setEdit({ ...edit, scope: v })} placeholder="학습 범위" ariaLabel="학습 범위" maxLength={200} />
+            <Field value={edit.prompt || ""} onChange={(v) => setEdit({ ...edit, prompt: v })} placeholder="개인 맞춤 지시 (AI 문제 만들기에 반영)" ariaLabel="개인 맞춤 지시" multiline rows={2} maxLength={1000} />
             <Btn onClick={save} disabled={busy}>저장</Btn>
+            <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 10, marginTop: 4 }}>
+              <div style={{ fontSize: 13, color: C.sub, marginBottom: 6 }}>이 계정에 알림 보내기</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <Field value={msg.title} onChange={(v) => setMsg({ ...msg, title: v })} placeholder="제목" ariaLabel="알림 제목" maxLength={80} />
+                <Field value={msg.body} onChange={(v) => setMsg({ ...msg, body: v })} placeholder="내용" ariaLabel="알림 내용" multiline rows={2} maxLength={300} />
+                <Btn kind="soft" onClick={sendOne}>알림 보내기</Btn>
+              </div>
+            </div>
             <Btn kind="danger" onClick={del}>계정 삭제</Btn>
           </div>
         </Modal>
@@ -3595,6 +3764,7 @@ function ExamMaker() {
     }
     if (n.kind === "note") return setScreen("study");
     if (n.kind === "report") return setScreen("myresults");
+    if (n.kind === "perm") return setScreen("admin");
   };
 
   /* ── 내비게이션(하단 탭/사이드바): 로그인 뒤, 응시·편집 중이 아닐 때만 */
@@ -3624,7 +3794,7 @@ function ExamMaker() {
   if (remote().kind === "server" && !user)
     return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
 
-  if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
+  if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
   if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
   if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} />}{chrome}</>;
 
