@@ -75,6 +75,11 @@ html,body{background:${C.bg};}
 .em-nav-logo{display:none;}
 .em-nav-item.em-nav-more{display:none;}
 .em-nav-profile{display:none;}
+.em-jump{position:fixed;right:14px;bottom:18px;display:flex;flex-direction:column;gap:6px;z-index:40;}
+.em-jump button{width:48px;height:48px;border-radius:999px;border:1px solid ${C.line};background:${C.card};color:${C.accent};font-family:inherit;font-size:13px;font-weight:800;line-height:1.05;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;box-shadow:${C.shadow};}
+.em-jump button span{font-size:9.5px;font-weight:700;color:${C.sub};}
+.em-jump button:hover{border-color:${C.accent};}
+@media (min-width:1024px){.em-jump{right:calc(50% - 520px - 64px);}}
 .em-nav-dot{position:absolute;top:-6px;right:-10px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:999px;background:${C.bad};color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1;}
 .em-hero:hover{filter:brightness(1.04);} .em-hero:focus-visible{outline:2px solid ${C.ink};outline-offset:2px;}
 body.em-has-nav .em-page{padding-bottom:104px !important;}
@@ -221,6 +226,8 @@ const serverRemote = {
   studentResults: (studentId) => apiGet({ action: "studentResults", studentId }),
   allResults: () => apiGet({ action: "allResults" }),
   resultDelete: (id) => apiPost({ action: "resultDelete", id }),
+  resultUpdate: (b) => apiPost({ action: "resultUpdate", ...b }),
+  activityList: (params) => apiGet({ action: "activityList", ...(params || {}) }),
   reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
   reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
@@ -1522,64 +1529,91 @@ function printableItems(src) {
   const shared = src.options || [];
   return (src.questions || []).map((q, i) => ({ no: i + 1, text: q.text || "", options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared, answers: q.answers || [], explain: q.explain || "" }));
 }
+/* 개념완성형 A4 양식: 헤더 띠(과목 태그·제목) → 이름 칸 → 개념 상자(안내문) → 2단 문항(한 장 최대 N개, 넘치면 다음 장) → 마지막 장 정답표 + 해설(별지 고정).
+   페이지 나눔은 새 창에서 글꼴이 로드된 뒤 실제 높이를 재서 한다. */
 function buildPrintHtml(src, opts) {
   const esc = (v) => String(v || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const items = printableItems(src);
   const per = opts.perPage || 4;
-  const pages = [];
-  for (let i = 0; i < items.length; i += per) pages.push(items.slice(i, i + per));
-  const total = pages.length + (opts.withKey ? 1 : 0);
-  const head = (p) => `<div class="hd"><div><b>${esc(src.title || "시험지")}</b>${src.subject ? ` <span class="sub">· ${esc(src.subject)}</span>` : ""}</div><div class="sub">${p} / ${total}</div></div>`;
-  const nameLine = opts.nameLine ? `<div class="name">이름 ______________ &nbsp;&nbsp; 날짜 ______________ &nbsp;&nbsp; 점수 ______ / ${items.length}</div>` : "";
-  const qHtml = (q) => `<div class="q"><div class="no">${q.no}.</div><div class="body"><div class="t">${esc(q.text)}${q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</div><div class="opts">${q.options.map((o, i) => `<div class="o">${mark(i)} ${esc(o)}</div>`).join("")}</div></div></div>`;
-  let html = pages.map((pg, pi) => `<section class="page">${head(pi + 1)}${pi === 0 ? nameLine : ""}${pi === 0 && src.desc ? `<p class="desc">${esc(src.desc)}</p>` : ""}${pg.map(qHtml).join("")}</section>`).join("");
-  if (opts.withKey) {
-    const cols = 10;
-    let tbl = "";
-    for (let i = 0; i < items.length; i += cols) {
-      const chunk = items.slice(i, i + cols);
-      tbl += `<table class="ans"><tr>${chunk.map((q) => `<th>${q.no}</th>`).join("")}</tr><tr>${chunk.map((q) => `<td>${q.answers.map(mark).join("")}</td>`).join("")}</tr></table>`;
-    }
-    html += `<section class="page key">${head(total)}<h2>정답 및 해설</h2>${tbl}${items.filter((q) => q.explain).map((q) => `<div class="ex"><b>${q.no}. ${q.answers.map(mark).join("")}</b> ${esc(q.explain)}</div>`).join("")}</section>`;
+  const title = src.title || "시험지", subject = src.subject || "", desc = src.desc || "", code = src.code || "";
+  const head = `<header class="hd"><div class="tag"><span class="tag1">${esc(subject || "시험지")}</span><span class="tag2">확인 문제</span></div><div class="ttl">${esc(title)}</div><div class="logo">시험지</div></header>`;
+  let first = "";
+  if (opts.nameLine) first += `<div class="name">이름 <span class="blank"></span> 날짜 <span class="blank"></span> 점수 <span class="blank short"></span> / ${items.length}</div>`;
+  if (desc) first += `<div class="sec">안내 · 개념 정리</div><div class="box"><div class="boxh">읽고 시작하기</div><p>${esc(desc)}</p></div>`;
+  first += `<div class="pill">확인 문제</div>`;
+  const optHtml = (o) => `<div class="opts ${o.every((x) => String(x).length <= 14) ? "two" : "one"}">${o.map((x, i) => `<div class="o"><span class="m">${mark(i)}</span><span>${esc(x)}</span></div>`).join("")}</div>`;
+  const qHtml = (q) => `<div class="q"><div class="qh"><span class="qn">Q${q.no}.</span><span class="qt">${esc(q.text)}${q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</span></div>${optHtml(q.options)}<div class="space"></div></div>`;
+  let tbl = "";
+  for (let i = 0; i < items.length; i += 10) {
+    const ch = items.slice(i, i + 10);
+    tbl += `<table class="anst"><tr>${ch.map((q) => `<th>${q.no}</th>`).join("")}</tr><tr>${ch.map((q) => `<td>${q.answers.map(mark).join("")}</td>`).join("")}</tr></table>`;
   }
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(src.title || "시험지")}</title><style>
-@page{size:A4;margin:14mm 14mm 16mm}
-html,body{margin:0;background:#fff;color:#1D1D1F;font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:13pt;line-height:1.65}
-.page{page-break-after:always;break-after:page} .page:last-child{page-break-after:auto;break-after:auto}
-.hd{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #1D1D1F;padding-bottom:3mm;margin-bottom:5mm;font-size:15pt}
-.sub{color:#6E6E73;font-size:10.5pt;font-weight:400} .name{margin:0 0 6mm;font-size:12pt} .desc{color:#3A3A3C;font-size:11.5pt;margin:0 0 5mm;white-space:pre-wrap}
-.q{display:flex;gap:4mm;margin:0 0 9mm;page-break-inside:avoid;break-inside:avoid} .no{font-weight:800;min-width:8mm} .body{flex:1} .t{white-space:pre-wrap;margin-bottom:2.5mm}
-.opts .o{padding:1.2mm 0 1.2mm 2mm}
-.key h2{font-size:16pt;margin:0 0 4mm} table.ans{border-collapse:collapse;margin:0 0 4mm;font-size:12pt} table.ans th,table.ans td{border:1px solid #C9C9CE;padding:1.5mm 3mm;text-align:center;min-width:7mm} table.ans th{background:#F5F5F7}
-.ex{font-size:11.5pt;margin:2mm 0 0;page-break-inside:avoid;break-inside:avoid;white-space:pre-wrap;line-height:1.55}
-@media screen{body{background:#EEE;padding:10mm 0} .page{background:#fff;width:210mm;min-height:297mm;box-sizing:border-box;padding:14mm;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:#0066CC;color:#fff;cursor:pointer}}
-@media print{.bar{display:none}}
-</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div>${html}<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},400)});</script></body></html>`;
+  const exs = items.filter((q) => q.explain).map((q) => `<div class="kx"><span class="badge">Q${q.no}</span><span class="av">${q.answers.map(mark).join("")}</span><span class="ex">${esc(q.explain)}</span></div>`).join("");
+  const keyPage = `<section class="page key"><div class="pill">정답 및 해설</div>${tbl}<div class="keys">${exs}</div></section>`;
+  const css = `
+@page{size:A4;margin:0}
+:root{--ac:#0066CC;--acSoft:#E8F1FB;--ink:#1D1D1F;--sub:#6E6E73;--line:#D5D5DA}
+html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:11pt;line-height:1.55}
+.page{position:relative;width:210mm;height:297mm;box-sizing:border-box;padding:12mm 13mm 16mm;page-break-after:always;break-after:page;overflow:hidden}
+.page:last-child{page-break-after:auto;break-after:auto}
+.hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;border:2px solid var(--ac);border-radius:14px;padding:5mm 6mm;margin:0 0 6mm}
+.tag{display:flex;flex-direction:column;gap:1mm;font-size:8.5pt;font-weight:800} .tag1{background:var(--acSoft);color:var(--ac);border-radius:6px;padding:1mm 3mm} .tag2{background:var(--ac);color:#fff;border-radius:6px;padding:1mm 3mm}
+.ttl{text-align:center;font-size:15pt;font-weight:800;letter-spacing:-.01em} .logo{font-size:9pt;font-weight:800;color:var(--ac);border:1.5px solid var(--ac);border-radius:999px;padding:1mm 3mm}
+.name{font-size:10.5pt;margin:0 0 5mm} .blank{display:inline-block;width:32mm;border-bottom:1px solid var(--ink);margin:0 4mm 0 2mm;vertical-align:-1mm} .blank.short{width:14mm}
+.sec{display:inline-block;background:var(--ac);color:#fff;font-weight:800;font-size:10.5pt;border-radius:999px 999px 999px 0;padding:1.5mm 6mm;margin:0 0 2mm}
+.box{border:1.5px solid var(--ac);border-radius:0 10px 10px 10px;padding:3mm 5mm;margin:0 0 5mm;font-size:10pt} .boxh{font-weight:800;border-left:3px solid var(--ac);padding-left:2mm;margin-bottom:1.5mm} .box p{margin:0;white-space:pre-wrap}
+.pill{display:inline-block;border:1.5px solid var(--ac);color:var(--ac);font-weight:800;font-size:10.5pt;border-radius:999px;padding:1.2mm 6mm;margin:0 0 4mm}
+.grid{display:grid;grid-template-columns:1fr 1fr;column-gap:7mm;row-gap:5mm;align-items:start}
+.q{border-top:1px dashed var(--line);padding-top:3mm;break-inside:avoid;page-break-inside:avoid} .grid .q:nth-child(-n+2){border-top:none;padding-top:0}
+.qh{display:flex;gap:2.5mm;margin:0 0 2.5mm} .qn{font-weight:800;font-size:12pt;white-space:nowrap} .qt{font-weight:700;white-space:pre-wrap} .sub{color:var(--sub);font-weight:400;font-size:9.5pt}
+.opts{display:grid;gap:1.2mm 4mm;margin:0 0 3mm 1mm} .opts.two{grid-template-columns:1fr 1fr} .opts.one{grid-template-columns:1fr} .o{display:flex;gap:1.5mm} .m{color:var(--ac);font-weight:700}
+.space{height:16mm}
+.badge{flex:0 0 auto;background:var(--ac);color:#fff;font-size:8pt;font-weight:800;border-radius:999px;padding:.6mm 2.5mm;margin-top:.6mm} .av{font-weight:800;flex:0 0 auto} .ex{white-space:pre-wrap;color:#3A3A3C}
+.anst{border-collapse:collapse;margin:0 0 3mm;font-size:10.5pt} .anst th,.anst td{border:1px solid var(--line);padding:1.2mm 2.6mm;text-align:center;min-width:6mm} .anst th{background:#F5F5F7}
+.keys{columns:2;column-gap:7mm;margin-top:3mm} .kx{display:flex;gap:2mm;align-items:flex-start;break-inside:avoid;margin:0 0 2.5mm;font-size:10pt}
+.ft{position:absolute;left:13mm;right:13mm;bottom:8mm;display:flex;justify-content:space-between;font-size:8.5pt;color:var(--sub);border-top:1px solid var(--line);padding-top:2mm} .mono{font-family:ui-monospace,Consolas,monospace;letter-spacing:.06em}
+@media screen{body{background:#EEE;padding:14mm 0 10mm} .page{background:#fff;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:#0066CC;color:#fff;cursor:pointer}}
+@media print{.bar{display:none}}`;
+  const script = `
+function paginate(){
+  var per=${per}, hd=document.getElementById('hd').innerHTML, first=document.getElementById('first').innerHTML, code=${JSON.stringify(code)};
+  var pool=Array.prototype.slice.call(document.querySelectorAll('#pool .q')), pagesEl=document.getElementById('pages');
+  function newPage(n){ var s=document.createElement('section'); s.className='page'; s.innerHTML=hd+(n===1?first:'')+'<div class="grid"></div><footer class="ft"><span class="mono">'+code+'</span><span class="pn"></span></footer>'; pagesEl.appendChild(s); return s; }
+  var n=0, page=null, grid=null, count=0;
+  while(pool.length){
+    if(!page||count>=per){ page=newPage(++n); grid=page.querySelector('.grid'); count=0; }
+    var q=pool.shift(); grid.appendChild(q); count++;
+    if(page.scrollHeight>page.clientHeight+1 && count>1){ grid.removeChild(q); pool.unshift(q); page=null; }
+  }
+  var key=document.querySelector('.page.key'); if(key){ key.insertAdjacentHTML('afterbegin',hd); key.insertAdjacentHTML('beforeend','<footer class="ft"><span class="mono">'+code+'</span><span class="pn"></span></footer>'); }
+  var all=document.querySelectorAll('.page'); all.forEach(function(p,i){ p.querySelector('.pn').textContent='- '+(i+1)+' / '+all.length+' -'; });
+  document.getElementById('pool').remove();
+  setTimeout(function(){ window.print(); }, 300);
+}
+(document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(paginate);`;
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="pages"></div>${keyPage}<script>${script}</script></body></html>`;
 }
 function PrintModal({ src, onClose, flash }) {
   const [per, setPer] = useState(4);
-  const [withKey, setWithKey] = useState(true);
   const [nameLine, setNameLine] = useState(true);
   const n = (src.questions || []).length;
-  const pages = Math.ceil(n / per) + (withKey ? 1 : 0);
   const go = () => {
     const w = window.open("", "_blank");
     if (!w) return flash("팝업이 막혀 있습니다. 이 사이트의 팝업을 허용한 뒤 다시 눌러 주세요.");
-    w.document.write(buildPrintHtml(src, { perPage: per, withKey, nameLine }));
+    w.document.write(buildPrintHtml(src, { perPage: per, nameLine }));
     w.document.close();
     onClose();
   };
   const lab = (t) => <div style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 6px" }}>{t}</div>;
   return (
     <Modal title="인쇄 · PDF 저장" onClose={onClose}>
-      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: 0 }}>A4 시험지로 만듭니다. 열리는 인쇄 창에서 프린터 대신 <b>PDF로 저장</b>을 고르면 파일로 받을 수 있습니다.</p>
-      {lab("한 장에 넣을 문항 수")}
+      <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: 0 }}>A4 시험지로 만듭니다. 문제는 2단으로 한 장에 최대 {per}문항, 안내문은 첫 장 개념 상자에, 정답표와 해설은 마지막 장(별지)에 들어갑니다. 열리는 인쇄 창에서 프린터 대신 <b>PDF로 저장</b>을 고르면 파일로 받을 수 있습니다.</p>
+      {lab("한 장에 넣을 문항 수 (긴 문항은 자동으로 다음 장)")}
       <Seg value={per} onChange={setPer} items={[[3, "3문항"], [4, "4문항"]]} />
       <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
-        <CheckRow on={withKey} onToggle={() => setWithKey((v) => !v)}><Check on={withKey} size={20} /><span style={{ fontSize: 14.5 }}>해설지(정답표 + 해설)를 마지막 장에 붙이기</span></CheckRow>
         <CheckRow on={nameLine} onToggle={() => setNameLine((v) => !v)}><Check on={nameLine} size={20} /><span style={{ fontSize: 14.5 }}>첫 장에 이름·날짜·점수 칸</span></CheckRow>
       </div>
-      <p style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 0" }}>문제 {n}개 · 예상 {pages}쪽{n === 0 ? " — 문제가 없습니다" : ""}</p>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "12px 0 0" }}>문제 {n}개 · 약 {Math.ceil(n / per) + 1}쪽{n === 0 ? " — 문제가 없습니다" : ""}</p>
       <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
         <Btn onClick={go} disabled={n === 0}>인쇄 창 열기</Btn>
         <Btn kind="ghost" onClick={onClose}>닫기</Btn>
@@ -2002,6 +2036,10 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
       )}
 
       {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
+      <div className="em-jump" aria-label="화면 이동">
+        <button className="em-btn" aria-label="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>▲<span>맨 위</span></button>
+        <button className="em-btn" aria-label="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}>▼<span>맨 아래</span></button>
+      </div>
       {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} genAvail={genAvail} subject={draft.subject} onQueue={() => { setGenOpen(false); flash("Claude에게 요청했습니다. 완료되면 알림이 뜨고 내 시험지에 새 시험지로 추가됩니다."); }} />}
     </Shell>
   );
@@ -2069,7 +2107,7 @@ function TakeScreen({ run, picked, togglePick, name, setName, onSubmit, onExit, 
       {run.desc && <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{run.desc}</p>}
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
         {run.owner ? `${run.owner} 출제 · ` : ""}{run.partial ? "틀린 문제만 다시 풉니다 · " : ""}문제 {run.questions.length}개{run.timeLimit ? ` · 제한 ${run.timeLimit}분` : ""} · 정답이 여러 개일 수 있습니다{run.preview ? " · 응시 기간 밖(출제자 미리 보기)" : ""}
-        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, options: run.options, questions: run.questions })} style={{ padding: 0, fontSize: 14 }}>인쇄·PDF</TextBtn></>}
+        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, options: run.options, questions: run.questions })} style={{ padding: 0, fontSize: 14 }}>인쇄·PDF</TextBtn></>}
       </p>
 
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
@@ -2552,6 +2590,63 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   );
 }
 
+const ACT_KO = { login: "로그인", setup: "관리자 생성", share: "시험지 공유", quiz_delete: "공유 코드 삭제", exam_delete: "시험지 삭제", submit: "응시 제출", results_clear: "응시 기록 비우기", result_update: "결과 수정", result_delete: "결과 삭제", sh_upload: "오답노트 사진 올림", sh_confirm: "확인 질문 답", assign: "배정", unassign: "배정 해제", job_create: "작업 요청(AI·사진·오답노트)", job_done: "작업 완료", job_error: "작업 실패", report_request: "리포트 요청", report_put: "리포트 생성", user_create: "계정 만들기", user_update: "계정 수정", user_delete: "계정 삭제", pw_change: "비밀번호 변경", profile: "프로필 수정", gen: "AI 기본 생성" };
+
+/* 관리자: 응시 결과의 문항별 정오를 고친다(점수는 자동 계산). 문항별 기록이 없으면 점수만 고친다. */
+function ResultEditModal({ item, onClose, onSaved, flash }) {
+  const [quiz, setQuiz] = useState(null);
+  const [rows, setRows] = useState(Array.isArray(item.detail) ? item.detail.map((d) => ({ ...d })) : null);
+  const [score, setScore] = useState(String(item.score));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { (async () => { const r = await remote().getQuiz(item.code); setQuiz(r.ok ? r.quiz : {}); })(); }, []);
+  const qOf = (id) => ((quiz && quiz.questions) || []).find((q) => q.id === id);
+  const save = async () => {
+    setBusy(true);
+    const r = await remote().resultUpdate(rows ? { id: item.id, detail: rows } : { id: item.id, score: Math.max(0, Math.min(item.total, parseInt(score, 10) || 0)) });
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    onSaved({ ...item, score: r.score, detail: rows || item.detail });
+    flash(`저장했습니다. ${r.score}/${r.total}`);
+  };
+  const okCount = rows ? rows.filter((d) => d.ok).length : null;
+  return (
+    <Modal title={`결과 수정 · ${item.name}`} onClose={onClose} wide>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 10px", lineHeight: 1.5 }}>{item.title || item.code} · {fmtDateTime(item.at)} · 지금 {item.score}/{item.total}</p>
+      {rows ? (
+        <>
+          <p style={{ fontSize: 14, margin: "0 0 8px" }}>문항을 눌러 정답/오답을 바꿉니다. 점수는 정답 수로 다시 계산됩니다. <b>{okCount}/{item.total}</b></p>
+          <div style={{ display: "grid", gap: 6, maxHeight: "50vh", overflowY: "auto" }}>
+            {rows.map((d, i) => {
+              const q = qOf(d.q);
+              const opts = q ? (Array.isArray(q.options) && q.options.length >= 2 ? q.options : (quiz.options || [])) : [];
+              return (
+                <CheckRow key={d.q + i} on={!!d.ok} onToggle={() => setRows(rows.map((x, k) => (k === i ? { ...x, ok: !x.ok } : x)))} padding="9px 11px" style={{ alignItems: "flex-start" }}>
+                  <Badge tone={d.ok ? "good" : "bad"}>{d.ok ? "정답" : "오답"}</Badge>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{i + 1}. {q ? q.text : quiz === null ? "불러오는 중…" : "(시험지에서 문항을 찾지 못함)"}</div>
+                    <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>
+                      고른 답 {d.m && d.m.length ? d.m.map((k) => mark(k)).join("") : "없음"}{q ? ` · 정답 ${(q.answers || []).map((k) => mark(k)).join("")}` : ""}{opts.length && d.m && d.m.length ? ` · ${d.m.map((k) => opts[k]).filter(Boolean).join(", ")}` : ""}
+                    </div>
+                  </div>
+                </CheckRow>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <>
+          <p style={{ fontSize: 14, margin: "0 0 8px", color: C.inkMid }}>문항별 기록이 없는 결과라 점수만 고칠 수 있습니다. (0 ~ {item.total})</p>
+          <input type="number" min="0" max={item.total} value={score} onChange={(e) => setScore(e.target.value)} className="em-in" aria-label="점수" style={{ width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 16, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 13px" }} />
+        </>
+      )}
+      <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+        <Btn onClick={save} disabled={busy}>저장</Btn>
+        <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 /* 관리자: 계정 관리 + 전체 기록 */
 function AdminScreen({ onBack, toast, flash }) {
   const [users, setUsers] = useState(null);
@@ -2568,6 +2663,12 @@ function AdminScreen({ onBack, toast, flash }) {
   const load = async () => { const r = await remote().userList(); if (!r.ok) return flash(errMsg(r)); setUsers(r.users); };
   useEffect(() => { load(); }, []);
   const loadResults = async () => { const r = await remote().allResults(); if (!r.ok) return flash(errMsg(r)); setResults(r.items); };
+  const [resView, setResView] = useState("results");   // results | activity
+  const [acts, setActs] = useState(null);
+  const [actType, setActType] = useState("");
+  const [actUser, setActUser] = useState("");
+  const [editRes, setEditRes] = useState(null);
+  const loadActs = async (t, uid) => { setActs(null); const r = await remote().activityList({ limit: 300, type: t || "", userId: (uid || "").trim() }); if (!r.ok) return flash(errMsg(r)); setActs(r.items); };
 
   const create = async () => {
     if (!form.id.trim() || form.pw.length < 4) return flash("아이디와 4자 이상 비밀번호를 넣어 주세요.");
@@ -2656,7 +2757,36 @@ function AdminScreen({ onBack, toast, flash }) {
 
       {tab === "results" && (
         <div style={{ marginTop: 14 }}>
-          {results === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : results.length === 0 ? <p style={{ color: C.sub }}>아직 기록이 없습니다.</p> : (
+          <Seg value={resView} onChange={(v) => { setResView(v); if (v === "activity" && acts === null) loadActs(actType, actUser); }} items={[["results", "응시 결과"], ["activity", "모든 활동"]]} />
+          {resView === "activity" && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                <select value={actType} onChange={(e) => { setActType(e.target.value); loadActs(e.target.value, actUser); }} style={sel} aria-label="활동 종류">
+                  <option value="">모든 활동</option>
+                  {Object.keys(ACT_KO).map((k) => <option key={k} value={k}>{ACT_KO[k]}</option>)}
+                </select>
+                <Field value={actUser} onChange={setActUser} placeholder="아이디로 거르기" ariaLabel="아이디" onEnter={() => loadActs(actType, actUser)} style={{ padding: "10px 12px", fontSize: 14.5 }} />
+                <Btn kind="soft" onClick={() => loadActs(actType, actUser)} style={{ width: "auto", padding: "10px 14px", fontSize: 14 }}>새로고침</Btn>
+              </div>
+              {acts === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : acts.length === 0 ? <p style={{ color: C.sub }}>기록이 없습니다.</p> : (
+                <Card style={{ padding: 8 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
+                    <thead><tr>{["때", "계정", "활동", "내용"].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
+                    <tbody>{acts.map((a, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: "5px 8px", whiteSpace: "nowrap", color: C.sub }}>{fmtDateTime(a.at)}</td>
+                        <td style={{ padding: "5px 8px", whiteSpace: "nowrap" }}>{a.name}</td>
+                        <td style={{ padding: "5px 8px", whiteSpace: "nowrap" }}><Badge tone={/error|delete|clear/.test(a.type) ? "bad" : /done|login|submit/.test(a.type) ? "good" : "neutral"}>{ACT_KO[a.type] || a.type}</Badge></td>
+                        <td style={{ padding: "5px 8px", wordBreak: "break-all" }}>{a.detail}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                  <p style={{ fontSize: 12.5, color: C.sub, margin: "8px 8px 2px" }}>최근 {acts.length}건 · 6,000건이 넘으면 오래된 것부터 지워집니다.</p>
+                </Card>
+              )}
+            </div>
+          )}
+          {resView === "results" && (results === null ? <p style={{ color: C.sub, marginTop: 12 }}>불러오는 중…</p> : results.length === 0 ? <p style={{ color: C.sub, marginTop: 12 }}>아직 기록이 없습니다.</p> : (
             <Card style={{ padding: 8 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead><tr>{["때", "이름", "시험지", "점수", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
@@ -2666,12 +2796,13 @@ function AdminScreen({ onBack, toast, flash }) {
                     <td style={{ padding: "6px 8px" }}>{it.name}{it.userId ? "" : <span style={{ color: C.sub }}> (비회원)</span>}</td>
                     <td style={{ padding: "6px 8px" }}>{it.title || it.code}</td>
                     <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{it.score}/{it.total}</td>
-                    <td style={{ padding: "6px 8px" }}><TextBtn tone="sub" onClick={() => delResult(it)} style={{ fontSize: 13 }}>삭제</TextBtn></td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}><TextBtn onClick={() => setEditRes(it)} style={{ fontSize: 13 }}>수정</TextBtn><TextBtn tone="sub" onClick={() => delResult(it)} style={{ fontSize: 13 }}>삭제</TextBtn></td>
                   </tr>
                 ))}</tbody>
               </table>
             </Card>
-          )}
+          ))}
+          {editRes && <ResultEditModal item={editRes} onClose={() => setEditRes(null)} flash={flash} onSaved={(it) => { setResults(results.map((x) => (x.id === it.id ? it : x))); setEditRes(null); }} />}
         </div>
       )}
 

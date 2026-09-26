@@ -276,7 +276,7 @@ function generate(body) {
 }
 
 /* ── 읽기 (GET) ────────────────────────────── */
-const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'assignList', 'jobList', 'noteList', 'sh_list', 'sh_detail', 'sh_note'];
+const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'assignList', 'jobList', 'noteList', 'activityList', 'sh_list', 'sh_detail', 'sh_note'];
 function doGet(e) { return readAction((e && e.parameter) || {}); }
 // 조회 동작. 사이트는 토큰을 주소에 싣지 않도록 POST 로 보내고, 워커·구형 호출은 GET 그대로.
 function readAction(p) {
@@ -326,6 +326,7 @@ function readAction(p) {
     if (a === 'assignList') return out(assignList(p));
     if (a === 'jobList') return out(jobList(p));
     if (a === 'noteList') return out(noteList(p));
+    if (a === 'activityList') return out(activityList(p));
     if (a === 'reportPending') return out(reportPending(p));
 
     if (a === 'sh_list') return out(shList(p));
@@ -358,6 +359,10 @@ function doPost(e) {
       if (a === 'setup') return out(setup(body));
       return out(changePw(body));
     } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
+  }
+  // Cloudflare 이전용(워커 키): 전체 내보내기 · 드라이브 파일 저장소
+  if (a === 'export' || a === 'exportSecret' || a.indexOf('fs_') === 0) {
+    try { return out(cfBridge(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); }
   }
   if (a === 'reportPut') { try { return out(reportPut(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
   if (a === 'reportRequest') { try { return out(reportRequest(body)); } catch (err) { return out({ ok: false, error: 'server', message: String(err) }); } }
@@ -398,6 +403,7 @@ function doPost(e) {
     if (a === 'examPut') return out(examPut(body));
     if (a === 'noteSeen') return out(noteSeen(body));
     if (a === 'resultDelete') return out(resultDelete(body));
+    if (a === 'resultUpdate') return out(resultUpdate(body));
     if (a === 'workerKeySet') return out(workerKeySet(body));
     if (a === 'resetTestUsers') return out(resetTestUsers(body));
     return out({ ok: false, error: 'bad_action' });
@@ -429,6 +435,7 @@ function share(body) {
       if (!okKey && !okUser) return { ok: false, error: 'bad_key' };
       s.getRange(row, 3, 1, 4).setValues([[title, json, s.getRange(row, 5).getValue(), now]]);
       if (user && !owner) s.getRange(row, 8).setValue(user.id);
+      logAct(user ? user.id : '', 'share', '다시 공유 ' + code + ' · ' + title);
       return { ok: true, code: code, updated: true };
     }
     // 코드가 서버에 없으면(예: 지워짐) 새 코드로 발급
@@ -437,6 +444,7 @@ function share(body) {
   const newC = newCode();
   const key = randomKey(24);
   s.appendRow([newC, sha(key), title, json, now, now, 0, user.id]);
+  logAct(user.id, 'share', '새 코드 ' + newC + ' · ' + title);
   return { ok: true, code: newC, key: key, updated: false };
 }
 
@@ -453,6 +461,7 @@ function remove(body) {
   s.deleteRow(row);
   deleteResultsFor(code);
   deleteAssignFor(code);
+  logAct(user ? user.id : '', 'quiz_delete', '코드 ' + code);
   return { ok: true };
 }
 
@@ -480,6 +489,7 @@ function submit(body) {
   archiveOldResults();
   const cell = s.getRange(row, 7);
   cell.setValue((Number(cell.getValue()) || 0) + 1);
+  logAct(user.id, 'submit', code + ' · ' + score + '/' + total);
   return { ok: true, id: resultId };
 }
 
@@ -505,6 +515,7 @@ function clearResults(body) {
   const okUser = user && (user.role === 'admin' || (owner && owner === user.id));
   if (!okKey && !okUser) return { ok: false, error: 'bad_key' };
   const n = deleteResultsFor(code);
+  logAct(user ? user.id : '', 'results_clear', code + ' · ' + n + '건');
   return { ok: true, removed: n };
 }
 
@@ -596,6 +607,7 @@ function shUpload(body) {
   if (row0 && !shCanSee(user, shOwnerOf(row0))) return { ok: false, error: 'forbidden' };   // 남의 문제지 이름에 덧붙이기 방지
   shFilesSheet().appendRow([id, kh, ws, name, file.getId(), Date.now(), '', user.id]);
   shEnsureWs(kh, ws, 'uploaded', user.id);
+  logAct(user.id, 'sh_upload', ws + ' · ' + filename);
   return { ok: true, id: id, worksheet: ws };
 }
 
@@ -655,6 +667,7 @@ function shConfirm(body) {
   items.forEach(c => { const v = safeText(answers[c.id], 300); if (v && !c.answer) { c.answer = v; c.answeredAt = Date.now(); n++; } });
   s.getRange(row, 6).setValue(JSON.stringify(items));
   s.getRange(row, 9).setValue(Date.now());
+  logAct(user.id, 'sh_confirm', ws + ' · ' + n + '건');
   return { ok: true, saved: n };
 }
 
@@ -830,6 +843,7 @@ function login(body) {
     for (let i = rows.length - 1; i >= 0; i--) if (Date.now() - (Number(rows[i][2]) || 0) > SESSION_DAYS * 86400000) ss2.deleteRow(i + 2);
   }
   ss2.appendRow([token, u.id, Date.now(), Date.now()]);
+  logAct(u.id, 'login', u.role);
   return { ok: true, token: token, user: pubUser(u) };
 }
 function logout(body) {
@@ -864,6 +878,7 @@ function userCreate(body) {
   if (teacherId && !(findUser(teacherId) || {}).role) return { ok: false, error: 'bad_teacher' };
   const salt = randomKey(16);
   usersSheet().appendRow([id, role, safeText(body.name || id, NAME_MAX), hashPw(pw, salt), salt, teacherId, Date.now(), true, cleanSubjects(body.subjects), !!body.shOn, !!body.repOn]);
+  logAct(u.id, 'user_create', id + ' (' + role + ')');
   return { ok: true, user: pubUser(findUser(id)) };
 }
 function userUpdate(body) {
@@ -893,12 +908,14 @@ function userUpdate(body) {
   if (body.subjects !== undefined) s.getRange(t.row, 9).setValue(cleanSubjects(body.subjects));
   if (body.shOn !== undefined) s.getRange(t.row, 10).setValue(!!body.shOn);
   if (body.repOn !== undefined) s.getRange(t.row, 11).setValue(!!body.repOn);
+  logAct(u.id, 'user_update', t.id);
   return { ok: true, user: pubUser(findUser(t.id)) };
 }
 // 본인 프로필(수강 과목)
 function profileUpdate(body) {
   const u = auth(body.token); if (!u) return { ok: false, error: 'bad_token' };
   if (body.subjects !== undefined) usersSheet().getRange(u.row, 9).setValue(cleanSubjects(body.subjects));
+  logAct(u.id, 'profile', '수강 과목');
   return { ok: true, user: pubUser(findUser(u.id)) };
 }
 function userDelete(body) {
@@ -912,6 +929,7 @@ function userDelete(body) {
   if (t.id === u.id) { logout(body); return { ok: true, reset: true }; }
   // 이 선생에게 속한 학생은 소속 해제
   allUsers().forEach(x => { if (x.teacherId === t.id) usersSheet().getRange(x.row, 6).setValue(''); });
+  logAct(u.id, 'user_delete', t.id);
   return { ok: true };
 }
 // 본인 비밀번호 변경
@@ -921,6 +939,7 @@ function changePw(body) {
   if (String(body.newPw || '').length < 4) return { ok: false, error: 'bad_pw' };
   const salt = randomKey(16);
   usersSheet().getRange(u.row, 4, 1, 2).setValues([[hashPw(body.newPw, salt), salt]]);
+  logAct(u.id, 'pw_change', '');
   return { ok: true };
 }
 
@@ -958,6 +977,7 @@ function examDelete(body) {
   if (cur.ownerId !== u.id && u.role !== 'admin') return { ok: false, error: 'forbidden' };
   examsSheet().deleteRow(cur.row);
   if (cur.code) { const row = findQuizRow(cur.code); if (row) { quizSheet().deleteRow(row); deleteResultsFor(cur.code); deleteAssignFor(cur.code); } }
+  logAct(u.id, 'exam_delete', cur.title + (cur.code ? ' · ' + cur.code : ''));
   return { ok: true };
 }
 
@@ -1019,7 +1039,9 @@ function resultDelete(body) {
   const row = Number(body.id) || 0;
   const s = resSheet();
   if (row < 2 || row > s.getLastRow()) return { ok: false, error: 'not_found' };
+  const rr = s.getRange(row, 1, 1, 4).getValues()[0];
   s.deleteRow(row);
+  logAct(u.id, 'result_delete', String(rr[0]) + ' · ' + String(rr[1]) + ' · ' + rr[2] + '/' + rr[3]);
   return { ok: true };
 }
 
@@ -1070,6 +1092,7 @@ function assignSet(body) {
     if (!canSeeStudent(u, sid) && u.role !== 'admin') return;
     s.appendRow([randomKey(10), code, sid, u.id, Date.now()]); have[sid] = 1; added++;
   });
+  logAct(u.id, 'assign', code + ' · ' + added + '명');
   return { ok: true, added: added };
 }
 function assignRemove(body) {
@@ -1078,6 +1101,7 @@ function assignRemove(body) {
   if (!canAssign(u, code)) return { ok: false, error: 'forbidden' };
   const s = assignSheet();
   assignRows().filter(a => a.code === code && a.studentId === sid).reverse().forEach(a => s.deleteRow(a.row));
+  logAct(u.id, 'unassign', code + ' · ' + sid);
   return { ok: true };
 }
 // 내게 배정된 시험(mine) + (code 를 주면) 그 코드의 배정 현황(forCode)
@@ -1102,6 +1126,56 @@ function assignList(p) {
     out.forCode = rows.filter(a => a.code === code).map(a => { const st = findUser(a.studentId); const r = done[a.studentId]; return { studentId: a.studentId, name: st ? st.name : a.studentId, at: a.at, done: !!r, score: r ? r.score : null, total: r ? r.total : null }; });
   }
   return out;
+}
+
+/* ── 활동 기록(activity): 로그인·출제·응시·작업·계정 변경 등 모든 활동. 관리자 "전체 기록 › 모든 활동"에서 본다 ── */
+const ACT_MAX = 6000;
+function activitySheet() { return sheet('activity', ['at', 'userId', 'type', 'detail']); }
+function logAct(userId, type, detail) {
+  try {
+    const s = activitySheet();
+    s.appendRow([Date.now(), String(userId || ''), String(type || ''), safeText(String(detail || ''), 200)]);
+    const n = s.getLastRow();
+    if (n > ACT_MAX + 1) s.deleteRows(2, 1000);   // 오래된 1,000건 정리
+  } catch (e) {}
+}
+// 관리자: {limit, userId, type} → 최신순
+function activityList(p) {
+  const u = auth(p.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const s = activitySheet(); const n = s.getLastRow();
+  if (n < 2) return { ok: true, items: [] };
+  const limit = Math.min(500, Math.max(1, Number(p.limit) || 300));
+  const fUser = cleanId(p.userId), fType = String(p.type || '');
+  const rows = s.getRange(2, 1, n - 1, 4).getValues();
+  const names = {}; allUsers().forEach(x => { names[x.id] = x.name; });
+  const out = [];
+  for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {
+    const r = rows[i]; const uid = String(r[1] || '');
+    if (fUser && uid !== fUser) continue;
+    if (fType && String(r[2]) !== fType) continue;
+    out.push({ at: Number(r[0]) || 0, userId: uid, name: names[uid] || (uid ? uid : '(워커/비회원)'), type: String(r[2]), detail: String(r[3] || '') });
+  }
+  return { ok: true, items: out, total: rows.length };
+}
+// 관리자: 응시 결과의 문항별 정오·점수 수정 {id(행), detail:[{q,m,ok}]} 또는 {id, score}
+function resultUpdate(body) {
+  const u = auth(body.token); if (!isAdmin(u)) return { ok: false, error: 'forbidden' };
+  const row = Number(body.id) || 0;
+  const s = resSheet();
+  if (row < 2 || row > s.getLastRow()) return { ok: false, error: 'not_found' };
+  const cur = s.getRange(row, 1, 1, 8).getValues()[0];
+  const total = Math.max(1, Number(cur[3]) || 1);
+  let score;
+  if (Array.isArray(body.detail)) {
+    const detail = body.detail.slice(0, 200).map(d => ({ q: String(d.q || '').slice(0, 40), m: Array.isArray(d.m) ? d.m.slice(0, 12).map(Number) : [], ok: !!d.ok }));
+    score = detail.filter(d => d.ok).length;
+    s.getRange(row, 8).setValue(JSON.stringify(detail));
+  } else {
+    score = Math.max(0, Math.min(total, Math.floor(Number(body.score) || 0)));
+  }
+  s.getRange(row, 3).setValue(score);
+  logAct(u.id, 'result_update', String(cur[0]) + ' · ' + String(cur[1]) + ' · ' + Number(cur[2]) + '→' + score + '/' + total);
+  return { ok: true, score: score, total: total };
 }
 
 /* ── 알림(notes): 워커가 끝낸 일을 사이트에 알린다. 사이트가 1분마다 noteList 로 읽는다 ── */
@@ -1179,6 +1253,7 @@ function jobCreate(body) {
   const id = randomKey(10);
   const json = JSON.stringify(params); if (json.length > SH_CELL_MAX) return { ok: false, error: 'too_big' };
   jobsSheet().appendRow([id, u.id, type, status, json, '', Date.now(), Date.now(), '']);
+  logAct(u.id, 'job_create', type + ' · ' + (type === 'note' ? String(params.title || '') : String(params.scope || '') + (params.pending ? ' · 사진 ' + params.pending + '장' : '')));
   return { ok: true, job: jobPublic({ id: id, userId: u.id, type: type, status: status, params: params, result: null, createdAt: Date.now(), updatedAt: Date.now(), error: '' }) };
 }
 // 사진 붙이기: {id, filename, mime, data(base64)} — 드라이브 "학습도우미/<kh>" 폴더에 저장
@@ -1259,6 +1334,7 @@ function jobResult(body) {
   const s = jobsSheet(); const now = Date.now();
   if (!body.ok) {
     s.getRange(j.row, 4, 1, 6).setValues([['error', j.params ? JSON.stringify(j.params) : '', '', j.createdAt, now, safeText(String(body.error || '실패'), 200)]]);
+    logAct(j.userId, 'job_error', j.type + ' · ' + safeText(String(body.error || ''), 80));
     noteAdd(j.userId, j.type === 'note' ? 'note' : 'gen', j.type === 'note' ? '오답노트를 만들지 못했습니다' : j.type === 'photo' ? '사진으로 문제를 만들지 못했습니다' : 'AI 문제 생성(고급)을 마치지 못했습니다', safeText(String(body.error || '다시 요청해 주세요.'), 200), '');
     return { ok: true };
   }
@@ -1277,6 +1353,7 @@ function jobResult(body) {
     wsheet.getRange(wsRow, 3, 1, 7).setValues([['done', summary, noteId, '[]', questions, wsheet.getRange(wsRow, 8).getValue() || now, now]]);
     s.getRange(j.row, 4, 1, 6).setValues([['done', JSON.stringify(j.params || {}), JSON.stringify({ worksheet: ws }), j.createdAt, now, '']]);
     noteAdd(j.userId, 'note', '오답노트가 완성되었습니다', String(j.params.title || ws) + ' · 오답노트에서 확인하세요.', ws);
+    logAct(j.userId, 'job_done', 'note · ' + ws);
     return { ok: true, worksheet: ws };
   }
   const made = examFromQuiz(j.userId, body.quiz || {}, j.params.scope || (j.type === 'photo' ? '사진으로 만든 문제' : 'AI 문제'), j.params.subject || '', j.type === 'photo' ? 'photo' : 'gen', 60);
@@ -1286,6 +1363,7 @@ function jobResult(body) {
   s.getRange(j.row, 4, 1, 6).setValues([['done', JSON.stringify(j.params || {}), JSON.stringify(result), j.createdAt, now, '']]);
   (j.params.photos || []).forEach(ph => { try { DriveApp.getFileById(ph.driveId).setTrashed(true); } catch (e) {} });
   noteAdd(j.userId, 'gen', j.type === 'photo' ? '사진으로 만든 문제가 도착했습니다' : 'AI 문제 생성(고급)이 끝났습니다', exam.title + ' · 문제 ' + exam.questions.length + '개가 내 시험지에 추가되었습니다.', examId);
+  logAct(j.userId, 'job_done', j.type + ' · ' + exam.title + ' · ' + exam.questions.length + '문항');
   return { ok: true, examId: examId };
 }
 
@@ -1315,6 +1393,7 @@ function examPut(body) {
   if (made.error) return { ok: false, error: made.error };
   const label = body.source === 'photo' ? '사진으로 만든 문제가 도착했습니다' : '새 시험지가 도착했습니다';
   noteAdd(uid, 'gen', label, made.exam.title + ' · 문제 ' + made.exam.questions.length + '개가 내 시험지에 추가되었습니다.', made.examId);
+  logAct(uid, 'job_done', (body.source === 'photo' ? 'photo(PC)' : 'put') + ' · ' + made.exam.title);
   return { ok: true, examId: made.examId, count: made.exam.questions.length };
 }
 
@@ -1369,6 +1448,7 @@ function reportRequest(body) {
   const s = reportsSheet();
   const rep = reportRow(sid);
   if (rep) s.getRange(rep.row, 4, 1, 2).setValues([[0, 0]]); else s.appendRow([sid, '', '', 0, 0]);
+  logAct(u.id, 'report_request', sid);
   return { ok: true };
 }
 function reportPut(body) {
@@ -1385,6 +1465,7 @@ function reportPut(body) {
   const vals = [sid, driveId, JSON.stringify(body.summary || {}).slice(0, SH_CELL_MAX), Number(body.basis) || 0, Date.now()];
   if (rep) s.getRange(rep.row, 1, 1, 5).setValues([vals]); else s.appendRow(vals);
   if (html) noteAdd(sid, 'report', '분석 리포트가 준비되었습니다', String((body.summary || {}).headline || '내 결과·리포트에서 확인하세요.'), '');
+  logAct(sid, 'report_put', '리포트 생성(워커)');
   return { ok: true };
 }
 // 워커 연결 코드: 관리자가 사이트에서 등록한 값(스크립트 속성 WORKER_KH = sha(key))만 허용
@@ -1403,6 +1484,45 @@ function workerKeySet(body) {
   const kh = shKh(body.key); if (!kh) return { ok: false, error: 'bad_key' };
   PropertiesService.getScriptProperties().setProperty('WORKER_KH', kh);
   return { ok: true };
+}
+
+/* ── Cloudflare 이전 다리(워커 키 인증) ──
+   export       : 모든 시트 + 속성 이름 → JSON (D1 이전용)
+   exportSecret : 허용된 속성(GEMINI_API_KEY 등) 값 1개 (Worker 비밀로 옮길 때만)
+   fs_put/get/set/trash : 드라이브 "학습도우미/<kh>" 폴더를 Cloudflare Worker 의 파일 저장소로 쓴다 */
+const FS_SECRET_NAMES = ['GEMINI_API_KEY', 'GEMINI_MODEL', 'GEN_DAILY_LIMIT'];
+function cfBridge(body) {
+  const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
+  const a = body.action;
+  if (a === 'export') {
+    const names = ['quizzes', 'results', 'results_archive', 'users', 'sessions', 'exams', 'reports', 'assignments', 'jobs', 'notes', 'sh_ws', 'sh_files', 'usage'];
+    const data = {};
+    names.forEach(n => { const s = ss().getSheetByName(n); data[n] = s ? s.getDataRange().getValues() : []; });
+    const props = PropertiesService.getScriptProperties().getProperties();
+    data.props = {};
+    Object.keys(props).forEach(k => { data.props[k] = (k === 'WORKER_KH' || k.indexOf('gen:') === 0) ? props[k] : (props[k] ? '(set)' : ''); });
+    return { ok: true, data: data };
+  }
+  if (a === 'exportSecret') {
+    const name = String(body.name || '');
+    if (FS_SECRET_NAMES.indexOf(name) < 0) return { ok: false, error: 'bad_name' };
+    return { ok: true, value: PropertiesService.getScriptProperties().getProperty(name) || '' };
+  }
+  if (a === 'fs_put') {
+    const data = String(body.data || ''); if (!data) return { ok: false, error: 'empty' };
+    const mime = String(body.mime || 'application/octet-stream');
+    const name = safeText(String(body.name || 'file').replace(/[\\/:*?"<>|]+/g, ''), 80) || 'file';
+    const blob = body.text ? Utilities.newBlob(data, mime, name) : Utilities.newBlob(Utilities.base64Decode(data), mime, name);
+    return { ok: true, id: shFolder(kh).createFile(blob).getId() };
+  }
+  if (a === 'fs_get') {
+    const blob = DriveApp.getFileById(String(body.id)).getBlob();
+    if (body.text) return { ok: true, mime: blob.getContentType(), text: blob.getDataAsString('UTF-8') };
+    return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+  }
+  if (a === 'fs_set') { DriveApp.getFileById(String(body.id)).setContent(String(body.text || '')); return { ok: true }; }
+  if (a === 'fs_trash') { try { DriveApp.getFileById(String(body.id)).setTrashed(true); } catch (e) {} return { ok: true }; }
+  return { ok: false, error: 'bad_action' };
 }
 
 /* ── AI 문제 생성 (Gemini API, 무료 등급) ──
@@ -1463,5 +1583,6 @@ function generateGemini(body) {
     .slice(0, count);
   props.setProperty(dayKey, String(used + 1));
   logUsage(scope, questions.length, model, um.promptTokenCount || 0, um.candidatesTokenCount || 0, ms, 'ok');
+  logAct(u ? u.id : '', 'gen', scope);
   return { ok: true, title: String(parsed.title || scope).slice(0, 80), questions: questions, remaining: limit ? limit - used - 1 : null, model: model };
 }
