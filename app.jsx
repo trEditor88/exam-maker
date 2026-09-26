@@ -95,10 +95,10 @@ html,body{background:${C.bg};}
 .em-nav-item.em-nav-more{display:none;}
 .em-nav-profile{display:none;}
 .em-fig svg{max-width:100%;height:auto;display:block;background:#fff;border-radius:10px;}
-.em-jump{position:fixed;right:14px;bottom:18px;display:flex;flex-direction:column;gap:6px;z-index:40;}
-.em-jump button{width:48px;height:48px;border-radius:999px;border:1px solid ${C.line};background:${C.card};color:${C.accent};padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:${C.shadow};}
-.em-jump button svg{width:34px;height:34px;display:block;}
-.em-jump button:hover{border-color:${C.accent};}
+.em-jump{position:fixed;right:14px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:40;}
+.em-jump button{width:36px;height:36px;border-radius:999px;border:none;background:${C.lineSoft};color:${C.inkMid};padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:${C.shadow};}
+.em-jump button svg{width:20px;height:20px;display:block;}
+.em-jump button:hover{background:${C.line};}
 @media (min-width:1024px){.em-jump{right:max(14px, calc(50% - 584px));}}
 .em-nav-dot{position:absolute;top:-6px;right:-10px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:999px;background:${C.bad};color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1;}
 .em-hero:hover{filter:brightness(1.04);} .em-hero:focus-visible{outline:2px solid ${C.ink};outline-offset:2px;}
@@ -1094,7 +1094,7 @@ function NavBar({ screen, role, go, onAccount, user, badge }) {
   items.push({ k: "account", t: "계정", i: "user", acct: true });
   return (
     <nav className="em-nav" aria-label="주요 메뉴">
-      <div className="em-nav-logo">시험지</div>
+      <div className="em-nav-logo">📖 시험지</div>
       {items.map((it) => (
         <button key={it.k} className={"em-nav-item" + (it.more ? " em-nav-more" : "") + (it.acct ? " em-nav-acct" : "")} aria-current={screen === it.k ? "page" : undefined}
           onClick={() => (it.k === "account" ? onAccount() : go(it.k))}>
@@ -2167,8 +2167,8 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
 
       {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
       <div className="em-jump" aria-label="화면 이동">
-        <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 L21 19 H3 Z" fill="currentColor" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round" /></svg></button>
-        <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true" style={{ transform: "rotate(180deg)" }}><path d="M12 4.5 L21 19 H3 Z" fill="currentColor" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round" /></svg></button>
+        <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14.5 L12 9.5 L17 14.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
+        <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9.5 L12 14.5 L17 9.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
       </div>
       {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} genAvail={genAvail} subject={draft.subject} manual={manualMode} onQueue={() => { setGenOpen(false); flash("Claude에게 요청했습니다. 완료되면 알림이 뜨고 내 시험지에 새 시험지로 추가됩니다."); }} />}
     </Shell>
@@ -2294,8 +2294,8 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
       <Btn onClick={submit}>제출하고 채점 보기</Btn>
 
       <div className="em-jump" aria-label="화면 이동">
-        <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 L21 19 H3 Z" fill="currentColor" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round" /></svg></button>
-        <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true" style={{ transform: "rotate(180deg)" }}><path d="M12 4.5 L21 19 H3 Z" fill="currentColor" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round" /></svg></button>
+        <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14.5 L12 9.5 L17 14.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
+        <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9.5 L12 14.5 L17 9.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
       </div>
       {confirm && (
         <Modal title="그대로 제출할까요?" onClose={() => setConfirm(false)}>
