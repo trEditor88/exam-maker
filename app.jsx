@@ -76,10 +76,10 @@ html,body{background:${C.bg};}
 .em-nav-item.em-nav-more{display:none;}
 .em-nav-profile{display:none;}
 .em-jump{position:fixed;right:14px;bottom:18px;display:flex;flex-direction:column;gap:6px;z-index:40;}
-.em-jump button{width:48px;height:48px;border-radius:999px;border:1px solid ${C.line};background:${C.card};color:${C.accent};font-family:inherit;font-size:13px;font-weight:800;line-height:1.05;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;box-shadow:${C.shadow};}
-.em-jump button span{font-size:9.5px;font-weight:700;color:${C.sub};}
+.em-jump button{width:48px;height:48px;border-radius:999px;border:1px solid ${C.line};background:${C.card};color:${C.accent};padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:${C.shadow};}
+.em-jump button svg{width:34px;height:34px;display:block;}
 .em-jump button:hover{border-color:${C.accent};}
-@media (min-width:1024px){.em-jump{right:calc(50% - 520px - 64px);}}
+@media (min-width:1024px){.em-jump{right:max(14px, calc(50% - 584px));}}
 .em-nav-dot{position:absolute;top:-6px;right:-10px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:999px;background:${C.bad};color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1;}
 .em-hero:hover{filter:brightness(1.04);} .em-hero:focus-visible{outline:2px solid ${C.ink};outline-offset:2px;}
 body.em-has-nav .em-page{padding-bottom:104px !important;}
@@ -2037,8 +2037,8 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
 
       {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
       <div className="em-jump" aria-label="화면 이동">
-        <button className="em-btn" aria-label="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>▲<span>맨 위</span></button>
-        <button className="em-btn" aria-label="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}>▼<span>맨 아래</span></button>
+        <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 L21 19 H3 Z" fill="currentColor" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round" /></svg></button>
+        <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true" style={{ transform: "rotate(180deg)" }}><path d="M12 4.5 L21 19 H3 Z" fill="currentColor" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round" /></svg></button>
       </div>
       {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} genAvail={genAvail} subject={draft.subject} onQueue={() => { setGenOpen(false); flash("Claude에게 요청했습니다. 완료되면 알림이 뜨고 내 시험지에 새 시험지로 추가됩니다."); }} />}
     </Shell>
@@ -2328,8 +2328,8 @@ function StudyScreen({ onBack, flash, toast, user }) {
     let done = 0;
     for (const f of files) {
       setProgress(`${done + 1}/${files.length} 올리는 중…`);
-      const data = await fileToBase64(f);
-      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: f.type, data });
+      const data = await shrinkImage(f, 2200).catch(() => fileToBase64(f));   // 긴 변 2200px JPEG 로 줄여 전송(서버 한도·워커 읽기 부담)
+      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: "image/jpeg", data });
       if (!res.ok) { setBusy(false); setProgress(""); return flash(ERR[res.error] || `업로드 실패(${res.error || "network"})`); }
       done++;
     }
