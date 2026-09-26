@@ -2671,20 +2671,41 @@ function ResultEditModal({ item, onClose, onSaved, flash }) {
       {rows ? (
         <>
           <p style={{ fontSize: 14, margin: "0 0 8px" }}>문항을 눌러 정답/오답을 바꿉니다. 점수는 정답 수로 다시 계산됩니다. <b>{okCount}/{item.total}</b></p>
-          <div style={{ display: "grid", gap: 6, maxHeight: "50vh", overflowY: "auto" }}>
+          <div style={{ display: "grid", gap: 8, maxHeight: "55vh", overflowY: "auto" }}>
             {rows.map((d, i) => {
               const q = qOf(d.q);
-              const opts = q ? (Array.isArray(q.options) && q.options.length >= 2 ? q.options : (quiz.options || [])) : [];
+              const textQ = q && (q.type === "short" || q.type === "essay");
+              const opts = q && !textQ ? (Array.isArray(q.options) && q.options.length >= 2 ? q.options : (quiz.options || [])) : [];
+              const answers = (q && q.answers) || [];
+              const setRow = (patch) => setRows(rows.map((x, k) => (k === i ? { ...x, ...patch } : x)));
+              /* 고른 선지를 바꾸면 정오는 정답과 비교해 자동으로 다시 정해진다(직접 토글도 가능) */
+              const pick = (oi) => { const m = (d.m || []).includes(oi) ? d.m.filter((x) => x !== oi) : [...(d.m || []), oi].sort((a, b) => a - b); setRow({ m, ok: m.length > 0 && sameSet(m, answers) }); };
               return (
-                <CheckRow key={d.q + i} on={!!d.ok} onToggle={() => setRows(rows.map((x, k) => (k === i ? { ...x, ok: !x.ok } : x)))} padding="9px 11px" style={{ alignItems: "flex-start" }}>
-                  <Badge tone={d.ok ? "good" : "bad"}>{d.ok ? "정답" : "오답"}</Badge>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{i + 1}. {q ? q.text : quiz === null ? "불러오는 중…" : "(시험지에서 문항을 찾지 못함)"}</div>
-                    <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>
-                      고른 답 {d.m && d.m.length ? d.m.map((k) => mark(k)).join("") : "없음"}{q ? ` · 정답 ${(q.answers || []).map((k) => mark(k)).join("")}` : ""}{opts.length && d.m && d.m.length ? ` · ${d.m.map((k) => opts[k]).filter(Boolean).join(", ")}` : ""}
-                    </div>
+                <div key={d.q + i} style={{ border: `1px solid ${d.ok ? C.good : C.line}`, background: d.ok ? C.goodSoft : C.card, borderRadius: 12, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <button className="em-btn" onClick={() => setRow({ ok: !d.ok })} aria-pressed={!!d.ok} title="정답/오답 바꾸기" style={{ flex: "0 0 auto", border: "none", background: "none", padding: 0, cursor: "pointer" }}><Badge tone={d.ok ? "good" : "bad"}>{d.ok ? "정답" : "오답"}</Badge></button>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{i + 1}. {q ? q.text : quiz === null ? "불러오는 중…" : "(시험지에서 문항을 찾지 못함)"}{textQ && <span style={{ color: C.sub, fontWeight: 400 }}> · {QTYPE_KO[q.type]}</span>}</div>
                   </div>
-                </CheckRow>
+                  {opts.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }} role="group" aria-label={`${i + 1}번 고른 선지`}>
+                      {opts.map((o, oi) => {
+                        const on = (d.m || []).includes(oi), isAns = answers.includes(oi);
+                        return (
+                          <button key={oi} className="em-btn" onClick={() => pick(oi)} aria-pressed={on} title={isAns ? "정답 보기" : ""}
+                            style={{ fontFamily: FONT, fontSize: 13.5, padding: "6px 10px", borderRadius: 999, cursor: "pointer", border: `1.5px solid ${on ? C.accent : isAns ? C.good : C.line}`, background: on ? C.accentSoft : C.field, color: on ? C.accent : C.ink, maxWidth: "100%", textAlign: "left" }}>
+                            <span style={{ fontWeight: 800, marginRight: 4 }}>{mark(oi)}</span>{o}{isAns ? <span style={{ color: C.good, fontSize: 11.5, marginLeft: 4 }}>정답</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {textQ && (
+                    <Field value={d.t || ""} onChange={(v) => setRow({ t: v })} placeholder={q.type === "short" ? "학생이 적은 답" : "학생이 적은 서술"} multiline={q.type === "essay"} rows={q.type === "essay" ? 3 : 1} maxLength={500} style={{ marginTop: 8, fontSize: 14 }} ariaLabel={`${i + 1}번 학생 답`} />
+                  )}
+                  <div style={{ fontSize: 12.5, color: C.sub, marginTop: 6 }}>
+                    {textQ ? (q.type === "short" ? `정답 ${String(q.answerText || "").split("|").join(" / ")}` : "서술형 · 정답/오답 배지를 눌러 채점") : `고른 답 ${d.m && d.m.length ? d.m.map((k) => mark(k)).join("") : "없음"}${answers.length ? ` · 정답 ${answers.map((k) => mark(k)).join("")}` : ""} · 배지를 누르면 정오를 직접 바꿉니다`}
+                  </div>
+                </div>
               );
             })}
           </div>
