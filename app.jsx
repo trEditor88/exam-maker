@@ -102,6 +102,16 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
 .em-stats > .em-stat:last-child:nth-child(odd){grid-column:span 2;}
 @media (min-width:600px){.em-stats{grid-template-columns:repeat(3,1fr);} .em-stats > .em-stat:last-child:nth-child(odd){grid-column:auto;}}
 .em-only-d{display:none;}
+/* 내 시험지: 휴대폰은 카드, PC(1024px+)는 한 줄 목록 */
+.em-exam-list{display:grid;gap:12px;}
+.em-exam-item{background:${C.card};border:1px solid ${C.line};border-radius:18px;padding:14px 16px;box-shadow:${C.shadow};}
+.em-exam-item .em-exam-act{margin-top:8px;}
+@media (min-width:1024px){
+  .em-exam-list{gap:0;border:1px solid ${C.line};border-radius:18px;background:${C.card};overflow:hidden;box-shadow:${C.shadow};}
+  .em-exam-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;border:none;border-radius:0;border-bottom:1px solid ${C.line};padding:10px 16px;box-shadow:none;background:transparent;}
+  .em-exam-item:last-child{border-bottom:none;} .em-exam-item:hover{background:${C.accentSoft};}
+  .em-exam-item .em-exam-act{margin-top:0;white-space:nowrap;}
+}
 @media (min-width:1024px){
   .em-only-d{display:block;} .em-only-m{display:none;}
   .em-home{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:28px;align-items:start;}
@@ -1336,49 +1346,43 @@ function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onE
   const canAssign = remote().kind === "server" && user && user.role !== "student";
   return (
     <Shell back="처음으로" backTo={onBack} toast={toast}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <h2 style={{ fontSize: 25, fontWeight: 800, margin: 0 }}>내 시험지</h2>
         <div style={{ display: "flex", gap: 2 }}>
           <TextBtn onClick={onImport}>가져오기</TextBtn>
           {exams.length > 0 && <TextBtn onClick={onExportAll}>내보내기</TextBtn>}
         </div>
       </div>
+      <div style={{ marginBottom: 16 }}><Btn onClick={onNew}>새 시험지 만들기</Btn></div>
       {exams.length === 0 ? (
         <Card>
-          <p style={{ margin: "0 0 16px", color: C.sub, fontSize: 15.5, lineHeight: 1.6 }}>
-            아직 만든 시험지가 없습니다. 새로 하나 만들거나, 내보낸 파일을 가져오세요.
+          <p style={{ margin: 0, color: C.sub, fontSize: 15.5, lineHeight: 1.6 }}>
+            아직 만든 시험지가 없습니다. 위의 버튼으로 새로 하나 만들거나, 내보낸 파일을 가져오세요.
           </p>
-          <Btn onClick={onNew}>새 시험지 만들기</Btn>
         </Card>
       ) : (
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="em-exam-list">
           {exams.map((e) => {
             const stale = e.code && e.sharedHash !== hashOf(e);
             const confirming = confirmId === e.id;
             return (
-              <Card key={e.id} style={{ padding: 16 }}>
-                <button
-                  className="em-btn"
-                  onClick={() => onOpen(e.id)}
-                  style={{ background: "none", border: "none", padding: 0, textAlign: "left", cursor: "pointer", fontFamily: FONT, width: "100%" }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <div key={e.id} className="em-exam-item">
+                <button className="em-btn em-exam-main" onClick={() => onOpen(e.id)} style={{ background: "none", border: "none", padding: 0, textAlign: "left", cursor: "pointer", fontFamily: FONT, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                     <SubjThumb subject={e.subject} size={40} />
-                    <div style={{ fontSize: 17.5, fontWeight: 700, color: C.ink, minWidth: 0 }}>{e.title || "제목 없음"}</div>
-                  </div>
-                  <div style={{ fontSize: 13.5, color: C.sub, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                    <span>
-                      문제 {e.questions.length}개 · 보기 {e.options.length}개 · {fmtDate(e.updatedAt)} 수정
-                    </span>
-                    {e.code && <Badge tone={stale ? "warn" : "good"}>{stale ? `코드 ${e.code} · 다시 공유 필요` : `코드 ${e.code}`}</Badge>}
+                    <div style={{ minWidth: 0 }}>
+                      <div className="em-exam-title" style={{ fontSize: 17, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title || "제목 없음"}</div>
+                      <div className="em-exam-meta" style={{ fontSize: 13, color: C.sub, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 3 }}>
+                        <span>{e.subject ? `${e.subject} · ` : ""}문제 {e.questions.length}개 · {fmtDate(e.updatedAt)} 수정{e.level && e.level !== "기본" ? ` · ${e.level}` : ""}</span>
+                        {e.code && <Badge tone={stale ? "warn" : "good"}>{stale ? `코드 ${e.code} · 다시 공유 필요` : `코드 ${e.code}`}</Badge>}
+                      </div>
+                    </div>
                   </div>
                 </button>
-                <div style={{ display: "flex", gap: 4, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <div className="em-exam-act" style={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
                   {confirming ? (
                     <>
-                      <span style={{ fontSize: 14, color: C.bad, marginRight: 4 }}>
-                        정말 삭제할까요?{e.code ? " 공유 코드도 사라집니다." : ""}
-                      </span>
+                      <span style={{ fontSize: 13.5, color: C.bad, marginRight: 4 }}>정말 삭제할까요?{e.code ? " 공유 코드도 사라집니다." : ""}</span>
                       <TextBtn tone="bad" onClick={() => { setConfirmId(null); onDelete(e.id); }}>삭제</TextBtn>
                       <TextBtn tone="sub" onClick={() => setConfirmId(null)}>취소</TextBtn>
                     </>
@@ -1391,10 +1395,9 @@ function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onE
                     </>
                   )}
                 </div>
-              </Card>
+              </div>
             );
           })}
-          <Btn kind="soft" onClick={onNew}>새 시험지 만들기</Btn>
         </div>
       )}
       {assign && <AssignModal exam={assign} onClose={() => setAssign(null)} flash={flash} />}
