@@ -281,6 +281,8 @@ const serverRemote = {
   allResults: () => apiGet({ action: "allResults" }),
   resultDelete: (id) => apiPost({ action: "resultDelete", id }),
   resultUpdate: (b) => apiPost({ action: "resultUpdate", ...b }),
+  graderCheck: (b) => apiPost({ action: "graderCheck", ...b }),
+  resultManual: (b) => apiPost({ action: "resultManual", ...b }),
   activityList: (params) => apiGet({ action: "activityList", ...(params || {}) }),
   reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
   reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
@@ -1302,7 +1304,8 @@ function AssignModal({ exam, onClose, flash }) {
   };
   useEffect(() => { load(); }, []);
   const assigned = new Set((cur || []).map((x) => x.studentId));
-  const rest = (students || []).filter((s) => !assigned.has(s.id));
+  const meUser = (authGet() || {}).user || null;   // 본인이 만든 시험지는 본인에게도 배정할 수 있다(코드를 만들 때 자동 배정되지만 해제했다면 다시)
+  const rest = [...(meUser && !assigned.has(meUser.id) ? [{ id: meUser.id, name: `${meUser.name} (나)`, me: true }] : []), ...(students || []).filter((s) => !assigned.has(s.id) && !(meUser && s.id === meUser.id))];
   const add = async () => {
     const ids = rest.filter((s) => sel[s.id]).map((s) => s.id);
     if (!ids.length) return flash("배정할 학생을 고르세요.");
@@ -1366,7 +1369,7 @@ function AssignModal({ exam, onClose, flash }) {
         {rest.length > 1 && <TextBtn onClick={() => setSel(Object.fromEntries(rest.map((s) => [s.id, true])))} style={{ fontSize: 13 }}>모두 선택</TextBtn>}
       </div>
       {students === null && <p style={{ color: C.sub, fontSize: 14 }}>불러오는 중…</p>}
-      {students && rest.length === 0 && <p style={{ color: C.sub, fontSize: 14 }}>{students.length ? "모든 학생에게 배정했습니다." : "배정할 학생이 없습니다. 담당 학생이 등록되어야 합니다."}</p>}
+      {students && rest.length === 0 && <p style={{ color: C.sub, fontSize: 14 }}>{students.length ? "모든 학생에게 배정했습니다." : "더 배정할 사람이 없습니다. 담당 학생이 등록되면 여기에 나타납니다."}</p>}
       <div style={{ display: "grid", gap: 6, maxHeight: "34vh", overflowY: "auto" }}>
         {rest.map((s) => (
           <CheckRow key={s.id} on={!!sel[s.id]} onToggle={() => setSel({ ...sel, [s.id]: !sel[s.id] })} padding="9px 11px">
@@ -1765,7 +1768,7 @@ function buildPrintHtml(src, opts) {
   const title = src.title || "시험지", subject = src.subject || "", desc = src.desc || "", code = src.code || "";
   const head = `<header class="hd"><div class="tag"><span class="tag1">${esc(subject || "시험지")}</span><span class="tag2">${level}</span></div><div class="ttl">${esc(title)}</div><div class="logo">${quizKindLabel(items)}</div></header>`;
   let first = "";
-  if (opts.nameLine) first += `<div class="name">이름 <span class="blank"></span> 날짜 <span class="blank"></span> 점수 <span class="blank short"></span> / ${items.length}</div>`;
+  if (opts.nameLine) first += `<div class="name">이름 <span class="blank"></span> 날짜 <span class="blank"></span> 점수 <span class="blank sm"></span> / ${items.length}</div>`;
   if (desc) first += `<div class="sec">안내 · 개념 정리</div><div class="box"><div class="boxh">읽고 시작하기</div><p>${esc(desc)}</p></div>`;
   first += `<div class="pill">확인 문제</div>`;
   const optHtml = (o) => `<div class="opts ${o.every((x) => String(x).length <= 14) ? "two" : "one"}">${o.map((x, i) => `<div class="o"><span class="m">${mark(i)}</span><span>${esc(x)}</span></div>`).join("")}</div>`;
@@ -1791,7 +1794,7 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 .hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;border:2px solid var(--ac);border-radius:14px;padding:5mm 6mm;margin:0 0 6mm}
 .tag{display:flex;flex-direction:column;gap:1mm;font-size:8.5pt;font-weight:800} .tag1{background:var(--acSoft);color:var(--ac);border-radius:6px;padding:1mm 3mm} .tag2{background:var(--ac);color:#fff;border-radius:6px;padding:1mm 3mm}
 .ttl{text-align:center;font-size:15pt;font-weight:800;letter-spacing:-.01em} .logo{font-size:9pt;font-weight:800;color:var(--ac);border:1.5px solid var(--ac);border-radius:999px;padding:1mm 3mm;white-space:nowrap}
-.name{font-size:10.5pt;margin:0 0 5mm} .blank{display:inline-block;width:32mm;border-bottom:1px solid var(--ink);margin:0 4mm 0 2mm;vertical-align:-1mm} .blank.short{width:14mm}
+.name{font-size:10.5pt;margin:0 0 5mm} .blank{display:inline-block;width:32mm;height:1.1em;border-bottom:1px solid var(--ink);margin:0 4mm 0 2mm;vertical-align:-0.25em} .blank.sm{width:14mm}
 .sec{display:inline-block;background:var(--ac);color:#fff;font-weight:800;font-size:10.5pt;border-radius:999px 999px 999px 0;padding:1.5mm 6mm;margin:0 0 2mm}
 .box{border:1.5px solid var(--ac);border-radius:0 10px 10px 10px;padding:3mm 5mm;margin:0 0 5mm;font-size:10pt} .boxh{font-weight:800;border-left:3px solid var(--ac);padding-left:2mm;margin-bottom:1.5mm} .box p{margin:0;white-space:pre-wrap}
 .pill{display:inline-block;border:1.5px solid var(--ac);color:var(--ac);font-weight:800;font-size:10.5pt;border-radius:999px;padding:1.2mm 6mm;margin:0 0 4mm}
@@ -2385,8 +2388,97 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
 }
 
 /* ── 화면: 응시 ──────────────────────────────── */
-function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, onSubmit, onExit, toast, onPrint, user }) {
+/* ── 풀기 화면: 결과 직접 입력 ──────────────────────
+   1) 채점자(출제자·관리자·제한 관리자) 아이디/비밀번호 확인 → 2) 모든 문항이 정답으로 체크된 상태에서 틀린 문항만 고쳐 기록.
+   기록은 지금 응시 중인 계정의 결과로 남고, 활동 기록에는 채점자가 남는다. 비밀번호는 저장하지 않고 요청에만 쓴다. */
+function ManualResultModal({ run, onClose, onDone }) {
+  const [gid, setGid] = useState("");
+  const [gpw, setGpw] = useState("");
+  const [grader, setGrader] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [rows, setRows] = useState(() => run.questions.map((q) => ({ q, ok: true, m: (q.type || "mc") === "mc" ? [...(q.answers || [])] : [], t: "" })));
+  const check = async () => {
+    if (!gid.trim() || !gpw) return setErr("아이디와 비밀번호를 넣어 주세요.");
+    setBusy(true); setErr("");
+    const r = await remote().graderCheck({ code: run.code, graderId: gid.trim(), graderPw: gpw });
+    setBusy(false);
+    if (!r.ok) return setErr(r.error === "forbidden" ? "이 시험지를 만든 계정이나 관리자 계정만 결과를 직접 입력할 수 있습니다." : errMsg(r));
+    setGrader(r.grader);
+  };
+  const save = async () => {
+    setBusy(true); setErr("");
+    const toOrig = (q, arr) => arr.map((i) => (q.perm && q.perm[i] != null ? q.perm[i] : i)).sort((a, b) => a - b);
+    const detail = rows.map((r) => ({ q: r.q.id, m: toOrig(r.q, r.m), ok: r.ok, ...((r.q.type || "mc") !== "mc" ? { t: r.t.slice(0, 500) } : {}) }));
+    const r = await remote().resultManual({ code: run.code, graderId: gid.trim(), graderPw: gpw, entry: { v: 2, detail } });
+    setBusy(false);
+    if (!r.ok) return setErr(errMsg(r));
+    setGpw("");
+    onDone(r);
+  };
+  const okCount = rows.filter((r) => r.ok).length;
+  const setRow = (i, patch) => setRows(rows.map((x, k) => (k === i ? { ...x, ...patch } : x)));
+  return (
+    <Modal title={grader ? `결과 직접 입력 · 채점 ${grader.name}` : "결과 직접 입력 · 계정 확인"} onClose={onClose} wide={!!grader} closeOnBackdrop={false}>
+      {!grader ? (
+        <>
+          <p style={{ fontSize: 14, color: C.inkMid, margin: "0 0 12px", lineHeight: 1.55 }}>이 시험지를 만든 계정이나 관리자 계정으로 확인하면, 종이로 푼 결과 등을 문항별로 직접 입력해 응시 기록으로 남길 수 있습니다. 기록은 지금 로그인한 계정의 결과로 저장됩니다.</p>
+          <div style={{ display: "grid", gap: 8 }}>
+            <Field value={gid} onChange={setGid} placeholder="채점자 아이디" ariaLabel="채점자 아이디" autoFocus />
+            <Field value={gpw} onChange={setGpw} placeholder="비밀번호" type="password" ariaLabel="채점자 비밀번호" onEnter={check} />
+          </div>
+          {err && <p role="alert" style={{ color: C.bad, fontSize: 13.5, margin: "8px 0 0" }}>{err}</p>}
+          <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+            <Btn onClick={check} disabled={busy}>확인</Btn>
+            <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <p style={{ fontSize: 14, margin: "0 0 8px", lineHeight: 1.5 }}>모든 문항이 <b>정답</b>으로 체크되어 있습니다. 틀린 문항의 배지를 누르거나 학생이 고른 보기를 눌러 고치세요. <b>{okCount}/{rows.length}</b></p>
+          <div style={{ display: "grid", gap: 8, maxHeight: "55vh", overflowY: "auto" }}>
+            {rows.map((r, i) => {
+              const q = r.q, textQ = (q.type || "mc") !== "mc", answers = q.answers || [];
+              const pick = (oi) => { const m = r.m.includes(oi) ? r.m.filter((x) => x !== oi) : [...r.m, oi].sort((a, b) => a - b); setRow(i, { m, ok: m.length > 0 && sameSet(m, answers) }); };
+              return (
+                <div key={q.id} style={{ border: `1px solid ${r.ok ? C.good : C.line}`, background: r.ok ? C.goodSoft : C.card, borderRadius: 12, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <button className="em-btn" onClick={() => setRow(i, { ok: !r.ok })} aria-pressed={r.ok} title="정답/오답 바꾸기" style={{ flex: "0 0 auto", border: "none", background: "none", padding: 0, cursor: "pointer", minHeight: 32 }}><Badge tone={r.ok ? "good" : "bad"}>{r.ok ? "정답" : "오답"}</Badge></button>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{i + 1}. {q.text}{textQ && <span style={{ color: C.sub, fontWeight: 400 }}> · {QTYPE_KO[q.type]}</span>}</div>
+                  </div>
+                  {!textQ && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }} role="group" aria-label={`${i + 1}번 고른 보기`}>
+                      {(q.options || []).map((o, oi) => {
+                        const on = r.m.includes(oi), isAns = answers.includes(oi);
+                        return (
+                          <button key={oi} className="em-btn" onClick={() => pick(oi)} aria-pressed={on}
+                            style={{ fontFamily: FONT, fontSize: 13.5, padding: "6px 10px", borderRadius: 999, cursor: "pointer", border: `1.5px solid ${on ? C.accent : isAns ? C.good : C.line}`, background: on ? C.accentSoft : C.field, color: on ? C.accent : C.ink, maxWidth: "100%", textAlign: "left" }}>
+                            <span style={{ fontWeight: 800, marginRight: 4 }}>{mark(oi)}</span>{o}{isAns ? <span style={{ color: C.good, fontSize: 11.5, marginLeft: 4 }}>정답</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {textQ && <Field value={r.t} onChange={(v) => setRow(i, { t: v })} placeholder={q.type === "short" ? "학생이 적은 답 (선택)" : "학생이 적은 서술 (선택)"} multiline={q.type === "essay"} rows={q.type === "essay" ? 3 : 1} maxLength={500} style={{ marginTop: 8, fontSize: 14 }} ariaLabel={`${i + 1}번 학생 답`} />}
+                  {textQ && q.type === "short" && <div style={{ fontSize: 12.5, color: C.sub, marginTop: 6 }}>정답 {String(q.answerText || "").split("|").join(" / ")}</div>}
+                </div>
+              );
+            })}
+          </div>
+          {err && <p role="alert" style={{ color: C.bad, fontSize: 13.5, margin: "8px 0 0" }}>{err}</p>}
+          <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+            <Btn onClick={save} disabled={busy}>{okCount}/{rows.length} 로 기록</Btn>
+            <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, onSubmit, onExit, toast, onPrint, user, onManualDone }) {
   const [confirm, setConfirm] = useState(false);
+  const [manual, setManual] = useState(false);   // 결과 직접 입력 창(채점자 계정 확인 → 문항별 정오)
   const loggedIn = useMemo(() => !!(authGet() && authGet().token), []);   // 렌더마다 localStorage 를 읽지 않게
   const multi = run.questions.some((q) => (q.answers || []).length > 1);
   /* 인쇄: 출제자 미리 보기·선생님·관리자는 정답·해설 포함, 학생 응시는 정답표·해설 없는 문제지만 */
@@ -2414,7 +2506,9 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
         {run.owner ? `${run.owner} 출제 · ` : ""}{run.partial ? "틀린 문제만 다시 풉니다 · " : ""}문제 {run.questions.length}개{run.timeLimit ? ` · 제한 ${run.timeLimit}분` : ""}{multi ? " · 정답이 여러 개인 문제가 있습니다" : ""}{run.preview ? " · 응시 기간 밖(출제자 미리 보기)" : ""}
         {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, level: run.level, options: run.options, questions: run.questions }, !printFull)} style={{ padding: 0, minHeight: 0, fontSize: 14 }}>{printFull ? "인쇄·PDF" : "문제지 인쇄·PDF (정답 없음)"}</TextBtn></>}
+        {loggedIn && onManualDone && !run.partial && !run.preview && <> · <TextBtn onClick={() => setManual(true)} style={{ padding: 0, minHeight: 0, fontSize: 14 }}>결과 직접 입력</TextBtn></>}
       </p>
+      {manual && <ManualResultModal run={run} onClose={() => setManual(false)} onDone={(r) => { setManual(false); onManualDone(r); }} />}
 
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, color: C.sub, marginBottom: 6 }}>
@@ -3047,7 +3141,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   );
 }
 
-const ACT_KO = { login: "로그인", setup: "관리자 생성", share: "시험지 공유", quiz_delete: "공유 코드 삭제", exam_delete: "시험지 삭제", submit: "응시 제출", results_clear: "응시 기록 비우기", result_update: "결과 수정", result_delete: "결과 삭제", sh_upload: "오답노트 사진 올림", sh_confirm: "확인 질문 답", assign: "배정", unassign: "배정 해제", assign_update: "배정 조건 변경", remind: "미완료 독촉", job_create: "작업 요청(AI·사진·오답노트)", job_done: "작업 완료", job_error: "작업 실패", report_request: "리포트 요청", report_put: "리포트 생성", user_create: "계정 만들기", user_update: "계정 수정", user_delete: "계정 삭제", pw_change: "비밀번호 변경", profile: "프로필 수정", gen: "AI 기본 생성" };
+const ACT_KO = { login: "로그인", setup: "관리자 생성", share: "시험지 공유", quiz_delete: "공유 코드 삭제", exam_delete: "시험지 삭제", submit: "응시 제출", results_clear: "응시 기록 비우기", result_update: "결과 수정", result_manual: "결과 직접 입력", result_delete: "결과 삭제", sh_upload: "오답노트 사진 올림", sh_confirm: "확인 질문 답", assign: "배정", unassign: "배정 해제", assign_update: "배정 조건 변경", remind: "미완료 독촉", job_create: "작업 요청(AI·사진·오답노트)", job_done: "작업 완료", job_error: "작업 실패", report_request: "리포트 요청", report_put: "리포트 생성", user_create: "계정 만들기", user_update: "계정 수정", user_delete: "계정 삭제", pw_change: "비밀번호 변경", profile: "프로필 수정", gen: "AI 기본 생성" };
 
 /* 관리자: 응시 결과의 문항별 정오를 고친다(점수는 자동 계산). 문항별 기록이 없으면 점수만 고친다. */
 function ResultEditModal({ item, onClose, onSaved, flash }) {
@@ -4118,7 +4212,7 @@ function ExamMaker() {
     return <>{<CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} />}{chrome}</>;
 
   if (screen === "take" && run)
-    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} />}{chrome}</>;
+    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} onManualDone={(r) => { flash(`결과를 기록했습니다. ${r.score}/${r.total}`); setScreen("myresults"); }} />}{chrome}</>;
 
   if (screen === "result" && result && run)
     return <>{<ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} loggedIn={remote().kind === "server" && !!user} onMyResults={() => setScreen("myresults")} onStudy={() => setScreen("study")} resultId={resultId} canNote={canNote()} onMakeNote={makeNote} saveState={run.partial || run.preview ? null : saveState} onResend={() => sendResult(pendingRef.current)} />}{chrome}</>;
