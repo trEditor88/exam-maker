@@ -1778,7 +1778,10 @@ function buildPrintHtml(src, opts) {
   }
   const keyFirst = noKey ? "" : `<div class="pill">정답 및 해설</div><div class="tbls">${tbl}</div>`;
   const ansOf = (q) => q.type === "short" ? esc(String(q.answerText || "").split("|").join(" / ")) : q.type === "essay" ? "모범 답안" : q.answers.map(mark).join("");
-  const kxHtml = noKey ? "" : items.filter((q) => q.explain || q.type !== "mc").map((q) => `<div class="kx"><span class="badge">Q${q.no}</span><span class="av">${ansOf(q)}</span><span class="ex">${q.type === "essay" ? esc(q.answerText || "") + (q.explain ? (q.answerText ? "\n" : "") + esc(q.explain) : "") : esc(q.explain)}</span></div>`).join("");
+  // 객관식: 배지·정답·해설을 한 줄에. 주관식·서술형: 정답(모범 답안)은 첫 줄, 해설은 줄을 바꿔 아래에
+  const kxHtml = noKey ? "" : items.filter((q) => q.explain || q.type !== "mc").map((q) => q.type === "mc"
+    ? `<div class="kx"><span class="badge">Q${q.no}</span><span class="av">${ansOf(q)}</span><span class="ex">${esc(q.explain)}</span></div>`
+    : `<div class="kx kx-txt"><div class="kh"><span class="badge">Q${q.no}</span><span class="av">${ansOf(q)}</span></div>${q.type === "essay" && q.answerText ? `<div class="ex">${esc(q.answerText)}</div>` : ""}${q.explain ? `<div class="ex"><span class="exl">해설</span>${esc(q.explain)}</div>` : ""}</div>`).join("");
   const css = `
 @page{size:A4;margin:0}
 :root{--ac:${ac};--acSoft:${acSoft};--ink:#1D1D1F;--sub:#6E6E73;--line:#D5D5DA}
@@ -1804,6 +1807,7 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 .badge{flex:0 0 auto;background:var(--ac);color:#fff;font-size:8pt;font-weight:800;border-radius:999px;padding:.6mm 2.5mm;margin-top:.6mm} .av{font-weight:800;flex:0 0 auto} .ex{white-space:pre-wrap;color:#3A3A3C}
 .tbls{margin:0 0 4mm} .anst{border-collapse:collapse;margin:0 0 3mm;font-size:10.5pt} .anst th,.anst td{border:1px solid var(--line);padding:1.2mm 2.6mm;text-align:center;min-width:6mm} .anst th{background:#F5F5F7}
 .kx{display:flex;gap:2mm;align-items:flex-start;margin:0 0 2.5mm;font-size:10pt}
+.kx-txt{flex-direction:column;gap:1mm} .kx-txt .kh{display:flex;gap:2mm;align-items:center} .kx-txt .ex{padding-left:1mm} .exl{display:inline-block;color:var(--sub);font-size:8.5pt;font-weight:800;margin-right:1.5mm}
 .ft{position:absolute;left:13mm;right:13mm;bottom:8mm;display:flex;justify-content:space-between;font-size:8.5pt;color:var(--sub);border-top:1px solid var(--line);padding-top:2mm} .mono{font-family:ui-monospace,Consolas,monospace;letter-spacing:.06em}
 @media screen{body{background:#EEE;padding:14mm 0 10mm} .page{background:#fff;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:${ac};color:#fff;cursor:pointer}}
 @media print{.bar{display:none}}`;
