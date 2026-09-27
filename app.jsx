@@ -397,7 +397,7 @@ const ERR = {
   job_started: "이미 처리가 시작된 작업이라 취소할 수 없습니다.",
   bad_scope: "범위를 적어 주세요.",
   no_photo: "사진을 한 장 이상 골라 주세요.",
-  too_many: "사진은 8장까지입니다.",
+  too_many: "사진은 20장까지입니다.",
   no_detail: "문항별 기록이 없는 결과라 오답노트를 만들 수 없습니다.",
   no_wrong: "틀린 문제가 없어 오답노트를 만들 필요가 없습니다.",
   job_dup: "이 결과의 오답노트는 이미 요청했습니다. 완료되면 알림이 뜹니다.",
@@ -1992,8 +1992,8 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           <Field multiline rows={2} value={scope} onChange={setScope} placeholder={mode === "pro" ? "범위 또는 시험지 제목 (사진을 올리면 비워도 됩니다)" : "범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)"} maxLength={500} autoFocus />
           {mode === "pro" && server && (
             <>
-              {label("사진으로 만들기 (선택, 최대 8장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다")}
-              <input type="file" accept="image/*" multiple onChange={(e) => { setPhotos([...photos, ...Array.from(e.target.files || [])].slice(0, 8)); e.target.value = ""; }} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
+              {label("사진으로 만들기 (선택, 최대 20장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다")}
+              <input type="file" accept="image/*" multiple onChange={(e) => { setPhotos([...photos, ...Array.from(e.target.files || [])].slice(0, 20)); e.target.value = ""; }} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
               {photos.length > 0 && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                   {photos.map((f, i) => (
@@ -3541,6 +3541,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
             <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
             {detail.report.summary && detail.report.summary.headline && <div style={{ fontSize: 15, marginTop: 4 }}>{detail.report.summary.headline}</div>}
             {detail.report.summary && Array.isArray(detail.report.summary.weak) && detail.report.summary.weak.length > 0 && <div style={{ fontSize: 14, marginTop: 6 }}>취약: {detail.report.summary.weak.join(" · ")}</div>}
+            {detail.report.summary && detail.report.summary.notes > 0 && <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>오답노트 {detail.report.summary.notes}권 포함{detail.report.summary.noteWrong ? ` · 틀림 ${detail.report.summary.noteWrong}문항` : ""}</div>}
           </Card>
         )}
         <TrendChart items={detail.items} />
@@ -3599,6 +3600,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote })
           <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
           {detail.report.summary && detail.report.summary.headline && <div style={{ fontSize: 15, marginTop: 4 }}>{detail.report.summary.headline}</div>}
           {detail.report.summary && Array.isArray(detail.report.summary.weak) && detail.report.summary.weak.length > 0 && <div style={{ fontSize: 14, marginTop: 6 }}>취약: {detail.report.summary.weak.join(" · ")}</div>}
+            {detail.report.summary && detail.report.summary.notes > 0 && <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>오답노트 {detail.report.summary.notes}권 포함{detail.report.summary.noteWrong ? ` · 틀림 ${detail.report.summary.noteWrong}문항` : ""}</div>}
         </Card>
       )}
       {detail && detail.items.length > 0 && (() => {
