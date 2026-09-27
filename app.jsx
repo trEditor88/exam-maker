@@ -286,7 +286,9 @@ const serverRemote = {
   reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
   assignList: (code) => apiGet(code ? { action: "assignList", code } : { action: "assignList" }),
-  assignSet: (code, studentIds) => apiPost({ action: "assignSet", code, studentIds }),
+  assignSet: (code, studentIds, dueAt, memo) => apiPost({ action: "assignSet", code, studentIds, dueAt: dueAt || 0, memo: memo || "" }),
+  assignUpdate: (code, dueAt, memo) => apiPost({ action: "assignUpdate", code, dueAt: dueAt || 0, memo: memo || "" }),
+  assignRemind: (code) => apiPost({ action: "assignRemind", code }),
   assignRemove: (code, studentId) => apiPost({ action: "assignRemove", code, studentId }),
   profileUpdate: (b) => apiPost({ action: "profileUpdate", ...b }),
   jobCreate: (params, type, pending) => apiPost({ action: "jobCreate", params, type: type || "gen", pending: pending || 0 }),
@@ -487,10 +489,13 @@ function assignStatus(a) {
   if (a.done) return { t: `완료 ${a.score}/${a.total}`, tone: "good", open: true };
   if (a.openAt && now < a.openAt) return { t: `${fmtDateTime(a.openAt)} 시작`, tone: "neutral", open: false };
   if (a.closeAt && now > a.closeAt) return { t: "마감", tone: "bad", open: false };
-  if (a.closeAt && a.closeAt - now < 86400000) return { t: `곧 마감 · ${fmtDateTime(a.closeAt)}`, tone: "warn", open: true };
-  if (a.closeAt) return { t: `${fmtDateTime(a.closeAt)} 마감`, tone: "accent", open: true };
+  const dl = a.dueAt || a.closeAt;   // 배정 마감이 우선, 없으면 응시 마감
+  if (a.dueAt && now > a.dueAt) return { t: `기한 지남 · ${fmtDateTime(a.dueAt)}`, tone: "bad", open: true };
+  if (dl && dl - now < 86400000) return { t: `곧 마감 · ${fmtDateTime(dl)}`, tone: "warn", open: true };
+  if (dl) return { t: `${fmtDateTime(dl)} 마감`, tone: "accent", open: true };
   return { t: "열림", tone: "accent", open: true };
 }
+const assignDeadline = (a) => a.dueAt || a.closeAt || 0;
 /* 기록을 과목·태그별로 집계 (quizzes: 서버가 준 code → {subject, tags:{문항id:[태그]}}) */
 function aggregateResults(items, quizzes) {
   const bySub = {}, byTag = {};
@@ -1082,10 +1087,10 @@ function QrIcon({ size = 26, color }) {
 function HomeHero({ d, user, onOpen, onAssign, onStudy, onCode }) {
   const now = Date.now();
   const todo = ((d && d.assigns) || []).filter((a) => !a.done && (!a.openAt || now >= a.openAt) && !(a.closeAt && now > a.closeAt));
-  const next = todo.filter((a) => a.closeAt).sort((a, b) => a.closeAt - b.closeAt)[0];
+  const next = todo.filter(assignDeadline).sort((a, b) => assignDeadline(a) - assignDeadline(b))[0];
   let title, sub, go;
   if (d === null) { title = `안녕하세요, ${user.name} 👋`; sub = "오늘 할 일을 불러오는 중…"; go = null; }
-  else if (next) { const days = Math.ceil((next.closeAt - now) / 86400000); title = `${next.title} D-${Math.max(0, days)}`; sub = `${fmtDateTime(next.closeAt)} 마감 · 눌러서 바로 풀기`; go = () => onOpen(next.code); }
+  else if (next) { const dl = assignDeadline(next); const days = Math.ceil((dl - now) / 86400000); title = days < 0 ? `${next.title} 기한 지남` : `${next.title} D-${Math.max(0, days)}`; sub = `${fmtDateTime(dl)} 마감 · 눌러서 바로 풀기`; go = () => onOpen(next.code); }
   else if (todo.length) { title = `풀어야 할 시험 ${todo.length}개`; sub = "마감은 없지만 미리 끝내 두면 마음이 편해요."; go = onAssign; }
   else if (d.pending) { title = `확인 질문 ${d.pending}개가 기다려요`; sub = "오답노트에서 답해 주면 다음 처리 때 반영됩니다."; go = onStudy; }
   else { title = `안녕하세요, ${user.name} 👋`; sub = "오늘도 화이팅! 코드를 넣거나 새 시험지를 만들어 보세요."; go = onCode; }
@@ -1279,16 +1284,21 @@ function BreakdownChart({ items, quizzes }) {
   );
 }
 
-/* ── 배정 창: 공유 코드를 학생에게 배정 ─────────── */
+/* ── 배정 창: 공유 코드를 학생에게 배정 + 마감·안내문·진행 현황·미완료 독촉 ─────────── */
 function AssignModal({ exam, onClose, flash }) {
   const [students, setStudents] = useState(null);
   const [cur, setCur] = useState(null);
   const [sel, setSel] = useState({});
   const [busy, setBusy] = useState(false);
+  const [dueAt, setDueAt] = useState(0);
+  const [memo, setMemo] = useState("");
+  const [remindAt, setRemindAt] = useState(0);
   const load = async () => {
     const [u, a] = await Promise.all([remote().userList(), remote().assignList(exam.code)]);
     if (u.ok) setStudents(u.users.filter((x) => x.role === "student" && x.active !== false)); else { setStudents([]); flash(errMsg(u)); }
-    setCur(a.ok ? a.forCode || [] : []);
+    const rows = a.ok ? a.forCode || [] : [];
+    setCur(rows);
+    if (rows.length) { setDueAt(rows[0].dueAt || 0); setMemo(rows[0].memo || ""); setRemindAt(Math.max(0, ...rows.map((x) => x.remindAt || 0))); }
   };
   useEffect(() => { load(); }, []);
   const assigned = new Set((cur || []).map((x) => x.studentId));
@@ -1296,24 +1306,56 @@ function AssignModal({ exam, onClose, flash }) {
   const add = async () => {
     const ids = rest.filter((s) => sel[s.id]).map((s) => s.id);
     if (!ids.length) return flash("배정할 학생을 고르세요.");
+    if (dueAt && dueAt < Date.now()) return flash("마감이 이미 지난 시각입니다. 마감을 고치거나 비워 주세요.");
     setBusy(true);
-    const r = await remote().assignSet(exam.code, ids);
+    const r = await remote().assignSet(exam.code, ids, dueAt, memo.trim());
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
-    flash(`${r.added}명에게 배정했습니다.`); setSel({}); load();
+    flash(`${r.added}명에게 배정하고 알림을 보냈습니다.`); setSel({}); load();
+  };
+  const saveCond = async () => {
+    setBusy(true);
+    const r = await remote().assignUpdate(exam.code, dueAt, memo.trim());
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    flash(r.notified ? `조건을 저장하고 아직 안 푼 ${r.notified}명에게 알렸습니다.` : "배정 조건을 저장했습니다."); load();
+  };
+  const remind = async () => {
+    setBusy(true);
+    const r = await remote().assignRemind(exam.code);
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    flash(r.sent ? `${r.sent}명에게 알림을 보냈습니다.${r.skipped ? ` (${r.skipped}명은 6시간 안에 이미 보냄)` : ""}` : r.skipped ? "6시간 안에 이미 알림을 보낸 학생뿐입니다." : "아직 안 푼 학생이 없습니다."); load();
   };
   const removeOne = async (sid) => { const r = await remote().assignRemove(exam.code, sid); if (!r.ok) return flash(errMsg(r)); load(); };
-  const doneN = (cur || []).filter((x) => x.done).length;
+  const doneN = (cur || []).filter((x) => x.done).length, todoN = (cur || []).length - doneN;
+  const now = Date.now(), late = dueAt && now > dueAt;
+  const condChanged = cur && cur.length > 0 && ((cur[0].dueAt || 0) !== dueAt || (cur[0].memo || "") !== memo.trim());
+  const labStyle = { display: "block", fontSize: 13, color: C.sub, marginBottom: 4 };
   return (
     <Modal title={`배정 · ${exam.title || "제목 없음"}`} onClose={onClose}>
-      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 12px", lineHeight: 1.5 }}>코드 <b>{exam.code}</b>. 배정한 학생의 홈 "풀어야 할 시험"에 나타나고 완료율에 들어갑니다.</p>
+      <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 12px", lineHeight: 1.5 }}>코드 <b>{exam.code}</b>. 배정한 학생에게 알림이 가고, 홈 "풀어야 할 시험"에 마감·안내문과 함께 나타나며 완료율에 들어갑니다.</p>
+      <div style={{ background: C.field, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 14 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>배정 조건 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>(선택 · 배정된 학생 모두에게 같이 적용)</span></div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+          <label style={labStyle}>마감<input type="datetime-local" className="em-in" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} value={toLocalInput(dueAt)} onChange={(e) => setDueAt(fromLocalInput(e.target.value))} /></label>
+          <label style={labStyle}>안내문<input className="em-in" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} maxLength={200} placeholder="예: 2단원 복습, 금요일까지" value={memo} onChange={(e) => setMemo(e.target.value)} /></label>
+        </div>
+        <div style={{ fontSize: 12.5, color: late ? C.bad : C.sub, marginTop: 6, lineHeight: 1.45 }}>{dueAt ? `${fmtDateTime(dueAt)} 마감${late ? " · 이미 지난 시각입니다" : ""}. 지나도 풀 수는 있고 "기한 지남"으로 표시됩니다.` : "마감을 비우면 기한 없이 배정됩니다."}{exam.closeAt ? ` 응시 마감(${fmtDateTime(exam.closeAt)})이 지나면 열 수 없습니다.` : ""}</div>
+        {condChanged && <div style={{ marginTop: 8 }}><Btn kind="ghost" onClick={saveCond} disabled={busy}>배정된 {cur.length}명에게 조건 저장</Btn></div>}
+      </div>
       {cur && cur.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>배정됨 {cur.length}명 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>· 완료 {doneN}명</span></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>배정됨 {cur.length}명 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>· 완료 {doneN}명 · 미완료 {todoN}명</span></span>
+            <span style={{ flex: 1 }} />
+            {todoN > 0 && <TextBtn onClick={remind} disabled={busy} style={{ fontSize: 13 }}>미완료 {todoN}명에게 알림</TextBtn>}
+          </div>
+          {remindAt > 0 && <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 6 }}>마지막 알림 {fmtDateTime(remindAt)}</div>}
           {cur.map((x) => (
             <div key={x.studentId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${C.line}`, fontSize: 14 }}>
-              <span style={{ flex: 1 }}>{x.name} <span style={{ color: C.sub, fontSize: 12.5 }}>{x.studentId}</span></span>
-              <Badge tone={x.done ? "good" : "neutral"}>{x.done ? `완료 ${x.score}/${x.total}` : "아직"}</Badge>
+              <span style={{ flex: 1, minWidth: 0 }}>{x.name} <span style={{ color: C.sub, fontSize: 12.5 }}>{x.studentId}</span>{x.done && x.doneAt && <span style={{ display: "block", color: C.sub, fontSize: 12 }}>{fmtDateTime(x.doneAt)} 제출{x.dueAt && x.doneAt > x.dueAt ? " · 늦음" : ""}</span>}</span>
+              <Badge tone={x.done ? "good" : x.dueAt && now > x.dueAt ? "bad" : "neutral"}>{x.done ? `완료 ${x.score}/${x.total}` : x.dueAt && now > x.dueAt ? "기한 지남" : "아직"}</Badge>
               <TextBtn tone="sub" onClick={() => removeOne(x.studentId)} style={{ fontSize: 13 }}>해제</TextBtn>
             </div>
           ))}
@@ -1338,7 +1380,7 @@ function AssignModal({ exam, onClose, flash }) {
 }
 
 /* ── 홈: 알림(워커가 끝낸 일) ───────────────────── */
-const NOTE_ICON = { gen: "ai", note: "book", report: "book", perm: "book", admin: "book" };
+const NOTE_ICON = { gen: "ai", note: "book", report: "book", perm: "book", admin: "book", assign: "book" };
 function NoteList({ notes, onOpen, onSeenAll }) {
   const [showAll, setShowAll] = useState(false);
   const unseen = notes.filter((n) => !n.seen);
@@ -1400,6 +1442,7 @@ function AssignList({ d, onOpen }) {
                   <div style={{ fontSize: 13, color: C.sub, marginTop: 3 }}>
                     {a.owner ? `${a.owner} 출제 · ` : ""}{a.subject ? `${a.subject} · ` : ""}문제 {a.questions || 0}개{a.timeLimit ? ` · ${a.timeLimit}분` : ""} · 코드 {a.code}
                   </div>
+                  {a.memo && <div style={{ fontSize: 13, color: C.inkMid, marginTop: 4, lineHeight: 1.45 }}>안내: {a.memo}</div>}
                 </div>
               </div>
             </button>
@@ -3000,7 +3043,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   );
 }
 
-const ACT_KO = { login: "로그인", setup: "관리자 생성", share: "시험지 공유", quiz_delete: "공유 코드 삭제", exam_delete: "시험지 삭제", submit: "응시 제출", results_clear: "응시 기록 비우기", result_update: "결과 수정", result_delete: "결과 삭제", sh_upload: "오답노트 사진 올림", sh_confirm: "확인 질문 답", assign: "배정", unassign: "배정 해제", job_create: "작업 요청(AI·사진·오답노트)", job_done: "작업 완료", job_error: "작업 실패", report_request: "리포트 요청", report_put: "리포트 생성", user_create: "계정 만들기", user_update: "계정 수정", user_delete: "계정 삭제", pw_change: "비밀번호 변경", profile: "프로필 수정", gen: "AI 기본 생성" };
+const ACT_KO = { login: "로그인", setup: "관리자 생성", share: "시험지 공유", quiz_delete: "공유 코드 삭제", exam_delete: "시험지 삭제", submit: "응시 제출", results_clear: "응시 기록 비우기", result_update: "결과 수정", result_delete: "결과 삭제", sh_upload: "오답노트 사진 올림", sh_confirm: "확인 질문 답", assign: "배정", unassign: "배정 해제", assign_update: "배정 조건 변경", remind: "미완료 독촉", job_create: "작업 요청(AI·사진·오답노트)", job_done: "작업 완료", job_error: "작업 실패", report_request: "리포트 요청", report_put: "리포트 생성", user_create: "계정 만들기", user_update: "계정 수정", user_delete: "계정 삭제", pw_change: "비밀번호 변경", profile: "프로필 수정", gen: "AI 기본 생성" };
 
 /* 관리자: 응시 결과의 문항별 정오를 고친다(점수는 자동 계산). 문항별 기록이 없으면 점수만 고친다. */
 function ResultEditModal({ item, onClose, onSaved, flash }) {
@@ -3938,6 +3981,7 @@ function ExamMaker() {
       if (examsRef.current.find((x) => x.id === n.ref)) return openExam(n.ref);
       return setScreen("list");
     }
+    if (n.kind === "assign" && n.ref) { setCodeInput(n.ref); setCodeErr(""); setScreen("code"); return loadByCode(n.ref); }
     if (n.kind === "note") return setScreen("study");
     if (n.kind === "report") return setScreen("myresults");
     if (n.kind === "perm") return setScreen("admin");
