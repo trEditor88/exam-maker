@@ -2940,22 +2940,29 @@ const authGet = () => { try { return JSON.parse(localStorage.getItem(LS_PREFIX +
 const authSet = (a) => { try { a ? localStorage.setItem(LS_PREFIX + "auth", JSON.stringify(a)) : localStorage.removeItem(LS_PREFIX + "auth"); } catch (e) {} };
 const ROLE_KO = { admin: "관리자", teacher: "선생님", student: "학생" };
 /* 계정 권한: 관리자는 전부, 그 외는 서버가 준 perms */
-const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", adminLite: "제한 관리자(열람)" };
+const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", adminLite: "제한 관리자(열람)", liteResults: "제한: 결과 수정·삭제", liteAssign: "제한: 배정", liteUsers: "제한: 학생·선생님 계정", liteCopy: "제한: 시험지 복제", liteNotify: "제한: 개인 알림" };
+/* 제한 관리자 세부 권한: adminLite 가 켜져 있을 때만 의미 있음(관리자는 전부) */
+const LITE_KEYS = ["liteResults", "liteAssign", "liteUsers", "liteCopy", "liteNotify"];
 const PERM_KEYS = Object.keys(PERM_KO);
+const BASE_KEYS = PERM_KEYS.filter((k) => !LITE_KEYS.includes(k));   // 잠김 개수 셀 때 쓰는 일반 기능 권한
 const can = (u, k) => !!u && (u.role === "admin" || !!((u.perms || {})[k]));
 const isLite = (u) => !!u && (u.role === "admin" || !!((u.perms || {}).adminLite));
+const isLiteCan = (u, k) => !!u && (u.role === "admin" || (!!((u.perms || {}).adminLite) && !!((u.perms || {})[k])));
 function PermPicker({ value, onChange, hideLite }) {
   const v = value || {};
+  const pill = (k, on, disabled) => <button key={k} type="button" className="em-btn" aria-pressed={on} disabled={disabled} onClick={() => onChange({ ...v, [k]: !on })} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: "6px 10px", borderRadius: 999, cursor: disabled ? "default" : "pointer", border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? C.accentSoft : C.field, color: on ? C.accent : C.sub, opacity: disabled ? 0.45 : 1 }}>{on ? "✓ " : ""}{PERM_KO[k]}</button>;
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }} role="group" aria-label="권한">
-      {PERM_KEYS.filter((k) => !(hideLite && k === "adminLite")).map((k) => {
-        const on = !!v[k];
-        return <button key={k} type="button" className="em-btn" aria-pressed={on} onClick={() => onChange({ ...v, [k]: !on })} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: "6px 10px", borderRadius: 999, cursor: "pointer", border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? C.accentSoft : C.field, color: on ? C.accent : C.sub }}>{on ? "✓ " : ""}{PERM_KO[k]}</button>;
-      })}
+    <div style={{ display: "grid", gap: 6 }} role="group" aria-label="권한">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{BASE_KEYS.filter((k) => !(hideLite && k === "adminLite")).map((k) => pill(k, !!v[k], false))}</div>
+      {!hideLite && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingLeft: 14, borderLeft: `2px solid ${C.line}` }} aria-label="제한 관리자 세부 권한">
+          {LITE_KEYS.map((k) => pill(k, !!v.adminLite && !!v[k], !v.adminLite))}
+        </div>
+      )}
     </div>
   );
 }
-const PERMS_ALL = { custom: true, gen: true, solve: true, share: true, rename: true, adminLite: false };
+const PERMS_ALL = { custom: true, gen: true, solve: true, share: true, rename: true, adminLite: false, liteResults: false, liteAssign: false, liteUsers: false, liteCopy: false, liteNotify: false };
 
 function LoginScreen({ needSetup, onDone, toast, flash }) {
   const [mode, setMode] = useState("login");   // login | signup
@@ -3028,7 +3035,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   const [reqMsg, setReqMsg] = useState("");
   const [reqSel, setReqSel] = useState({});
   const [pBusy, setPBusy] = useState(false);
-  const locked = PERM_KEYS.filter((k) => k !== "adminLite" && !can(user, k)).concat(user.role === "admin" ? [] : [!user.shOn ? "shOn" : null, !user.repOn ? "repOn" : null].filter(Boolean));
+  const locked = BASE_KEYS.filter((k) => k !== "adminLite" && !can(user, k)).concat(user.role === "admin" ? [] : [!user.shOn ? "shOn" : null, !user.repOn ? "repOn" : null].filter(Boolean));
   const lockKo = { ...PERM_KO, shOn: "오답노트", repOn: "분석 리포트" };
   const saveProfile = async () => {
     const body = {};
@@ -3269,8 +3276,10 @@ function TextbookAdmin({ flash }) {
 }
 
 /* 관리자: 계정 관리 + 전체 기록 */
-function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
+function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam }) {
+  const liteCan = (k) => isLiteCan(user, k);   // 관리자는 전부 true, 제한 관리자는 세부 권한이 켜진 것만
   const [users, setUsers] = useState(null);
+  const [assign, setAssign] = useState(null);   // 시험지 탭의 배정 창
   const [tab, setTab] = useState("users");
   const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false, repOn: false, perms: { ...PERMS_ALL } });
   const [allExams, setAllExams] = useState(null);
@@ -3303,7 +3312,9 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
   const create = async () => {
     if (!form.id.trim() || form.pw.length < 4) return flash("아이디와 4자 이상 비밀번호를 넣어 주세요.");
     setBusy(true);
-    const r = await remote().userCreate({ ...form, id: form.id.trim(), name: form.name.trim() });
+    const body = { ...form, id: form.id.trim(), name: form.name.trim() };
+    if (lite) { delete body.perms; if (body.role === "admin") body.role = "student"; }   // 제한 관리자: 학생·선생님만, 기능 권한은 서버 기본값
+    const r = await remote().userCreate(body);
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
     setForm({ id: "", pw: "", name: "", role: form.role, teacherId: form.teacherId, subjects: "", shOn: form.shOn, repOn: form.repOn, perms: form.perms });
@@ -3313,7 +3324,10 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
   };
   const save = async () => {
     setBusy(true);
-    const body = { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, repOn: !!edit.repOn, perms: edit.perms || PERMS_ALL, scope: edit.scope || "", prompt: edit.prompt || "", ...(edit.newId && edit.newId.trim() !== edit.id ? { newId: edit.newId.trim() } : {}), subjects: Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10) };
+    const subjects = Array.isArray(edit.subjects) ? edit.subjects : splitTags(edit.subjects).slice(0, 10);
+    const body = lite
+      ? { id: edit.id, name: edit.name, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, repOn: !!edit.repOn, subjects }   // 제한 관리자: 역할·권한·아이디·범위·지시는 못 바꿈
+      : { id: edit.id, name: edit.name, role: edit.role, teacherId: edit.role === "student" ? edit.teacherId : "", active: edit.active, shOn: !!edit.shOn, repOn: !!edit.repOn, perms: edit.perms || PERMS_ALL, scope: edit.scope || "", prompt: edit.prompt || "", ...(edit.newId && edit.newId.trim() !== edit.id ? { newId: edit.newId.trim() } : {}), subjects };
     if (edit.pw) body.pw = edit.pw;
     const r = await remote().userUpdate(body);
     setBusy(false);
@@ -3346,7 +3360,7 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
       <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"]] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
-      {lite && <p style={{ fontSize: 13, color: C.sub, margin: "8px 0 0" }}>제한 관리자: 열람만 할 수 있습니다.</p>}
+      {lite && <p style={{ fontSize: 13, color: C.sub, margin: "8px 0 0" }}>제한 관리자: 열람{LITE_KEYS.filter(liteCan).length ? " + " + LITE_KEYS.filter(liteCan).map((k) => PERM_KO[k].replace("제한: ", "")).join(" · ") : "만"} 할 수 있습니다.</p>}
       {tab === "exams" && (
         <div style={{ marginTop: 14 }}>
           {allExams === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : allExams.length === 0 ? <p style={{ color: C.sub }}>시험지가 없습니다.</p> : (
@@ -3360,13 +3374,14 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
                     <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{(e.questions || []).length}</td>
                     <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{e.code || "-"}</td>
                     <td style={{ padding: "6px 8px", whiteSpace: "nowrap", color: C.sub }}>{fmtDate(e.updatedAt)}</td>
-                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{!lite && onOpenExam && <TextBtn onClick={() => onOpenExam(e)} style={{ fontSize: 13 }}>편집</TextBtn>}{!lite && <TextBtn tone="sub" onClick={() => delExam(e)} style={{ fontSize: 13 }}>삭제</TextBtn>}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{!lite && onOpenExam && <TextBtn onClick={() => onOpenExam(e)} style={{ fontSize: 13 }}>편집</TextBtn>}{liteCan("liteCopy") && onCopyExam && <TextBtn onClick={() => onCopyExam(e)} style={{ fontSize: 13 }}>복제</TextBtn>}{liteCan("liteAssign") && e.code && <TextBtn onClick={() => setAssign(e)} style={{ fontSize: 13 }}>배정</TextBtn>}{!lite && <TextBtn tone="sub" onClick={() => delExam(e)} style={{ fontSize: 13 }}>삭제</TextBtn>}</td>
                   </tr>
                 ))}</tbody>
               </table></div>
               <p style={{ fontSize: 12.5, color: C.sub, margin: "8px 8px 2px" }}>모든 계정의 시험지 {allExams.length}개 · <TextBtn tone="sub" onClick={loadExams} style={{ fontSize: 12.5 }}>새로고침</TextBtn></p>
             </Card>
           )}
+          {assign && <AssignModal exam={assign} onClose={() => setAssign(null)} flash={flash} />}
         </div>
       )}
       {tab === "textbook" && <TextbookAdmin flash={flash} />}
@@ -3383,7 +3398,7 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
       )}
       {tab === "users" && (
         <>
-          {!lite && <Card style={{ margin: "14px 0" }}>
+          {liteCan("liteUsers") && <Card style={{ margin: "14px 0" }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>계정 만들기</div>
             <div style={{ display: "grid", gap: 8 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -3393,7 +3408,7 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <Field type="password" value={form.pw} onChange={(v) => setForm({ ...form, pw: v })} placeholder="비밀번호 (4자 이상)" ariaLabel="비밀번호" />
                 <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} style={sel} aria-label="역할">
-                  <option value="student">학생</option><option value="teacher">선생님</option><option value="admin">관리자</option>
+                  <option value="student">학생</option><option value="teacher">선생님</option>{!lite && <option value="admin">관리자</option>}
                 </select>
               </div>
               {form.role === "student" && (
@@ -3405,18 +3420,18 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
               <Field value={form.subjects} onChange={(v) => setForm({ ...form, subjects: v })} placeholder="수강 과목 (선택, 쉼표로) 예: 통합과학, 수학" ariaLabel="수강 과목" maxLength={200} />
               {form.role !== "admin" && <CheckRow on={!!form.shOn} onToggle={() => setForm({ ...form, shOn: !form.shOn })}><Check on={!!form.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
               {form.role !== "admin" && <CheckRow on={!!form.repOn} onToggle={() => setForm({ ...form, repOn: !form.repOn })}><Check on={!!form.repOn} size={20} /><span style={{ fontSize: 14.5 }}>분석 리포트 허용</span></CheckRow>}
-              {form.role !== "admin" && <><div style={{ fontSize: 13, color: C.sub }}>기능 권한</div><PermPicker value={form.perms} onChange={(v) => setForm({ ...form, perms: v })} /></>}
+              {form.role !== "admin" && !lite && <><div style={{ fontSize: 13, color: C.sub }}>기능 권한</div><PermPicker value={form.perms} onChange={(v) => setForm({ ...form, perms: v })} /></>}
               <Btn onClick={create} disabled={busy}>계정 만들기</Btn>
             </div>
           </Card>}
           <h3 style={{ fontSize: 16, fontWeight: 700, margin: "18px 0 8px", color: C.inkMid }}>계정 목록 {users ? `(${users.length})` : ""}</h3>
           {users === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
           {(users || []).map((u) => (
-            <button key={u.id} className="em-btn em-row" onClick={() => { if (lite) return flash("제한 관리자는 열람만 할 수 있습니다."); setEdit({ ...u, pw: "", newId: u.id, perms: u.perms || { ...PERMS_ALL } }); setMsg({ title: "", body: "" }); }}
+            <button key={u.id} className="em-btn em-row" onClick={() => { if (lite && !liteCan("liteUsers") && !liteCan("liteNotify")) return flash("제한 관리자는 열람만 할 수 있습니다."); if (lite && u.role === "admin" && !liteCan("liteNotify")) return flash("관리자 계정은 수정할 수 없습니다."); setEdit({ ...u, pw: "", newId: u.id, perms: u.perms || { ...PERMS_ALL } }); setMsg({ title: "", body: "" }); }}
               style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
               <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
               <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
-              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && PERM_KEYS.some((k) => k !== "adminLite" && !u.perms[k]) ? ` · 잠김 ${PERM_KEYS.filter((k) => k !== "adminLite" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
+              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && BASE_KEYS.some((k) => k !== "adminLite" && !u.perms[k]) ? ` · 잠김 ${BASE_KEYS.filter((k) => k !== "adminLite" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
             </button>
           ))}
         </>
@@ -3466,7 +3481,7 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
                     <td style={{ padding: "6px 8px" }}>{it.name}{it.userId ? "" : <span style={{ color: C.sub }}> (비회원)</span>}</td>
                     <td className="em-wrap" style={{ padding: "6px 8px" }}>{it.title || it.code}</td>
                     <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{it.score}/{it.total}</td>
-                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}><TextBtn onClick={() => setEditRes(it)} style={{ fontSize: 13 }}>수정</TextBtn><TextBtn tone="sub" onClick={() => delResult(it)} style={{ fontSize: 13 }}>삭제</TextBtn></td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{liteCan("liteResults") && <><TextBtn onClick={() => setEditRes(it)} style={{ fontSize: 13 }}>수정</TextBtn><TextBtn tone="sub" onClick={() => delResult(it)} style={{ fontSize: 13 }}>삭제</TextBtn></>}</td>
                   </tr>
                 ))}</tbody>
               </table></div>
@@ -3533,17 +3548,21 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}><Btn kind="ghost" onClick={() => setTempPw(null)}>닫기</Btn></div>
         </Modal>
       )}
-      {edit && (
-        <Modal title={`계정 수정 · ${edit.id}`} onClose={() => setEdit(null)}>
+      {edit && (() => {
+        const canEdit = !lite || (liteCan("liteUsers") && edit.role !== "admin");   // 제한 관리자는 학생·선생님 계정만
+        const canNotify = liteCan("liteNotify");
+        return (
+        <Modal title={`${canEdit ? "계정 수정" : "알림 보내기"} · ${edit.id}`} onClose={() => setEdit(null)}>
           <div style={{ display: "grid", gap: 8 }}>
+            {canEdit && <>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Field value={edit.name} onChange={(v) => setEdit({ ...edit, name: v })} placeholder="이름" ariaLabel="이름" />
-              <Field value={edit.newId !== undefined ? edit.newId : edit.id} onChange={(v) => setEdit({ ...edit, newId: v })} placeholder="아이디" ariaLabel="아이디" maxLength={30} />
+              {lite ? <div style={{ ...sel, color: C.sub }}>{edit.id} · {ROLE_KO[edit.role]}</div> : <Field value={edit.newId !== undefined ? edit.newId : edit.id} onChange={(v) => setEdit({ ...edit, newId: v })} placeholder="아이디" ariaLabel="아이디" maxLength={30} />}
             </div>
             <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.5 }}>비밀번호는 암호화되어 저장되므로 볼 수 없습니다. 아래에서 새로 정하면 저장 직후 한 번만 표시됩니다.</div>
-            <select value={edit.role} onChange={(e) => setEdit({ ...edit, role: e.target.value })} style={sel} aria-label="역할">
+            {!lite && <select value={edit.role} onChange={(e) => setEdit({ ...edit, role: e.target.value })} style={sel} aria-label="역할">
               <option value="student">학생</option><option value="teacher">선생님</option><option value="admin">관리자</option>
-            </select>
+            </select>}
             {edit.role === "student" && (
               <select value={edit.teacherId || ""} onChange={(e) => setEdit({ ...edit, teacherId: e.target.value })} style={sel} aria-label="담당 선생님">
                 <option value="">담당 선생님 없음</option>
@@ -3555,23 +3574,27 @@ function AdminScreen({ onBack, toast, flash, lite, onOpenExam }) {
             {edit.role !== "admin" && <CheckRow on={!!edit.shOn} onToggle={() => setEdit({ ...edit, shOn: !edit.shOn })}><Check on={!!edit.shOn} size={20} /><span style={{ fontSize: 14.5 }}>오답노트 사용 허용</span></CheckRow>}
             {edit.role !== "admin" && <CheckRow on={!!edit.repOn} onToggle={() => setEdit({ ...edit, repOn: !edit.repOn })}><Check on={!!edit.repOn} size={20} /><span style={{ fontSize: 14.5 }}>분석 리포트 허용</span></CheckRow>}
             <CheckRow on={edit.active !== false} onToggle={() => setEdit({ ...edit, active: edit.active === false })}>로그인 허용</CheckRow>
-            {edit.role !== "admin" && <><div style={{ fontSize: 13, color: C.sub }}>기능 권한</div><PermPicker value={edit.perms || PERMS_ALL} onChange={(v) => setEdit({ ...edit, perms: v })} /></>}
+            {edit.role !== "admin" && !lite && <><div style={{ fontSize: 13, color: C.sub }}>기능 권한</div><PermPicker value={edit.perms || PERMS_ALL} onChange={(v) => setEdit({ ...edit, perms: v })} /></>}
+            {!lite && <>
             <div style={{ fontSize: 13, color: C.sub, marginTop: 4 }}>학습 범위 · 개인 맞춤 지시 (열람·수정)</div>
             <Field value={edit.scope || ""} onChange={(v) => setEdit({ ...edit, scope: v })} placeholder="학습 범위" ariaLabel="학습 범위" maxLength={200} />
             <Field value={edit.prompt || ""} onChange={(v) => setEdit({ ...edit, prompt: v })} placeholder="개인 맞춤 지시 (AI 문제 만들기에 반영)" ariaLabel="개인 맞춤 지시" multiline rows={2} maxLength={1000} />
+            </>}
             <Btn onClick={save} disabled={busy}>저장</Btn>
-            <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 10, marginTop: 4 }}>
+            </>}
+            {canNotify && <div style={{ borderTop: canEdit ? `1px solid ${C.line}` : "none", paddingTop: canEdit ? 10 : 0, marginTop: 4 }}>
               <div style={{ fontSize: 13, color: C.sub, marginBottom: 6 }}>이 계정에 알림 보내기</div>
               <div style={{ display: "grid", gap: 6 }}>
                 <Field value={msg.title} onChange={(v) => setMsg({ ...msg, title: v })} placeholder="제목" ariaLabel="알림 제목" maxLength={80} />
                 <Field value={msg.body} onChange={(v) => setMsg({ ...msg, body: v })} placeholder="내용" ariaLabel="알림 내용" multiline rows={2} maxLength={300} />
                 <Btn kind="soft" onClick={sendOne}>알림 보내기</Btn>
               </div>
-            </div>
-            <Btn kind="danger" onClick={del}>계정 삭제</Btn>
+            </div>}
+            {!lite && <Btn kind="danger" onClick={del}>계정 삭제</Btn>}
           </div>
         </Modal>
-      )}
+        );
+      })()}
     </Shell>
   );
 }
@@ -3933,6 +3956,15 @@ function ExamMaker() {
     flash("복제했습니다.");
   };
 
+  /* 관리자 › 시험지 탭의 "복제": 다른 계정의 시험지를 내 시험지로(새 id, 공유 코드 없음) */
+  const copyExamIn = async (e) => {
+    if (!e) return;
+    const copy = normalizeExam({ ...JSON.parse(JSON.stringify(e)), id: uid(), title: `${e.title || "제목 없음"} (복사본)`, code: null, ownerKey: null, ownerId: undefined, ownerName: undefined, sharedHash: null, sharedAt: null, createdAt: Date.now(), updatedAt: Date.now() });
+    copy.questions = copy.questions.map((q) => ({ ...q, id: uid() }));
+    await persist([copy, ...exams]);
+    flash("내 시험지로 복제했습니다.");
+  };
+
   const importExams = async (list) => {
     const dup = list.filter((e) => e.code && exams.some((x) => x.code === e.code)).length;   // 같은 공유 코드가 이미 있으면 어느 쪽을 다시 공유해도 같은 코드를 덮어쓴다
     await persist([...list, ...exams]);
@@ -4114,7 +4146,7 @@ function ExamMaker() {
   if (remote().kind === "server" && !user)
     return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
 
-  if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
+  if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} user={user} onCopyExam={copyExamIn} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
   if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
   if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} />}{chrome}</>;
 
