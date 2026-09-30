@@ -233,8 +233,14 @@ async function apiPost(body) {
   let r;
   try {
     const a = authGet();
-    r = await fetch(syncUrl(), { method: "POST", body: JSON.stringify({ ...(a && a.token ? { token: a.token } : {}), ...body }) });
-  } catch (e) { return { ok: false, error: "network" }; }
+    /* 서버가 응답하지 않으면 무한 "불러오는 중" 대신 시간 초과로 끝낸다(AI 생성·사진 올리기는 넉넉히) */
+    const long = /^(generate|jobCreate|jobPhoto|sh_upload|sh_confirm|reportRequest)$/.test(String(body.action || ""));
+    const ctl = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), long ? 150000 : 25000) : null;
+    try {
+      r = await fetch(syncUrl(), { method: "POST", body: JSON.stringify({ ...(a && a.token ? { token: a.token } : {}), ...body }), ...(ctl ? { signal: ctl.signal } : {}) });
+    } finally { if (timer) clearTimeout(timer); }
+  } catch (e) { return { ok: false, error: e && e.name === "AbortError" ? "timeout" : "network" }; }
   let j;
   try { j = await r.json(); } catch (e) { return { ok: false, error: "server", message: `HTTP ${r.status}` }; }   // 로그인 페이지·502 같은 HTML 응답은 "인터넷 연결" 이 아니라 서버 오류
   if (j && j.ok === false && j.error === "bad_token" && body.action !== "logout") {
@@ -376,6 +382,12 @@ const ERR = {
   bad_key: "이 시험지를 고칠 권한이 없습니다. (다른 기기에서 만든 코드)",
   too_big: "시험지가 너무 큽니다. 문제 수를 줄여 주세요.",
   busy: "서버가 바쁩니다. 잠시 후 다시 시도해 주세요.",
+  timeout: "서버 응답이 너무 늦습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.",
+  bad_id_chars: "아이디는 한글·영문·숫자·밑줄(_)만 쓸 수 있습니다(2~30자).",
+  weak_pw: "비밀번호는 8자 이상으로 정해 주세요.",
+  ip_limit: "이 기기(네트워크)에서는 오늘 더 가입할 수 없습니다. 내일 다시 시도하거나 관리자에게 문의하세요.",
+  gen_user_limit: "오늘 이 계정의 AI 문제 생성 횟수를 모두 썼습니다. 내일 다시 이용해 주세요.",
+  bad_origin: "허용되지 않은 주소에서 연 페이지입니다. 사이트 주소로 다시 열어 주세요.",
   gen_disabled: "AI 생성 기능이 꺼져 있습니다. 관리자에게 문의하세요.",
   gen_not_configured: "서버에 AI 생성 설정(API 키·비밀번호)이 없습니다. 관리자에게 문의하세요.",
   gen_limit: "오늘 AI 생성 한도를 모두 썼습니다. 내일 다시 시도해 주세요.",
@@ -392,7 +404,7 @@ const ERR = {
   perm_solve: "이 계정은 문제 풀기 권한이 없습니다. 내 계정에서 관리자에게 권한을 요청하세요.",
   perm_rename: "이 계정은 이름·아이디·비밀번호 변경 권한이 없습니다. 관리자에게 권한을 요청하세요.",
   perm_custom: "이 계정은 맞춤 설정 권한이 없습니다. 관리자에게 권한을 요청하세요.",
-  req_limit: "권한 요청은 하루에 한 번만 보낼 수 있습니다. 내일 다시 보내 주세요.",
+  req_limit: "오늘 보낼 수 있는 요청 수를 넘었습니다(권한 요청은 하루 한 번). 내일 다시 시도해 주세요.",
   need_setup: "아직 관리자 계정이 없습니다. 관리자가 먼저 만들어야 합니다.",
   no_admin: "알림을 받을 관리자 계정이 없습니다.",
   bad_note: "알림 제목이나 내용을 적어 주세요.",
@@ -705,13 +717,20 @@ function shuffleGroups(qs) {
 }
 /* 응시 런타임 만들기: 문제마다 쓰는 보기를 확정하고(문제별 보기 또는 공용 보기),
    셔플이 켜져 있으면 보기·문제 순서를 섞은 뒤 정답 위치를 재계산합니다. */
-function buildRun(src, code, onlyIds) {
+const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin"];
+const INITIAL_HASH = typeof location !== "undefined" ? location.hash : "";   // 첫 화면 효과가 주소를 #/home 으로 바꾸기 전에 기억
+const RESTORE_SCREENS = ["list", "study", "myresults", "code"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
+const TAKE_KEEP_MS = 24 * 3600 * 1000;   // 이어 풀기 저장은 하루만 유지
+function buildRun(src, code, onlyIds, fixed) {
   const shared = src.options;
-  const sharedPerm = src.shuffle ? shuffled(range(shared.length)) : range(shared.length);
+  /* fixed: 새로고침 뒤 이어 풀기용으로 저장해 둔 { at, sp, perm, order } — 같은 섞기·시작 시각을 되살린다 */
+  const okPerm = (p, n) => Array.isArray(p) && p.length === n && range(n).every((i) => p.includes(i));
+  const sharedPerm = fixed && okPerm(fixed.sp, shared.length) ? fixed.sp : src.shuffle ? shuffled(range(shared.length)) : range(shared.length);
   let qs = src.questions.map((q) => {
     const own = Array.isArray(q.options) && q.options.length >= 2 ? q.options : null;
     const base = own || shared;
-    const perm = own ? (src.shuffle ? shuffled(range(base.length)) : range(base.length)) : sharedPerm;
+    const saved = fixed && fixed.perm ? fixed.perm[q.id] : null;
+    const perm = own ? (okPerm(saved, base.length) ? saved : src.shuffle ? shuffled(range(base.length)) : range(base.length)) : sharedPerm;
     const pos = {};
     perm.forEach((orig, disp) => (pos[orig] = disp));
     return {
@@ -722,7 +741,10 @@ function buildRun(src, code, onlyIds) {
     };
   });
   if (onlyIds) qs = qs.filter((q) => onlyIds.has(q.id));
-  if (src.shuffle) qs = shuffleGroups(qs);
+  if (fixed && Array.isArray(fixed.order)) {
+    const at = {}; fixed.order.forEach((id, i) => (at[id] = i));
+    qs = [...qs].sort((a, b) => (at[a.id] ?? 1e9) - (at[b.id] ?? 1e9));
+  } else if (src.shuffle) qs = shuffleGroups(qs);
   return {
     code,
     src,
@@ -731,7 +753,8 @@ function buildRun(src, code, onlyIds) {
     options: sharedPerm.map((i) => shared[i]),
     questions: qs,
     partial: !!onlyIds,
-    startedAt: Date.now(),
+    sharedPerm,
+    startedAt: fixed && fixed.at > 0 ? fixed.at : Date.now(),
     subject: src.subject || "",
     timeLimit: src.timeLimit || 0,
     openAt: src.openAt || 0,
@@ -791,7 +814,7 @@ function TextBtn({ children, onClick, disabled, style, ariaLabel, tone = "accent
         fontWeight: 600,
         cursor: disabled ? "default" : "pointer",
         padding: "5px 8px",
-        minHeight: 32,   // 터치 타깃(휴대폰 오터치 방지). 글자 크기는 그대로
+        minHeight: 44, margin: "-6px 0",   // 터치 타깃 44px(휴대폰 오터치 방지). 음수 여백으로 보이는 간격은 그대로
         ...style,
       }}
     >
@@ -1599,7 +1622,81 @@ function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onE
 }
 
 /* ── 응시 기록 모달 (출제자용) ───────────────── */
-function ResultsModal({ code, ownerKey, onClose, flash }) {
+/* 문항 분석: 문항별 정답률, 가장 많이 고른 오답, 변별도(점수 상위 27% 정답률 − 하위 27% 정답률) */
+function itemStats(exam, items) {
+  const qs = (exam && exam.questions) || [];
+  const scored = items.filter((r) => Array.isArray(r.detail));
+  const ratio = (r) => (r.total ? r.score / r.total : 0);
+  const sorted = [...scored].sort((a, b) => ratio(b) - ratio(a));
+  const k = Math.max(1, Math.round(sorted.length * 0.27));
+  const hi = new Set(sorted.slice(0, k).map((r) => r.id));
+  const lo = new Set(sorted.slice(-k).map((r) => r.id));
+  return qs.map((q, qi) => {
+    let n = 0, ok = 0, hiN = 0, hiOk = 0, loN = 0, loOk = 0;
+    const pick = {};
+    scored.forEach((r) => {
+      const d = r.detail.find((x) => String(x.q) === String(q.id));
+      if (!d || d.p) return;   // 안 푼 문항·채점 대기(서술형)는 뺀다
+      n++; if (d.ok) ok++;
+      if (hi.has(r.id)) { hiN++; if (d.ok) hiOk++; }
+      if (lo.has(r.id)) { loN++; if (d.ok) loOk++; }
+      /* v:2 기록은 원본 보기 번호, 옛 기록은 섞기가 꺼진 시험지일 때만 믿을 수 있다 */
+      if ((r.v === 2 || !exam.shuffle) && Array.isArray(d.m)) d.m.forEach((i) => (pick[i] = (pick[i] || 0) + 1));
+    });
+    const wrong = Object.keys(pick).map(Number).filter((i) => !(q.answers || []).includes(i)).sort((a, b) => pick[b] - pick[a])[0];
+    return { qi, q, n, rate: n ? ok / n : null, disc: scored.length >= 6 && hiN && loN ? hiOk / hiN - loOk / loN : null, wrong: wrong != null ? { i: wrong, c: pick[wrong] } : null };
+  });
+}
+function ItemAnalysis({ exam, items }) {
+  const rows = useMemo(() => itemStats(exam, items), [exam, items]);
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 15, fontWeight: 800, margin: "4px 0 4px" }}>문항 분석</div>
+      <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.55, margin: "0 0 8px" }}>정답률이 낮은 문항은 다시 설명하거나 문항을 고쳐 보세요. 변별도는 점수 상위 27%와 하위 27%의 정답률 차이입니다(0.3 이상 좋음, 6명 이상일 때 표시).</p>
+      <div style={{ display: "grid", gap: 4 }}>
+        {rows.map((r) => {
+          const pct = r.rate == null ? null : Math.round(r.rate * 100);
+          const low = pct != null && pct < 40;
+          return (
+            <div key={r.q.id} style={{ display: "grid", gridTemplateColumns: "44px 1fr auto", gap: 10, alignItems: "center", padding: "8px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14 }}>
+              <span style={{ fontWeight: 800 }}>{r.qi + 1}번</span>
+              <div style={{ minWidth: 0 }}>
+                <div role="img" aria-label={pct == null ? "응답 없음" : `정답률 ${pct}%`} style={{ height: 8, borderRadius: 4, background: C.line, overflow: "hidden" }}>
+                  <div style={{ width: `${pct || 0}%`, height: "100%", background: low ? C.bad : C.accent }} />
+                </div>
+                <div style={{ fontSize: 13, color: C.sub, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.wrong ? `많이 고른 오답 ${CIRCLED[r.wrong.i] || r.wrong.i + 1} (${r.wrong.c}명)` : `${r.n}명 응답`}
+                  {r.disc != null && ` · 변별도 ${r.disc.toFixed(2)}${r.disc < 0.1 ? " (낮음)" : ""}`}
+                </div>
+              </div>
+              <span style={{ fontWeight: 800, color: low ? C.bad : C.inkMid }}>{pct == null ? "–" : `${pct}%`}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+/* 응시 기록을 CSV(엑셀)로 내려받기: 이름·점수·시간·제출 시각 + 문항별 O/X */
+function resultsCsv(exam, items) {
+  const qs = (exam && exam.questions) || [];
+  const cell = (v) => { const t = String(v == null ? "" : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const head = ["이름", "점수", "만점", "걸린 시간(초)", "제출 시각", ...qs.map((_, i) => `${i + 1}번`)];
+  const lines = items.map((r) => {
+    const d = Array.isArray(r.detail) ? r.detail : [];
+    return [r.name || "", r.score, r.total, r.sec || "", fmtDateTime(r.at), ...qs.map((q) => { const x = d.find((y) => String(y.q) === String(q.id)); return !x ? "" : x.p ? "대기" : x.ok ? "O" : "X"; })];
+  });
+  return "\uFEFF" + [head, ...lines].map((row) => row.map(cell).join(",")).join("\r\n");
+}
+function downloadFile(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -1637,6 +1734,8 @@ function ResultsModal({ code, ownerKey, onClose, flash }) {
           <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 12px" }}>
             {items.length}명 응시 · 평균 {avg}점
           </p>
+          {exam && <ItemAnalysis exam={exam} items={items} />}
+          <div style={{ fontSize: 15, fontWeight: 800, margin: "4px 0 6px" }}>응시자</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
             {items.map((r) => (
               <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5 }}>
@@ -1653,6 +1752,7 @@ function ResultsModal({ code, ownerKey, onClose, flash }) {
       )}
       <div style={{ display: "grid", gap: 8 }}>
         <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
+        {items && items.length > 0 && <Btn kind="soft" onClick={() => downloadFile(`응시기록_${code}.csv`, resultsCsv(exam, items), "text/csv;charset=utf-8")}>CSV로 내려받기(엑셀)</Btn>}
         {items && items.length > 0 && <Btn kind="danger" onClick={clear}>기록 비우기</Btn>}
         <Btn kind="ghost" onClick={onClose}>닫기</Btn>
       </div>
@@ -1842,7 +1942,7 @@ function paginate(){
   setTimeout(function(){ window.print(); }, 300);
 }
 (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(paginate);`;
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><template id="keyfirst">${keyFirst}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="kpool" hidden>${kxHtml}</div><div id="pages"></div><script>${script}</script></body></html>`;
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard-dynamic-subset.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><template id="keyfirst">${keyFirst}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="kpool" hidden>${kxHtml}</div><div id="pages"></div><script>${script}</script></body></html>`;
 }
 function PrintModal({ src, onClose, flash }) {
   const [nameLine, setNameLine] = useState(true);
@@ -2158,10 +2258,31 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
     setGenOpen(false);
     flash(`문제 ${fresh.length}개를 추가했습니다.`);
   };
+  /* 문항 삭제는 6초 동안 되돌릴 수 있다 */
+  const [undoDel, setUndoDel] = useState(null);   // { q, qi }
+  const undoTimer = useRef(null);
+  useEffect(() => () => clearTimeout(undoTimer.current), []);
   const delQ = (qi) => {
     if (draft.questions.length <= 1) return;
+    setUndoDel({ q: draft.questions[qi], qi });
+    clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setUndoDel(null), 6000);
     upd({ questions: draft.questions.filter((_, k) => k !== qi) });
   };
+  const undoDelete = () => {
+    if (!undoDel) return;
+    const qs = [...draft.questions];
+    qs.splice(Math.min(undoDel.qi, qs.length), 0, undoDel.q);
+    upd({ questions: qs });
+    setUndoDel(null);
+  };
+  /* 저장하지 않은 채 탭을 닫거나 새로고침하면 브라우저 경고 */
+  useEffect(() => {
+    if (!dirty) return;
+    const h = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [dirty]);
   const moveQ = (qi, dir) => {
     const to = qi + dir;
     if (to < 0 || to >= draft.questions.length) return;
@@ -2184,6 +2305,12 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
 
   return (
     <Shell back="홈으로" backTo={back} toast={toast}>
+      {undoDel && (
+        <div className="em-toast" role="status" style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", marginBottom: toast ? 56 : 0, background: C.ink, color: C.bg, padding: "4px 8px 4px 18px", borderRadius: 12, fontSize: 14.5, maxWidth: "88vw", zIndex: 71, display: "flex", alignItems: "center", gap: 8 }}>
+          <span>{undoDel.qi + 1}번 문항을 지웠습니다.</span>
+          <button type="button" className="em-btn" onClick={undoDelete} style={{ background: "none", border: 0, color: "inherit", fontWeight: 800, textDecoration: "underline", cursor: "pointer", minHeight: 44, padding: "0 6px", font: "inherit" }}>되돌리기</button>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           {draft.code ? (
@@ -2340,7 +2467,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
         </Modal>
       )}
 
-      {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} onClose={() => setResultsOpen(false)} flash={flash} />}
+      {resultsOpen && draft.code && <ResultsModal code={draft.code} ownerKey={draft.ownerKey} exam={draft} onClose={() => setResultsOpen(false)} flash={flash} />}
       <div className="em-jump" aria-label="화면 이동">
         <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14.5 L12 9.5 L17 14.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
         <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9.5 L12 14.5 L17 9.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
@@ -2505,8 +2632,8 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
       {run.desc && <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{run.desc}</p>}
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
         {run.owner ? `${run.owner} 출제 · ` : ""}{run.partial ? "틀린 문제만 다시 풉니다 · " : ""}문제 {run.questions.length}개{run.timeLimit ? ` · 제한 ${run.timeLimit}분` : ""}{multi ? " · 정답이 여러 개인 문제가 있습니다" : ""}{run.preview ? " · 응시 기간 밖(출제자 미리 보기)" : ""}
-        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, level: run.level, options: run.options, questions: run.questions }, !printFull)} style={{ padding: 0, minHeight: 0, fontSize: 14 }}>{printFull ? "인쇄·PDF" : "문제지 인쇄·PDF (정답 없음)"}</TextBtn></>}
-        {loggedIn && onManualDone && !run.partial && !run.preview && <> · <TextBtn onClick={() => setManual(true)} style={{ padding: 0, minHeight: 0, fontSize: 14 }}>결과 직접 입력</TextBtn></>}
+        {onPrint && !run.partial && <> · <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, level: run.level, options: run.options, questions: run.questions }, !printFull)} style={{ padding: "10px 0", margin: "-10px 0", minHeight: 0, fontSize: 14 }}>{printFull ? "인쇄·PDF" : "문제지 인쇄·PDF (정답 없음)"}</TextBtn></>}
+        {loggedIn && onManualDone && !run.partial && !run.preview && <> · <TextBtn onClick={() => setManual(true)} style={{ padding: "10px 0", margin: "-10px 0", minHeight: 0, fontSize: 14 }}>결과 직접 입력</TextBtn></>}
       </p>
       {manual && <ManualResultModal run={run} onClose={() => setManual(false)} onDone={(r) => { setManual(false); onManualDone(r); }} />}
 
@@ -2974,6 +3101,7 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
   const signup = mode === "signup" && !needSetup;
   const go = async () => {
     if (!id.trim() || !pw) return flash("아이디와 비밀번호를 넣어 주세요.");
+    if (signup && pw.length < 8) return flash(ERR.weak_pw);
     if (signup && pw !== pw2) return flash("비밀번호 확인이 다릅니다.");
     if (signup && !name.trim()) return flash("이름을 넣어 주세요.");
     setBusy(true);
@@ -2995,7 +3123,7 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
         <div style={{ display: "grid", gap: 10 }}>
           {(needSetup || signup) && <Field value={name} onChange={setName} placeholder="이름 (표시용)" ariaLabel="이름" autoFocus />}
           <Field value={id} onChange={setId} placeholder="아이디 (한글·영문·숫자 2~30자)" ariaLabel="아이디" autoFocus={!signup && !needSetup} />
-          <Field type="password" value={pw} onChange={setPw} placeholder={signup ? "비밀번호 (4자 이상)" : "비밀번호"} onEnter={signup ? undefined : go} ariaLabel="비밀번호" />
+          <Field type="password" value={pw} onChange={setPw} placeholder={signup ? "비밀번호 (8자 이상)" : "비밀번호"} onEnter={signup ? undefined : go} ariaLabel="비밀번호" />
           {signup && <Field type="password" value={pw2} onChange={setPw2} placeholder="비밀번호 확인" onEnter={go} ariaLabel="비밀번호 확인" />}
           <Btn onClick={go} disabled={busy}>{busy ? "확인 중…" : needSetup ? "관리자 계정 만들기" : signup ? "회원가입" : "들어가기"}</Btn>
           {!needSetup && <Btn kind="ghost" onClick={() => { setMode(signup ? "login" : "signup"); setPw2(""); }}>{signup ? "이미 계정이 있어요 · 로그인" : "회원가입"}</Btn>}
@@ -3620,7 +3748,69 @@ function ResultsTable({ items, onNote }) {
   );
 }
 
-function StudentsScreen({ user, onBack, toast, flash }) {
+/* 제출 현황표: 학생 × 배정한 시험지. 공유 코드가 있는 최근 시험지 12개의 배정을 모아 한눈에 */
+function SubmitGrid({ exams, students, flash }) {
+  const [data, setData] = useState(null);   // { cols: [{code,title}], rows: {studentId: {code: cell}} }
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    setBusy(true);
+    const list = (exams || []).filter((e) => e.code).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 12);
+    const got = await Promise.all(list.map((e) => remote().assignList(e.code)));
+    setBusy(false);
+    const cols = [], rows = {};
+    got.forEach((r, i) => {
+      if (!r || !r.ok) return;
+      const fc = r.forCode || [];
+      if (!fc.length) return;
+      cols.push({ code: list[i].code, title: list[i].title || list[i].code });
+      fc.forEach((x) => { (rows[x.studentId] = rows[x.studentId] || { name: x.name })[list[i].code] = x; });
+    });
+    if (got.some((r) => r && !r.ok)) flash(errMsg(got.find((r) => r && !r.ok)));
+    setData({ cols, rows });
+  };
+  if (!data)
+    return <div style={{ marginBottom: 14 }}><Btn kind="soft" onClick={load} disabled={busy}>{busy ? "불러오는 중…" : "제출 현황표 보기 (학생 × 배정한 시험지)"}</Btn></div>;
+  const now = Date.now();
+  const ids = [...new Set([...(students || []).map((s) => s.id), ...Object.keys(data.rows)])].filter((id) => data.rows[id]);
+  const nameOf = (id) => ((students || []).find((s) => s.id === id) || {}).name || data.rows[id].name || id;
+  if (!data.cols.length) return <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px" }}>최근 시험지에 배정한 학생이 없습니다. 내 시험지에서 "배정"으로 학생에게 보내면 여기에 나타납니다.</p>;
+  const th = { padding: "8px 10px", fontSize: 13, color: C.sub, fontWeight: 700, textAlign: "left", borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 14, borderBottom: `1px solid ${C.lineSoft}`, whiteSpace: "nowrap" };
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 15, fontWeight: 800 }}>제출 현황표</span>
+        <TextBtn onClick={load} disabled={busy}>새로고침</TextBtn>
+      </div>
+      <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 12, background: C.card }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead><tr><th style={th}>학생</th>{data.cols.map((c) => <th key={c.code} style={th} title={c.title}>{c.title.length > 10 ? c.title.slice(0, 10) + "…" : c.title}</th>)}<th style={th}>완료</th></tr></thead>
+          <tbody>
+            {ids.map((id) => {
+              const row = data.rows[id];
+              const asg = data.cols.filter((c) => row[c.code]);
+              const done = asg.filter((c) => row[c.code].done).length;
+              return (
+                <tr key={id}>
+                  <td style={{ ...td, fontWeight: 700 }}>{nameOf(id)}</td>
+                  {data.cols.map((c) => {
+                    const x = row[c.code];
+                    if (!x) return <td key={c.code} style={{ ...td, color: C.sub }}>·</td>;
+                    const late = !x.done && x.dueAt && now > x.dueAt;
+                    return <td key={c.code} style={{ ...td, fontWeight: x.done ? 700 : 400, color: x.done ? C.ink : late ? C.bad : C.sub }}>{x.done ? `${x.score}/${x.total}` : late ? "기한 지남" : "아직"}</td>;
+                  })}
+                  <td style={{ ...td, color: done < asg.length ? C.warn : C.good, fontWeight: 700 }}>{done}/{asg.length}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function StudentsScreen({ user, onBack, toast, flash, exams }) {
   const [students, setStudents] = useState(null);
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
@@ -3674,6 +3864,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 학생</h2>
       {students === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
+      {students && students.length > 0 && <SubmitGrid exams={exams} students={students} flash={flash} />}
       {students && students.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>{user.role === "admin" ? "등록된 학생이 없습니다. 관리자 화면에서 계정을 만드세요." : "담당 학생이 없습니다. 관리자에게 학생 등록을 요청하세요."}</p>}
       {(students || []).map((st) => (
         <button key={st.id} className="em-btn em-row" onClick={() => open(st)} disabled={busy}
@@ -3685,7 +3876,7 @@ function StudentsScreen({ user, onBack, toast, flash }) {
   );
 }
 
-function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote }) {
+function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, onWrongBank }) {
   const repOn = user.role === "admin" || !!user.repOn;
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
@@ -3713,6 +3904,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote })
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
         {repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
         {repOn && <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>}
+        {onWrongBank && detail && detail.items.length > 0 && <Btn kind="soft" onClick={onWrongBank} disabled={busy}>틀린 문제 모아 풀기</Btn>}
         <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
       </div>
       {!repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.</p>}
@@ -3818,6 +4010,7 @@ function ExamMaker() {
     setUser(u);
     if (u.name) setName(u.name);
     await loadServerExams(u);
+    flushQueue(u.id);
     /* 로그인이 풀려 못 보낸 결과가 있으면 결과 화면으로 돌아가 이어서 보낸다 */
     if (pendingRef.current && run && result) { setScreen("result"); sendResult(pendingRef.current); return; }
     setScreen("home");
@@ -3856,7 +4049,11 @@ function ExamMaker() {
       if (remote().kind === "server") {
         const a = authGet();
         const meR = a && a.token ? await remote().me() : { ok: false };
-        if (meR.ok) { authSet({ token: a.token, user: meR.user }); setUser(meR.user); if (meR.user.name) setName(meR.user.name); await loadServerExams(); }
+        if (meR.ok) {
+          authSet({ token: a.token, user: meR.user }); setUser(meR.user); if (meR.user.name) setName(meR.user.name); await loadServerExams(); flushQueue(meR.user.id);
+          const h = (INITIAL_HASH.match(/^#\/(\w+)/) || [])[1];
+          if (RESTORE_SCREENS.includes(h)) setScreen(h);
+        }
         else { authSet(null); const pg = await remote().ping(); setNeedSetup(!!(pg && pg.setup)); }
       } else {
         setUser({ id: "local", role: "admin", name: "로컬" });
@@ -3889,6 +4086,30 @@ function ExamMaker() {
   const snapOf = (e) => JSON.stringify({ ...e, updatedAt: 0 });
   const dirty = useMemo(() => (draft ? snapOf(draft) !== savedSnap : false), [draft, savedSnap]);
 
+  /* 브라우저 뒤로가기·앞으로가기: 화면을 주소(#/화면)와 맞춘다. 되살릴 상태가 없는 화면(편집·풀이·결과)은 홈으로 */
+  const stRef = useRef({});
+  stRef.current = { screen, dirty, draft, run, result };
+  const firstHash = useRef(true);
+  useEffect(() => {
+    const want = "#/" + screen;
+    if (location.hash === want) return;
+    if (firstHash.current) history.replaceState(null, "", want); else history.pushState(null, "", want);
+    firstHash.current = false;
+  }, [screen]);
+  useEffect(() => {
+    const can = { editor: (s) => !!s.draft, take: (s) => !!s.run && !s.result, result: (s) => !!s.run && !!s.result };
+    const onPop = () => {
+      const target = (location.hash.match(/^#\/(\w+)/) || [])[1] || "home";
+      const cur = stRef.current;
+      if (target === cur.screen) return;
+      if (cur.screen === "editor" && cur.dirty && !window.confirm("저장하지 않은 변경이 있습니다. 나갈까요?")) { history.pushState(null, "", "#/editor"); return; }
+      setScreen(!SCREENS.includes(target) || (can[target] && !can[target](cur)) ? "home" : target);
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   /* 편집 */
   const openEditor = (exam, isNew) => {
     exam = withOwnOptions(exam);
@@ -3898,6 +4119,40 @@ function ExamMaker() {
   };
   const newExam = () => { setGenAuto(true); openEditor(normalizeExam({ id: uid(), options: DEFAULT_OPTS() }), true); };
   /* 추천 학습: 약점 태그를 범위로 AI 생성 창을 바로 연다 */
+  /* 오답 은행: 최근 시험지(최대 10개)의 마지막 응시에서 틀린 문항만 모아 한 번에 다시 푼다(기록에는 안 남음) */
+  const wrongBank = async () => {
+    setBusy(true);
+    try {
+      const r = await remote().studentResults(user.id);
+      if (!r.ok) return flash(errMsg(r));
+      const latest = {};
+      (r.items || []).forEach((it) => { if (!(it.code in latest) && Array.isArray(it.detail)) latest[it.code] = it; });
+      const wrongBy = Object.values(latest)
+        .map((it) => ({ code: it.code, ids: new Set(it.detail.filter((d) => !d.ok && !d.p).map((d) => String(d.q))) }))
+        .filter((x) => x.ids.size)
+        .slice(0, 10);
+      if (!wrongBy.length) return flash("최근 기록에 틀린 문제가 없습니다.");
+      const got = await Promise.all(wrongBy.map((x) => remote().getQuiz(x.code)));
+      const questions = [];
+      got.forEach((g, i) => {
+        const src = g && g.ok ? parsePayload(JSON.stringify(g.quiz)) : null;
+        if (!src) return;   // 마감·삭제된 시험지는 건너뛴다
+        src.questions.filter((q) => wrongBy[i].ids.has(String(q.id))).forEach((q) => {
+          const own = Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options;
+          questions.push({ ...q, id: `${wrongBy[i].code}:${q.id}`, options: own, tags: [...(q.tags || []), src.title].filter(Boolean) });
+        });
+      });
+      if (!questions.length) return flash("틀린 문제가 있던 시험지를 지금은 열 수 없습니다(마감·삭제).");
+      const src = { title: "오답 모아 풀기", desc: `최근 시험지 ${wrongBy.length}개에서 틀린 ${questions.length}문항`, options: [], questions, shuffle: true, timeLimit: 0, subject: "" };
+      const run0 = buildRun(src, "", new Set(questions.map((q) => q.id)));
+      run0.owner = "";
+      setRun(run0);
+      setPicked({}); setTyped({});
+      setResult(null);
+      setScreen("take");
+      window.scrollTo(0, 0);
+    } finally { setBusy(false); }
+  };
   const practiceExam = (scope, subject) => { setGenInit(scope); openEditor(normalizeExam({ id: uid(), subject: subject || "", title: `약점 보완 · ${scope}`.slice(0, 80) }), true); };
   const openExam = (id) => {
     const e = exams.find((x) => x.id === id);
@@ -3994,15 +4249,36 @@ function ExamMaker() {
       setCodeErr("시험지 데이터가 손상되어 열 수 없습니다. 출제자에게 다시 공유해 달라고 해 주세요.");
       return;
     }
-    const run0 = buildRun(src, code);
+    /* 새로고침·실수로 나갔다 들어오면 풀던 답과 시작 시각을 되살린다(제한 시간도 이어서 흐름) */
+    let saved = null;
+    if (!r.preview) { try { saved = JSON.parse((await store.get(takeKey(code))) || "null"); } catch (e) {} }
+    if (saved && (!(saved.at > 0) || Date.now() - saved.at > TAKE_KEEP_MS)) { store.del(takeKey(code)); saved = null; }
+    const run0 = buildRun(src, code, null, saved);
     run0.owner = asStr(r.owner);
     run0.preview = !!r.preview;
     setRun(run0);
-    setPicked({}); setTyped({});
+    setPicked((saved && saved.picked) || {}); setTyped((saved && saved.typed) || {});
+    if (saved && (Object.keys(saved.picked || {}).length || Object.keys(saved.typed || {}).length)) flash("풀던 답을 이어서 불러왔습니다.");
     setResult(null);
     setScreen("take");
     window.scrollTo(0, 0);
   };
+
+  /* 풀이 중 답 임시 저장(기기 안). 제출하면 지운다 */
+  const takeKey = (code) => `take:${(user && user.id) || ""}:${code}`;
+  useEffect(() => {
+    if (screen !== "take" || !run || run.partial || run.preview) return;
+    const perm = {}; run.questions.forEach((q) => { if (q.perm) perm[q.id] = q.perm; });
+    const t = setTimeout(() => store.set(takeKey(run.code), JSON.stringify({ at: run.startedAt, sp: run.sharedPerm, perm, order: run.questions.map((q) => q.id), picked, typed })), 300);
+    return () => clearTimeout(t);
+  }, [screen, run, picked, typed]);
+  /* 답을 하나라도 고른 채 탭을 닫거나 새로고침하면 브라우저 경고(답은 저장돼 있지만 실수 방지) */
+  useEffect(() => {
+    if (screen !== "take") return;
+    const h = (e) => { if (Object.keys(picked).length || Object.values(typed || {}).some(Boolean)) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [screen, picked, typed]);
 
   const togglePick = (qid, oi) =>
     setPicked((p) => {
@@ -4011,13 +4287,31 @@ function ExamMaker() {
       return { ...p, [qid]: next };
     });
 
+  /* 못 보낸 결과는 기기에도 남겨 두었다가(새로고침해도 유지) 다음 로그인·접속 때 자동으로 다시 보낸다 */
+  const RETRY_ERRORS = ["network", "timeout", "server", "busy", "bad_token"];
+  const queueGet = async () => { try { const v = JSON.parse((await store.get("pending-results")) || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
+  const queuePut = (list) => store.set("pending-results", JSON.stringify(list.slice(-20)));
+  const queueDrop = async (id) => queuePut((await queueGet()).filter((x) => x.id !== id));
+  const flushQueue = async (uid) => {
+    const list = await queueGet();
+    let sent = 0;
+    for (const x of list) {
+      if (x.uid !== uid || (pendingRef.current && pendingRef.current.id === x.id)) continue;
+      const r = await remote().submit(x.code, x.entry);
+      if (r && r.ok) { sent++; await queueDrop(x.id); }
+      else if (!r || !RETRY_ERRORS.includes(r.error)) await queueDrop(x.id);   // 마감·삭제 등 다시 보내도 안 되는 것은 버린다
+      else break;
+    }
+    if (sent) flash(`전에 보내지 못한 결과 ${sent}개를 저장했습니다.`);
+  };
   /* 결과를 서버에 보낸다. 실패하면 pendingRef 에 남기고 결과 화면에 빨간 배너 + 다시 보내기 */
   const sendResult = async (p) => {
     if (!p) return;
     setSaveState("saving");
     const sr = await remote().submit(p.code, p.entry);
-    if (sr && sr.ok) { pendingRef.current = null; setSaveState("ok"); if (sr.id) setResultId(String(sr.id)); return; }
+    if (sr && sr.ok) { pendingRef.current = null; setSaveState("ok"); if (sr.id) setResultId(String(sr.id)); if (p.id) queueDrop(p.id); return; }
     pendingRef.current = p;
+    if (p.id && user && RETRY_ERRORS.includes((sr && sr.error) || "network")) { const list = (await queueGet()).filter((x) => x.id !== p.id); queuePut([...list, { ...p, uid: user.id }]); }
     setSaveState({ error: (sr && sr.error) || "network", msg: errMsg(sr) });
     if (sr && sr.error === "bad_token") { authSet(null); clearSession(); flash("로그인이 풀렸습니다. 다시 로그인하면 결과를 이어서 보냅니다."); }   // 로그인 화면으로(결과는 보존)
   };
@@ -4036,6 +4330,7 @@ function ExamMaker() {
     const score = rows.filter((r) => r.ok).length;
     const total = rows.length - pendingN;   // 채점 대기(서술형)는 분모에서 뺀다
     const sec = (Date.now() - run.startedAt) / 1000;
+    if (!run.partial && !run.preview) store.del(takeKey(run.code));
     setResult({ rows, score, total, pending: pendingN, sec });
     setResultId(null);
     setSaveState(null);
@@ -4053,7 +4348,7 @@ function ExamMaker() {
     /* 출제자에게 결과 전달. 고른 보기(m)는 섞기 전 원본 번호로 되돌려 보내고 v:2 로 표시한다 */
     const toOrig = (q, arr) => arr.map((i) => (q.perm && q.perm[i] != null ? q.perm[i] : i)).sort((a, b) => a - b);
     const entry = { v: 2, name: trimmed, score, total, pending: pendingN, sec: Math.round(sec), detail: rows.map((r) => ({ q: r.q.id, m: toOrig(r.q, r.mine), ok: r.ok, ...(r.typed !== undefined ? { t: r.typed.slice(0, 500) } : {}), ...(r.pending ? { p: true } : {}) })) };
-    await sendResult({ code: run.code, entry });
+    await sendResult({ code: run.code, entry, id: Date.now() });
     } finally { submittingRef.current = false; }
   };
 
@@ -4147,8 +4442,8 @@ function ExamMaker() {
     return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
 
   if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} user={user} onCopyExam={copyExamIn} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
-  if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
-  if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} />}{chrome}</>;
+  if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} exams={exams} />}{chrome}</>;
+  if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} onWrongBank={remote().kind === "server" ? wrongBank : null} />}{chrome}</>;
 
   const overlays = (
     <>
@@ -4244,7 +4539,7 @@ function ExamMaker() {
     return <>{<CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} />}{chrome}</>;
 
   if (screen === "take" && run)
-    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={goHome} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} onManualDone={(r) => { flash(`결과를 기록했습니다. ${r.score}/${r.total}`); setScreen("myresults"); }} />}{chrome}</>;
+    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={() => { if (!run.partial && !run.preview && (Object.keys(picked).length || Object.values(typed || {}).some(Boolean))) flash("푼 답은 이 기기에 저장돼 같은 코드로 다시 열면 이어서 풉니다."); goHome(); }} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} onManualDone={(r) => { flash(`결과를 기록했습니다. ${r.score}/${r.total}`); setScreen("myresults"); }} />}{chrome}</>;
 
   if (screen === "result" && result && run)
     return <>{<ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} loggedIn={remote().kind === "server" && !!user} onMyResults={() => setScreen("myresults")} onStudy={() => setScreen("study")} resultId={resultId} canNote={canNote()} onMakeNote={makeNote} saveState={run.partial || run.preview ? null : saveState} onResend={() => sendResult(pendingRef.current)} />}{chrome}</>;

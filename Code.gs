@@ -277,7 +277,12 @@ function generate(body) {
 
 /* ── 읽기 (GET) ────────────────────────────── */
 const READ_ACTIONS = ['ping', 'quiz', 'results', 'usage', 'me', 'userList', 'examList', 'myResults', 'studentResults', 'allResults', 'reportGet', 'assignList', 'jobList', 'noteList', 'activityList', 'sh_list', 'sh_detail', 'sh_note'];
-function doGet(e) { return readAction((e && e.parameter) || {}); }
+// 서버는 Cloudflare Worker 로 옮겼다. 이 배포는 파일 다리(fs_*)와 ping 만 받는다(옛 API 는 막음).
+function doGet(e) {
+  const a = ((e && e.parameter) || {}).action;
+  if (a === 'ping') return out({ ok: true, bridge: true });
+  return out({ ok: false, error: 'bad_action' });
+}
 // 조회 동작. 사이트는 토큰을 주소에 싣지 않도록 POST 로 보내고, 워커·구형 호출은 GET 그대로.
 function readAction(p) {
   const a = p.action;
@@ -346,7 +351,13 @@ function readAction(p) {
 function doPost(e) {
   let body = {};
   try { body = JSON.parse(e.postData.contents); } catch (err) { return out({ ok: false, error: 'bad_json' }); }
-  const a = body.action;
+  const a = String(body.action || '');
+  if (a === 'ping') return out({ ok: true, bridge: true });
+  if (a.indexOf('fs_') === 0) {
+    try { return out(cfBridge(body)); } catch (err) { return out({ ok: false, error: 'server' }); }
+  }
+  return out({ ok: false, error: 'bad_action' });
+  // ↓ 옛 API(시트 기반). 이전 완료로 도달하지 않음 — 롤백할 때만 위 return 을 지운다.
   if (READ_ACTIONS.indexOf(a) >= 0) return readAction(body);
   // AI 생성은 오래 걸리므로 잠금 없이 처리 (시트에는 사용 기록만 추가)
   if (a === 'generate') {
@@ -1497,6 +1508,16 @@ const FS_SECRET_NAMES = ['GEMINI_API_KEY', 'GEMINI_MODEL', 'GEN_DAILY_LIMIT'];
 function cfBridge(body) {
   const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
   const a = body.action;
+  // 파일 id 가 이 키의 폴더 안에 있는 파일인지 확인(키가 새어도 드라이브의 다른 파일은 못 건드림)
+  if (a === 'fs_get' || a === 'fs_set' || a === 'fs_trash') {
+    let file;
+    try { file = DriveApp.getFileById(String(body.id)); } catch (e) { return { ok: false, error: 'not_found' }; }
+    const folderId = shFolder(kh).getId();
+    let inside = false;
+    const parents = file.getParents();
+    while (parents.hasNext()) if (parents.next().getId() === folderId) { inside = true; break; }
+    if (!inside) return { ok: false, error: 'not_found' };
+  }
   if (a === 'export') {
     const names = ['quizzes', 'results', 'results_archive', 'users', 'sessions', 'exams', 'reports', 'assignments', 'jobs', 'notes', 'sh_ws', 'sh_files', 'usage'];
     const data = {};
