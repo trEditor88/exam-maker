@@ -1501,52 +1501,41 @@ function workerKeySet(body) {
 }
 
 /* ── Cloudflare 이전 다리(워커 키 인증) ──
-   export       : 모든 시트 + 속성 이름 → JSON (D1 이전용)
-   exportSecret : 허용된 속성(GEMINI_API_KEY 등) 값 1개 (Worker 비밀로 옮길 때만)
    fs_put/get/set/trash : 드라이브 "학습도우미/<kh>" 폴더를 Cloudflare Worker 의 파일 저장소로 쓴다 */
-const FS_SECRET_NAMES = ['GEMINI_API_KEY', 'GEMINI_MODEL', 'GEN_DAILY_LIMIT'];
+// 키 폴더 id 는 6시간 캐시(요청마다 드라이브 폴더 조회 3번을 줄임)
+function fsFolderId(kh) {
+  const c = CacheService.getScriptCache();
+  let id = c.get('fsdir:' + kh);
+  if (!id) { id = shFolder(kh).getId(); c.put('fsdir:' + kh, id, 21600); }
+  return id;
+}
 function cfBridge(body) {
   const kh = shKh(body.key); if (!kh || !workerKeyOk(kh)) return { ok: false, error: 'bad_key' };
   const a = body.action;
-  // 파일 id 가 이 키의 폴더 안에 있는 파일인지 확인(키가 새어도 드라이브의 다른 파일은 못 건드림)
-  if (a === 'fs_get' || a === 'fs_set' || a === 'fs_trash') {
-    let file;
-    try { file = DriveApp.getFileById(String(body.id)); } catch (e) { return { ok: false, error: 'not_found' }; }
-    const folderId = shFolder(kh).getId();
-    let inside = false;
-    const parents = file.getParents();
-    while (parents.hasNext()) if (parents.next().getId() === folderId) { inside = true; break; }
-    if (!inside) return { ok: false, error: 'not_found' };
-  }
-  if (a === 'export') {
-    const names = ['quizzes', 'results', 'results_archive', 'users', 'sessions', 'exams', 'reports', 'assignments', 'jobs', 'notes', 'sh_ws', 'sh_files', 'usage'];
-    const data = {};
-    names.forEach(n => { const s = ss().getSheetByName(n); data[n] = s ? s.getDataRange().getValues() : []; });
-    const props = PropertiesService.getScriptProperties().getProperties();
-    data.props = {};
-    Object.keys(props).forEach(k => { data.props[k] = (k === 'WORKER_KH' || k.indexOf('gen:') === 0) ? props[k] : (props[k] ? '(set)' : ''); });
-    return { ok: true, data: data };
-  }
-  if (a === 'exportSecret') {
-    const name = String(body.name || '');
-    if (FS_SECRET_NAMES.indexOf(name) < 0) return { ok: false, error: 'bad_name' };
-    return { ok: true, value: PropertiesService.getScriptProperties().getProperty(name) || '' };
-  }
   if (a === 'fs_put') {
     const data = String(body.data || ''); if (!data) return { ok: false, error: 'empty' };
     const mime = String(body.mime || 'application/octet-stream');
     const name = safeText(String(body.name || 'file').replace(/[\\/:*?"<>|]+/g, ''), 80) || 'file';
     const blob = body.text ? Utilities.newBlob(data, mime, name) : Utilities.newBlob(Utilities.base64Decode(data), mime, name);
-    return { ok: true, id: shFolder(kh).createFile(blob).getId() };
+    return { ok: true, id: DriveApp.getFolderById(fsFolderId(kh)).createFile(blob).getId() };
   }
+  if (a !== 'fs_get' && a !== 'fs_set' && a !== 'fs_trash') return { ok: false, error: 'bad_action' };
+  // 파일 id 가 이 키의 폴더 안에 있는 파일인지 확인(키가 새어도 드라이브의 다른 파일은 못 건드림)
+  let file;
+  try { file = DriveApp.getFileById(String(body.id)); } catch (e) { return { ok: false, error: 'not_found' }; }
+  const folderId = fsFolderId(kh);
+  let inside = false;
+  const parents = file.getParents();
+  while (parents.hasNext()) if (parents.next().getId() === folderId) { inside = true; break; }
+  if (!inside) return { ok: false, error: 'not_found' };
   if (a === 'fs_get') {
-    const blob = DriveApp.getFileById(String(body.id)).getBlob();
+    const blob = file.getBlob();
     if (body.text) return { ok: true, mime: blob.getContentType(), text: blob.getDataAsString('UTF-8') };
     return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
   }
-  if (a === 'fs_set') { DriveApp.getFileById(String(body.id)).setContent(String(body.text || '')); return { ok: true }; }
-  if (a === 'fs_trash') { try { DriveApp.getFileById(String(body.id)).setTrashed(true); } catch (e) {} return { ok: true }; }
-  return { ok: false, error: 'bad_action' };
+  if (a === 'fs_set') { file.setContent(String(body.text || '')); return { ok: true }; }
+  try { file.setTrashed(true); } catch (e) {}
+  return { ok: true };
 }
 
 /* ── AI 문제 생성 (Gemini API, 무료 등급) ──

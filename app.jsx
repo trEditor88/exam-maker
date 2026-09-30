@@ -234,9 +234,9 @@ async function apiPost(body) {
   try {
     const a = authGet();
     /* 서버가 응답하지 않으면 무한 "불러오는 중" 대신 시간 초과로 끝낸다(AI 생성·사진 올리기는 넉넉히) */
-    const long = /^(generate|jobCreate|jobPhoto|sh_upload|sh_confirm|reportRequest)$/.test(String(body.action || ""));
+    const long = /^(generate|jobCreate|jobPhoto|sh_upload|sh_confirm|reportRequest|reportGet|sh_note|sh_detail|jobFile)$/.test(String(body.action || ""));
     const ctl = typeof AbortController === "function" ? new AbortController() : null;
-    const timer = ctl ? setTimeout(() => ctl.abort(), long ? 150000 : 25000) : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), long ? 150000 : 35000) : null;
     try {
       r = await fetch(syncUrl(), { method: "POST", body: JSON.stringify({ ...(a && a.token ? { token: a.token } : {}), ...body }), ...(ctl ? { signal: ctl.signal } : {}) });
     } finally { if (timer) clearTimeout(timer); }
@@ -294,6 +294,7 @@ const serverRemote = {
   reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
   assignList: (code) => apiGet(code ? { action: "assignList", code } : { action: "assignList" }),
+  assignListMany: (codes) => apiGet({ action: "assignList", codes }),
   assignSet: (code, studentIds, dueAt, memo) => apiPost({ action: "assignSet", code, studentIds, dueAt: dueAt || 0, memo: memo || "" }),
   assignUpdate: (code, dueAt, memo) => apiPost({ action: "assignUpdate", code, dueAt: dueAt || 0, memo: memo || "" }),
   assignRemind: (code) => apiPost({ action: "assignRemind", code }),
@@ -367,6 +368,7 @@ const localBase = {
   async examListAll() { return { ok: true, exams: [] }; },
   async activityList() { return { ok: true, items: [], total: 0 }; },
   async assignList() { return { ok: true, mine: [], forCode: [] }; },
+  async assignListMany() { return { ok: true, forCodes: {} }; },
   async noteList() { return { ok: true, notes: [], unseen: 0 }; },
   async noteSeen() { return { ok: true }; },
   async jobList() { return { ok: true, jobs: [] }; },
@@ -384,10 +386,11 @@ const ERR = {
   busy: "서버가 바쁩니다. 잠시 후 다시 시도해 주세요.",
   timeout: "서버 응답이 너무 늦습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.",
   bad_id_chars: "아이디는 한글·영문·숫자·밑줄(_)만 쓸 수 있습니다(2~30자).",
-  weak_pw: "비밀번호는 8자 이상으로 정해 주세요.",
+  weak_pw: "비밀번호는 4자 이상으로 정해 주세요.",
   ip_limit: "이 기기(네트워크)에서는 오늘 더 가입할 수 없습니다. 내일 다시 시도하거나 관리자에게 문의하세요.",
   gen_user_limit: "오늘 이 계정의 AI 문제 생성 횟수를 모두 썼습니다. 내일 다시 이용해 주세요.",
   bad_origin: "허용되지 않은 주소에서 연 페이지입니다. 사이트 주소로 다시 열어 주세요.",
+  length_required: "요청 형식이 올바르지 않습니다. 새로고침한 뒤 다시 시도해 주세요.",
   gen_disabled: "AI 생성 기능이 꺼져 있습니다. 관리자에게 문의하세요.",
   gen_not_configured: "서버에 AI 생성 설정(API 키·비밀번호)이 없습니다. 관리자에게 문의하세요.",
   gen_limit: "오늘 AI 생성 한도를 모두 썼습니다. 내일 다시 시도해 주세요.",
@@ -720,7 +723,9 @@ function shuffleGroups(qs) {
 const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin"];
 const INITIAL_HASH = typeof location !== "undefined" ? location.hash : "";   // 첫 화면 효과가 주소를 #/home 으로 바꾸기 전에 기억
 const RESTORE_SCREENS = ["list", "study", "myresults", "code"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
-const TAKE_KEEP_MS = 24 * 3600 * 1000;   // 이어 풀기 저장은 하루만 유지
+const TAKE_KEEP_MS = 24 * 3600 * 1000;
+/* 이어 풀기 저장본이 같은 시험지 모양일 때만 되살린다(문항 id·보기 수) */
+const takeSig = (src) => src.questions.map((q) => `${q.id}:${(Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options || []).length}`).join(",");   // 이어 풀기 저장은 하루만 유지
 function buildRun(src, code, onlyIds, fixed) {
   const shared = src.options;
   /* fixed: 새로고침 뒤 이어 풀기용으로 저장해 둔 { at, sp, perm, order } — 같은 섞기·시작 시각을 되살린다 */
@@ -1622,10 +1627,12 @@ function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onE
 }
 
 /* ── 응시 기록 모달 (출제자용) ───────────────── */
+/* 결과 한 건의 detail 을 문항 id → 기록 Map 으로(문항 × 응시자마다 find 하지 않게) */
+const detailMap = (r) => new Map((Array.isArray(r.detail) ? r.detail : []).map((d) => [String(d.q), d]));
 /* 문항 분석: 문항별 정답률, 가장 많이 고른 오답, 변별도(점수 상위 27% 정답률 − 하위 27% 정답률) */
 function itemStats(exam, items) {
   const qs = (exam && exam.questions) || [];
-  const scored = items.filter((r) => Array.isArray(r.detail));
+  const scored = items.filter((r) => Array.isArray(r.detail)).map((r) => ({ ...r, dm: detailMap(r) }));
   const ratio = (r) => (r.total ? r.score / r.total : 0);
   const sorted = [...scored].sort((a, b) => ratio(b) - ratio(a));
   const k = Math.max(1, Math.round(sorted.length * 0.27));
@@ -1635,7 +1642,7 @@ function itemStats(exam, items) {
     let n = 0, ok = 0, hiN = 0, hiOk = 0, loN = 0, loOk = 0;
     const pick = {};
     scored.forEach((r) => {
-      const d = r.detail.find((x) => String(x.q) === String(q.id));
+      const d = r.dm.get(String(q.id));
       if (!d || d.p) return;   // 안 푼 문항·채점 대기(서술형)는 뺀다
       n++; if (d.ok) ok++;
       if (hi.has(r.id)) { hiN++; if (d.ok) hiOk++; }
@@ -1684,8 +1691,8 @@ function resultsCsv(exam, items) {
   const cell = (v) => { const t = String(v == null ? "" : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
   const head = ["이름", "점수", "만점", "걸린 시간(초)", "제출 시각", ...qs.map((_, i) => `${i + 1}번`)];
   const lines = items.map((r) => {
-    const d = Array.isArray(r.detail) ? r.detail : [];
-    return [r.name || "", r.score, r.total, r.sec || "", fmtDateTime(r.at), ...qs.map((q) => { const x = d.find((y) => String(y.q) === String(q.id)); return !x ? "" : x.p ? "대기" : x.ok ? "O" : "X"; })];
+    const dm = detailMap(r);
+    return [r.name || "", r.score, r.total, r.sec || "", fmtDateTime(r.at), ...qs.map((q) => { const x = dm.get(String(q.id)); return !x ? "" : x.p ? "대기" : x.ok ? "O" : "X"; })];
   });
   return "\uFEFF" + [head, ...lines].map((row) => row.map(cell).join(",")).join("\r\n");
 }
@@ -1942,7 +1949,7 @@ function paginate(){
   setTimeout(function(){ window.print(); }, 300);
 }
 (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(paginate);`;
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard-dynamic-subset.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><template id="keyfirst">${keyFirst}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="kpool" hidden>${kxHtml}</div><div id="pages"></div><script>${script}</script></body></html>`;
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"><style>${css}</style></head><body><div class="bar">인쇄 창에서 대상을 "PDF로 저장"으로 고르면 파일이 됩니다.<button onclick="window.print()">인쇄 / PDF 저장</button></div><template id="hd">${head}</template><template id="first">${first}</template><template id="keyfirst">${keyFirst}</template><div id="pool" hidden>${items.map(qHtml).join("")}</div><div id="kpool" hidden>${kxHtml}</div><div id="pages"></div><script>${script}</script></body></html>`;
 }
 function PrintModal({ src, onClose, flash }) {
   const [nameLine, setNameLine] = useState(true);
@@ -2284,6 +2291,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
     return () => window.removeEventListener("beforeunload", h);
   }, [dirty]);
   const moveQ = (qi, dir) => {
+    setUndoDel(null);
     const to = qi + dir;
     if (to < 0 || to >= draft.questions.length) return;
     const qs = [...draft.questions];
@@ -3101,7 +3109,7 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
   const signup = mode === "signup" && !needSetup;
   const go = async () => {
     if (!id.trim() || !pw) return flash("아이디와 비밀번호를 넣어 주세요.");
-    if (signup && pw.length < 8) return flash(ERR.weak_pw);
+    if (signup && pw.length < 4) return flash(ERR.weak_pw);
     if (signup && pw !== pw2) return flash("비밀번호 확인이 다릅니다.");
     if (signup && !name.trim()) return flash("이름을 넣어 주세요.");
     setBusy(true);
@@ -3123,7 +3131,7 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
         <div style={{ display: "grid", gap: 10 }}>
           {(needSetup || signup) && <Field value={name} onChange={setName} placeholder="이름 (표시용)" ariaLabel="이름" autoFocus />}
           <Field value={id} onChange={setId} placeholder="아이디 (한글·영문·숫자 2~30자)" ariaLabel="아이디" autoFocus={!signup && !needSetup} />
-          <Field type="password" value={pw} onChange={setPw} placeholder={signup ? "비밀번호 (8자 이상)" : "비밀번호"} onEnter={signup ? undefined : go} ariaLabel="비밀번호" />
+          <Field type="password" value={pw} onChange={setPw} placeholder={signup ? "비밀번호 (4자 이상)" : "비밀번호"} onEnter={signup ? undefined : go} ariaLabel="비밀번호" />
           {signup && <Field type="password" value={pw2} onChange={setPw2} placeholder="비밀번호 확인" onEnter={go} ariaLabel="비밀번호 확인" />}
           <Btn onClick={go} disabled={busy}>{busy ? "확인 중…" : needSetup ? "관리자 계정 만들기" : signup ? "회원가입" : "들어가기"}</Btn>
           {!needSetup && <Btn kind="ghost" onClick={() => { setMode(signup ? "login" : "signup"); setPw2(""); }}>{signup ? "이미 계정이 있어요 · 로그인" : "회원가입"}</Btn>}
@@ -3487,7 +3495,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
-      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"]] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ...(liteCan("liteCopy") || liteCan("liteAssign") ? [["exams", "시험지"]] : [])] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
       {lite && <p style={{ fontSize: 13, color: C.sub, margin: "8px 0 0" }}>제한 관리자: 열람{LITE_KEYS.filter(liteCan).length ? " + " + LITE_KEYS.filter(liteCan).map((k) => PERM_KO[k].replace("제한: ", "")).join(" · ") : "만"} 할 수 있습니다.</p>}
       {tab === "exams" && (
         <div style={{ marginTop: 14 }}>
@@ -3755,7 +3763,10 @@ function SubmitGrid({ exams, students, flash }) {
   const load = async () => {
     setBusy(true);
     const list = (exams || []).filter((e) => e.code).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 12);
-    const got = await Promise.all(list.map((e) => remote().assignList(e.code)));
+    const many = await remote().assignListMany(list.map((e) => e.code));
+    const got = many && many.ok && many.forCodes
+      ? list.map((e) => ({ ok: true, forCode: many.forCodes[e.code] || [] }))
+      : await Promise.all(list.map((e) => remote().assignList(e.code)));
     setBusy(false);
     const cols = [], rows = {};
     got.forEach((r, i) => {
@@ -3904,7 +3915,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
         {repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
         {repOn && <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>}
-        {onWrongBank && detail && detail.items.length > 0 && <Btn kind="soft" onClick={onWrongBank} disabled={busy}>틀린 문제 모아 풀기</Btn>}
+        {onWrongBank && detail && detail.items.length > 0 && <Btn kind="soft" onClick={async () => { setBusy(true); try { await onWrongBank(detail.items); } finally { setBusy(false); } }} disabled={busy}>틀린 문제 모아 풀기</Btn>}
         <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
       </div>
       {!repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.</p>}
@@ -4010,7 +4021,7 @@ function ExamMaker() {
     setUser(u);
     if (u.name) setName(u.name);
     await loadServerExams(u);
-    flushQueue(u.id);
+    await flushQueue(u.id);   // 옛 항목을 먼저 보내고 나서 방금 결과를 보낸다(같은 결과 이중 전송 방지)
     /* 로그인이 풀려 못 보낸 결과가 있으면 결과 화면으로 돌아가 이어서 보낸다 */
     if (pendingRef.current && run && result) { setScreen("result"); sendResult(pendingRef.current); return; }
     setScreen("home");
@@ -4088,13 +4099,17 @@ function ExamMaker() {
 
   /* 브라우저 뒤로가기·앞으로가기: 화면을 주소(#/화면)와 맞춘다. 되살릴 상태가 없는 화면(편집·풀이·결과)은 홈으로 */
   const stRef = useRef({});
+  const flashRef = useRef(null);
+  flashRef.current = (m) => flash(m);
   stRef.current = { screen, dirty, draft, run, result };
   const firstHash = useRef(true);
+  const replaceNext = useRef(false);
   useEffect(() => {
     const want = "#/" + screen;
-    if (location.hash === want) return;
-    if (firstHash.current) history.replaceState(null, "", want); else history.pushState(null, "", want);
-    firstHash.current = false;
+    if (location.hash !== want) {
+      if (firstHash.current || replaceNext.current) history.replaceState(null, "", want); else history.pushState(null, "", want);
+    }
+    firstHash.current = false; replaceNext.current = false;
   }, [screen]);
   useEffect(() => {
     const can = { editor: (s) => !!s.draft, take: (s) => !!s.run && !s.result, result: (s) => !!s.run && !!s.result };
@@ -4103,7 +4118,11 @@ function ExamMaker() {
       const cur = stRef.current;
       if (target === cur.screen) return;
       if (cur.screen === "editor" && cur.dirty && !window.confirm("저장하지 않은 변경이 있습니다. 나갈까요?")) { history.pushState(null, "", "#/editor"); return; }
-      setScreen(!SCREENS.includes(target) || (can[target] && !can[target](cur)) ? "home" : target);
+      const blocked = !SCREENS.includes(target) || (can[target] && !can[target](cur));
+      if (blocked) replaceNext.current = true;
+      /* 15) 풀이 중 뒤로가기: 답은 기기에 저장돼 있으니 안내만 */
+      if (cur.screen === "take" && cur.run && !cur.run.partial && !cur.run.preview) flashRef.current("푼 답은 이 기기에 저장돼 같은 코드로 다시 열면 이어서 풉니다.");
+      setScreen(blocked ? "home" : target);
       window.scrollTo(0, 0);
     };
     window.addEventListener("popstate", onPop);
@@ -4120,13 +4139,11 @@ function ExamMaker() {
   const newExam = () => { setGenAuto(true); openEditor(normalizeExam({ id: uid(), options: DEFAULT_OPTS() }), true); };
   /* 추천 학습: 약점 태그를 범위로 AI 생성 창을 바로 연다 */
   /* 오답 은행: 최근 시험지(최대 10개)의 마지막 응시에서 틀린 문항만 모아 한 번에 다시 푼다(기록에는 안 남음) */
-  const wrongBank = async () => {
+  const wrongBank = async (items) => {
     setBusy(true);
     try {
-      const r = await remote().studentResults(user.id);
-      if (!r.ok) return flash(errMsg(r));
       const latest = {};
-      (r.items || []).forEach((it) => { if (!(it.code in latest) && Array.isArray(it.detail)) latest[it.code] = it; });
+      (items || []).forEach((it) => { if (!(it.code in latest) && Array.isArray(it.detail)) latest[it.code] = it; });
       const wrongBy = Object.values(latest)
         .map((it) => ({ code: it.code, ids: new Set(it.detail.filter((d) => !d.ok && !d.p).map((d) => String(d.q))) }))
         .filter((x) => x.ids.size)
@@ -4252,7 +4269,7 @@ function ExamMaker() {
     /* 새로고침·실수로 나갔다 들어오면 풀던 답과 시작 시각을 되살린다(제한 시간도 이어서 흐름) */
     let saved = null;
     if (!r.preview) { try { saved = JSON.parse((await store.get(takeKey(code))) || "null"); } catch (e) {} }
-    if (saved && (!(saved.at > 0) || Date.now() - saved.at > TAKE_KEEP_MS)) { store.del(takeKey(code)); saved = null; }
+    if (saved && (!(saved.at > 0) || Date.now() - saved.at > TAKE_KEEP_MS || saved.sig !== takeSig(src))) { store.del(takeKey(code)); saved = null; }
     const run0 = buildRun(src, code, null, saved);
     run0.owner = asStr(r.owner);
     run0.preview = !!r.preview;
@@ -4269,7 +4286,7 @@ function ExamMaker() {
   useEffect(() => {
     if (screen !== "take" || !run || run.partial || run.preview) return;
     const perm = {}; run.questions.forEach((q) => { if (q.perm) perm[q.id] = q.perm; });
-    const t = setTimeout(() => store.set(takeKey(run.code), JSON.stringify({ at: run.startedAt, sp: run.sharedPerm, perm, order: run.questions.map((q) => q.id), picked, typed })), 300);
+    const t = setTimeout(() => { if (!submittingRef.current) store.set(takeKey(run.code), JSON.stringify({ at: run.startedAt, sig: takeSig(run.src), sp: run.sharedPerm, perm, order: run.questions.map((q) => q.id), picked, typed })); }, 300);
     return () => clearTimeout(t);
   }, [screen, run, picked, typed]);
   /* 답을 하나라도 고른 채 탭을 닫거나 새로고침하면 브라우저 경고(답은 저장돼 있지만 실수 방지) */
@@ -4289,14 +4306,18 @@ function ExamMaker() {
 
   /* 못 보낸 결과는 기기에도 남겨 두었다가(새로고침해도 유지) 다음 로그인·접속 때 자동으로 다시 보낸다 */
   const RETRY_ERRORS = ["network", "timeout", "server", "busy", "bad_token"];
+  const qChain = useRef(Promise.resolve());
+  const qOp = (f) => (qChain.current = qChain.current.then(f, f));   // 큐 읽고-쓰기를 차례로
   const queueGet = async () => { try { const v = JSON.parse((await store.get("pending-results")) || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
   const queuePut = (list) => store.set("pending-results", JSON.stringify(list.slice(-20)));
-  const queueDrop = async (id) => queuePut((await queueGet()).filter((x) => x.id !== id));
+  const queueDrop = (id) => qOp(async () => queuePut((await queueGet()).filter((x) => x.id !== id)));
+  const queueAdd = (item) => qOp(async () => queuePut([...(await queueGet()).filter((x) => x.id !== item.id), item]));
   const flushQueue = async (uid) => {
     const list = await queueGet();
     let sent = 0;
     for (const x of list) {
       if (x.uid !== uid || (pendingRef.current && pendingRef.current.id === x.id)) continue;
+      if (!(await queueGet()).some((y) => y.id === x.id)) continue;   // 그사이 다른 경로로 보냈으면 건너뜀
       const r = await remote().submit(x.code, x.entry);
       if (r && r.ok) { sent++; await queueDrop(x.id); }
       else if (!r || !RETRY_ERRORS.includes(r.error)) await queueDrop(x.id);   // 마감·삭제 등 다시 보내도 안 되는 것은 버린다
@@ -4311,7 +4332,7 @@ function ExamMaker() {
     const sr = await remote().submit(p.code, p.entry);
     if (sr && sr.ok) { pendingRef.current = null; setSaveState("ok"); if (sr.id) setResultId(String(sr.id)); if (p.id) queueDrop(p.id); return; }
     pendingRef.current = p;
-    if (p.id && user && RETRY_ERRORS.includes((sr && sr.error) || "network")) { const list = (await queueGet()).filter((x) => x.id !== p.id); queuePut([...list, { ...p, uid: user.id }]); }
+    if (p.id && user && RETRY_ERRORS.includes((sr && sr.error) || "network")) await queueAdd({ ...p, uid: user.id });
     setSaveState({ error: (sr && sr.error) || "network", msg: errMsg(sr) });
     if (sr && sr.error === "bad_token") { authSet(null); clearSession(); flash("로그인이 풀렸습니다. 다시 로그인하면 결과를 이어서 보냅니다."); }   // 로그인 화면으로(결과는 보존)
   };
@@ -4348,19 +4369,26 @@ function ExamMaker() {
     /* 출제자에게 결과 전달. 고른 보기(m)는 섞기 전 원본 번호로 되돌려 보내고 v:2 로 표시한다 */
     const toOrig = (q, arr) => arr.map((i) => (q.perm && q.perm[i] != null ? q.perm[i] : i)).sort((a, b) => a - b);
     const entry = { v: 2, name: trimmed, score, total, pending: pendingN, sec: Math.round(sec), detail: rows.map((r) => ({ q: r.q.id, m: toOrig(r.q, r.mine), ok: r.ok, ...(r.typed !== undefined ? { t: r.typed.slice(0, 500) } : {}), ...(r.pending ? { p: true } : {}) })) };
-    await sendResult({ code: run.code, entry, id: Date.now() });
+    const id = Date.now();
+    entry.cid = String(id);
+    await sendResult({ code: run.code, entry, id });
+    store.del(takeKey(run.code));   // 제출 중 늦게 돈 임시 저장 타이머가 남긴 것까지 지운다
     } finally { submittingRef.current = false; }
   };
 
   const retryWrong = (ids) => {
-    setRun(buildRun(run.src, run.code, new Set(ids)));
+    const r0 = buildRun(run.src, run.code, new Set(ids));
+    r0.owner = run.owner; r0.preview = run.preview;
+    setRun(r0);
     setPicked({}); setTyped({});
     setResult(null);
     setScreen("take");
     window.scrollTo(0, 0);
   };
   const retryAll = () => {
-    setRun(buildRun(run.src, run.code));
+    const r0 = buildRun(run.src, run.code, run.code ? null : new Set(run.src.questions.map((q) => q.id)));   // 코드 없는 런(오답 모아 풀기)은 기록하지 않는 연습으로
+    r0.owner = run.owner; r0.preview = run.preview;
+    setRun(r0);
     setPicked({}); setTyped({});
     setResult(null);
     setScreen("take");
