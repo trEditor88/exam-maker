@@ -253,6 +253,7 @@ async function apiPost(body) {
 const serverRemote = {
   kind: "server",
   getQuiz: (code) => apiGet({ action: "quiz", code }),
+  quizReview: (code, studentId) => apiGet({ action: "quizReview", code, ...(studentId ? { studentId } : {}) }),
   results: (code, key) => apiGet({ action: "results", code, key }),
   share: (code, key, quiz) => apiPost({ action: "share", code, key, quiz }),
   deleteQuiz: (code, key) => apiPost({ action: "delete", code, key }),
@@ -3821,7 +3822,127 @@ function SubmitGrid({ exams, students, flash }) {
   );
 }
 
-function StudentsScreen({ user, onBack, toast, flash, exams }) {
+/* ── 오답 변형 문제: 시험지를 골라 틀린 문항(바꿀 수 있음)을 "답안만 바꿔" 다시 낸다 ──
+   보기 순서 섞기(무료·즉시) 또는 AI 로 보기 새로 만들기(문제·지문·그림은 그대로). 바로 풀기 또는 내 시험지에 저장 */
+/* 보기 순서를 섞되 정답 자리가 원래와 달라지게(가능하면) */
+function remakeByShuffle(q) {
+  const n = (q.options || []).length;
+  if (q.type === "short" || q.type === "essay" || n < 2) return { ...q };
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  let perm = range(n);
+  for (let t = 0; t < 30; t++) {
+    perm = shuffled(range(n));
+    const ans = q.answers.map((a) => perm.indexOf(a)).sort((x, y) => x - y);
+    if (!same(ans, [...q.answers].sort((x, y) => x - y))) break;
+  }
+  return { ...q, options: perm.map((i) => q.options[i]), answers: q.answers.map((a) => perm.indexOf(a)).sort((x, y) => x - y) };
+}
+function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave, flash }) {
+  /* 시험지마다 가장 최근 기록 하나 */
+  const exams = useMemo(() => {
+    const seen = {};
+    (items || []).forEach((it) => { if (it.code && !(it.code in seen) && Array.isArray(it.detail)) seen[it.code] = it; });
+    return Object.values(seen).map((it) => ({ ...it, wrong: it.detail.filter((d) => !d.ok && !d.p).length }));
+  }, [items]);
+  const [pick, setPick] = useState(null);       // 고른 기록
+  const [src, setSrc] = useState(null);         // 그 시험지 원본(정규화)
+  const [sel, setSel] = useState({});           // 문항 id → 포함 여부
+  const [how, setHow] = useState("shuffle");
+  const [busy, setBusy] = useState(false);
+  const aiOk = can(user, "gen");
+  const open = async (it) => {
+    setBusy(true);
+    const r = await remote().quizReview(it.code, studentId);
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    const ex = parsePayload(JSON.stringify(r.quiz));
+    if (!ex) return flash("시험지 데이터가 손상되어 열 수 없습니다.");
+    const dm = detailMap(it);
+    const s0 = {};
+    ex.questions.forEach((q) => { const d = dm.get(String(q.id)); s0[q.id] = !!d && !d.ok && !d.p; });
+    setPick(it); setSrc(ex); setSel(s0);
+  };
+  const chosen = src ? src.questions.filter((q) => sel[q.id]) : [];
+  const build = async () => {
+    /* 공용 보기를 쓰는 옛 시험지도 문항마다 보기를 갖게 한 뒤 바꾼다 */
+    const base = chosen.map((q) => ({ ...q, options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options }));
+    let out = base.map(remakeByShuffle);
+    if (how === "ai") {
+      const mcIdx = base.map((q, i) => (q.type === "short" || q.type === "essay" ? -1 : i)).filter((i) => i >= 0);
+      if (mcIdx.length) {
+        const r = await remote().generate({ variant: mcIdx.map((i) => ({ text: base[i].text, options: base[i].options, answers: base[i].answers, explain: base[i].explain || "", passage: base[i].passage || "" })) });
+        if (!r.ok) { flash(errMsg(r)); return null; }
+        let got = 0;
+        (r.variant || []).forEach((v) => { const i = mcIdx[v.i]; if (i == null) return; out[i] = { ...base[i], options: v.options, answers: v.answers, explain: v.explain || base[i].explain }; got++; });
+        if (got < mcIdx.length) flash(`AI가 ${mcIdx.length - got}문항은 만들지 못해 보기 순서 섞기로 대신했습니다.`);
+      }
+    }
+    const title = `${src.title || pick.title || "시험지"} · 오답 변형`.slice(0, 80);
+    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항, 답안만 바꿈`, options: [], questions: out.map((q) => ({ ...q, id: uid() })) });
+  };
+  const go = async (then) => {
+    if (!chosen.length) return flash("문항을 하나 이상 골라 주세요.");
+    setBusy(true);
+    try { const ex = await build(); if (ex) { then(ex); onClose(); } } finally { setBusy(false); }
+  };
+  return (
+    <Modal title="오답 변형 문제 만들기" onClose={onClose} wide>
+      {!src ? (
+        <>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.55, margin: "0 0 12px" }}>시험지를 고르면 틀린 문항이 미리 체크됩니다. 문제는 그대로 두고 답안(보기)만 바꿔 다시 풉니다.</p>
+          {exams.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>아직 푼 시험지 기록이 없습니다.</p>}
+          <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+            {exams.map((it) => (
+              <button key={it.code} className="em-btn em-row" disabled={busy} onClick={() => open(it)}
+                style={{ display: "flex", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "11px 14px", cursor: "pointer", fontFamily: FONT, minHeight: 44 }}>
+                <span style={{ flex: 1, minWidth: 0, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title || it.code}</span>
+                <span style={{ fontSize: 13, color: C.sub, whiteSpace: "nowrap" }}>{fmtDate(it.at)} · {it.score}/{it.total}</span>
+                <Badge tone={it.wrong ? "bad" : "good"}>{it.wrong ? `틀림 ${it.wrong}` : "다 맞음"}</Badge>
+              </button>
+            ))}
+          </div>
+          <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+        </>
+      ) : (
+        <>
+          <p style={{ fontSize: 14, color: C.sub, margin: "0 0 8px" }}><b style={{ color: C.ink }}>{src.title || pick.title}</b> · {chosen.length}문항 선택</p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            <TextBtn onClick={() => { const d = detailMap(pick); const s0 = {}; src.questions.forEach((q) => { const x = d.get(String(q.id)); s0[q.id] = !!x && !x.ok && !x.p; }); setSel(s0); }}>틀린 것만</TextBtn>
+            <TextBtn onClick={() => setSel(Object.fromEntries(src.questions.map((q) => [q.id, true])))}>모두</TextBtn>
+            <TextBtn tone="sub" onClick={() => setSel({})}>모두 해제</TextBtn>
+          </div>
+          <div style={{ display: "grid", gap: 6, maxHeight: "42vh", overflowY: "auto", marginBottom: 12 }}>
+            {src.questions.map((q, qi) => {
+              const d = detailMap(pick).get(String(q.id));
+              return (
+                <CheckRow key={q.id} on={!!sel[q.id]} onToggle={() => setSel((m) => ({ ...m, [q.id]: !m[q.id] }))}>
+                  <span style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                    <b style={{ flex: "0 0 auto" }}>{qi + 1}번</b>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{String(q.text || "").replace(/\s+/g, " ")}</span>
+                    {d && <Badge tone={d.p ? "warn" : d.ok ? "good" : "bad"}>{d.p ? "채점 대기" : d.ok ? "맞음" : "틀림"}</Badge>}
+                    {(q.type === "short" || q.type === "essay") && <Badge>그대로</Badge>}
+                  </span>
+                </CheckRow>
+              );
+            })}
+          </div>
+          <Seg value={how} onChange={(v) => (v === "ai" && !aiOk ? flash(ERR.perm_gen) : setHow(v))} items={[["shuffle", "보기 순서 섞기"], ["ai", "AI로 보기 새로 만들기"]]} />
+          <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.55, margin: "8px 0 12px" }}>
+            {how === "shuffle" ? "보기 내용은 그대로, 순서를 바꿔 정답 번호가 달라집니다(무료·즉시)." : "문제·지문·그림은 그대로, AI가 보기를 새로 써서 정답 표현과 오답이 모두 바뀝니다(AI 생성 1회 사용, 몇 초 걸림)."} 주관식·서술형은 그대로 들어갑니다.
+          </p>
+          <div style={{ display: "grid", gap: 8 }}>
+            <Btn onClick={() => go(onPractice)} disabled={busy || !chosen.length}>{busy ? "만드는 중…" : "바로 풀기 (기록 안 남음)"}</Btn>
+            <Btn kind="soft" onClick={() => go(onSave)} disabled={busy || !chosen.length}>내 시험지에 저장 (편집 화면)</Btn>
+            <Btn kind="ghost" onClick={() => { setSrc(null); setPick(null); }} disabled={busy}>다른 시험지 고르기</Btn>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, onRemakeSave }) {
+  const [remakeOpen, setRemakeOpen] = useState(false);
   const [students, setStudents] = useState(null);
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
@@ -3855,6 +3976,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 14px" }}>
           {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
           {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy}>리포트 새로 만들기</Btn>}
+          {onRemakeSave && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy}>오답 변형 문제 만들기</Btn>}
           <Btn kind="soft" onClick={() => open(detail.student)} disabled={busy}>새로고침</Btn>
         </div>
         {!detail.student.repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 분석 리포트 허용이 꺼져 있습니다. 관리자 화면의 계정 수정에서 켤 수 있습니다.</p>}
@@ -3869,6 +3991,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams }) {
         <TrendChart items={detail.items} />
         <BreakdownChart items={detail.items} quizzes={detail.quizzes} />
         <ResultsTable items={detail.items} />
+        {remakeOpen && <WrongRemakeModal items={detail.items} studentId={detail.student.id} user={user} flash={flash} onClose={() => setRemakeOpen(false)} onPractice={onRemakePractice} onSave={onRemakeSave} />}
       </Shell>
     );
   return (
@@ -3887,7 +4010,8 @@ function StudentsScreen({ user, onBack, toast, flash, exams }) {
   );
 }
 
-function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, onWrongBank }) {
+function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, onWrongBank, onRemakePractice, onRemakeSave }) {
+  const [remakeOpen, setRemakeOpen] = useState(false);
   const repOn = user.role === "admin" || !!user.repOn;
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
@@ -3912,9 +4036,11 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 결과·리포트</h2>
+      {remakeOpen && detail && <WrongRemakeModal items={detail.items} user={user} flash={flash} onClose={() => setRemakeOpen(false)} onPractice={onRemakePractice} onSave={onRemakeSave} />}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
         {repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
         {repOn && <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>}
+        {onRemakePractice && detail && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy}>오답 변형 문제 만들기</Btn>}
         {onWrongBank && detail && detail.items.length > 0 && <Btn kind="soft" onClick={async () => { setBusy(true); try { await onWrongBank(detail.items); } finally { setBusy(false); } }} disabled={busy}>틀린 문제 모아 풀기</Btn>}
         <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
       </div>
@@ -4170,6 +4296,17 @@ function ExamMaker() {
       window.scrollTo(0, 0);
     } finally { setBusy(false); }
   };
+  /* 만든 시험지를 기록 없는 연습으로 바로 푼다(오답 모아 풀기와 같은 방식) */
+  const practiceNow = (ex) => {
+    const run0 = buildRun(ex, "", new Set(ex.questions.map((q) => q.id)));
+    run0.owner = "";
+    setRun(run0);
+    setPicked({}); setTyped({});
+    setResult(null);
+    setScreen("take");
+    window.scrollTo(0, 0);
+  };
+  const remakeSave = (ex) => { openEditor(ex, true); flash("편집 화면에서 저장하면 내 시험지에 들어갑니다. 공유·배정도 여기서 할 수 있습니다."); };
   const practiceExam = (scope, subject) => { setGenInit(scope); openEditor(normalizeExam({ id: uid(), subject: subject || "", title: `약점 보완 · ${scope}`.slice(0, 80) }), true); };
   const openExam = (id) => {
     const e = exams.find((x) => x.id === id);
@@ -4470,8 +4607,8 @@ function ExamMaker() {
     return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
 
   if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} user={user} onCopyExam={copyExamIn} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
-  if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} exams={exams} />}{chrome}</>;
-  if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} onWrongBank={remote().kind === "server" ? wrongBank : null} />}{chrome}</>;
+  if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} exams={exams} onRemakePractice={practiceNow} onRemakeSave={remote().kind === "server" ? remakeSave : null} />}{chrome}</>;
+  if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} onWrongBank={remote().kind === "server" ? wrongBank : null} onRemakePractice={remote().kind === "server" ? practiceNow : null} onRemakeSave={remakeSave} />}{chrome}</>;
 
   const overlays = (
     <>
