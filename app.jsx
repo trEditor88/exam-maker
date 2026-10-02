@@ -3880,7 +3880,9 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
         out[v.i] = { ...q, text: v.text, options: typed ? [] : v.options, answers: typed ? [] : v.answers, answerText: typed ? v.answerText : q.answerText, explain: v.explain || q.explain };   // 지문·그림·태그는 원본 그대로
         got++;
       });
-      if (got < base.length) flash(`AI가 ${base.length - got}문항은 바꾸지 못해 원래 문항(객관식은 보기 섞기)으로 넣었습니다.`);
+      const vfail = (r.dropped || []).filter((d) => d.why === "verify").length;
+      if (r.verified === false) flash("AI 정답 검증을 하지 못했습니다. 저장·배정 전에 편집 화면에서 정답을 꼭 확인하세요.");
+      else if (got < base.length) flash(`${base.length - got}문항은 원래 문항(객관식은 보기 섞기)으로 넣었습니다${vfail ? ` — 그중 ${vfail}문항은 AI 정답 검증에서 걸러짐` : ""}.`);
     }
     const title = `${src.title || pick.title || "시험지"} · 오답 변형`.slice(0, 80);
     return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항${how === "ai" ? "을 살짝 바꾼 변형 문제" : ", 보기 순서만 섞음"}`, options: [], questions: out.map((q) => ({ ...q, id: uid() })) });
