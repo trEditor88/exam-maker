@@ -3822,12 +3822,15 @@ function SubmitGrid({ exams, students, flash }) {
   );
 }
 
-/* ── 오답 변형 문제: 시험지를 골라 틀린 문항(바꿀 수 있음)을 "답안만 바꿔" 다시 낸다 ──
-   보기 순서 섞기(무료·즉시) 또는 AI 로 보기 새로 만들기(문제·지문·그림은 그대로). 바로 풀기 또는 내 시험지에 저장 */
+/* ── 오답 변형 문제: 시험지를 골라 틀린 문항(바꿀 수 있음)을 변형해 다시 낸다 ──
+   기본은 AI 가 문제를 살짝 바꿔 답이 달라지게(객관식·참거짓·주관식·서술형 모두, 지문·그림은 그대로).
+   AI 를 못 쓰면 보기 순서만 섞기(객관식만 의미 있음). 바로 풀기 또는 내 시험지에 저장 */
+const isTF = (q) => Array.isArray(q.options) && q.options.length === 2 && q.options[0] === "참" && q.options[1] === "거짓";
+const shuffleUseless = (q) => q.type === "short" || q.type === "essay" || isTF(q);   // 보기를 섞어도 같은 문제
 /* 보기 순서를 섞되 정답 자리가 원래와 달라지게(가능하면) */
 function remakeByShuffle(q) {
   const n = (q.options || []).length;
-  if (q.type === "short" || q.type === "essay" || n < 2) return { ...q };
+  if (shuffleUseless(q) || n < 2) return { ...q };
   const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
   let perm = range(n);
   for (let t = 0; t < 30; t++) {
@@ -3847,9 +3850,9 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
   const [pick, setPick] = useState(null);       // 고른 기록
   const [src, setSrc] = useState(null);         // 그 시험지 원본(정규화)
   const [sel, setSel] = useState({});           // 문항 id → 포함 여부
-  const [how, setHow] = useState("shuffle");
+  const aiOk = remote().kind === "server" && (can(user, "gen") || can(user, "solve"));   // 변형은 풀기 권한만 있어도(계정별 하루 한도)
+  const [how, setHow] = useState(aiOk ? "ai" : "shuffle");
   const [busy, setBusy] = useState(false);
-  const aiOk = can(user, "gen");
   const open = async (it) => {
     setBusy(true);
     const r = await remote().quizReview(it.code, studentId);
@@ -3868,17 +3871,19 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
     const base = chosen.map((q) => ({ ...q, options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options }));
     let out = base.map(remakeByShuffle);
     if (how === "ai") {
-      const mcIdx = base.map((q, i) => (q.type === "short" || q.type === "essay" ? -1 : i)).filter((i) => i >= 0);
-      if (mcIdx.length) {
-        const r = await remote().generate({ variant: mcIdx.map((i) => ({ text: base[i].text, options: base[i].options, answers: base[i].answers, explain: base[i].explain || "", passage: base[i].passage || "" })) });
-        if (!r.ok) { flash(errMsg(r)); return null; }
-        let got = 0;
-        (r.variant || []).forEach((v) => { const i = mcIdx[v.i]; if (i == null) return; out[i] = { ...base[i], options: v.options, answers: v.answers, explain: v.explain || base[i].explain }; got++; });
-        if (got < mcIdx.length) flash(`AI가 ${mcIdx.length - got}문항은 만들지 못해 보기 순서 섞기로 대신했습니다.`);
-      }
+      const r = await remote().generate({ variant: base.map((q) => ({ type: q.type || "mc", text: q.text, options: shuffleUseless(q) && !isTF(q) ? [] : q.options, answers: q.answers || [], answerText: q.answerText || "", explain: q.explain || "", passage: q.passage || "", figure: !!q.svg })) });
+      if (!r.ok) { flash(errMsg(r)); return null; }
+      let got = 0;
+      (r.variant || []).forEach((v) => {
+        const q = base[v.i]; if (!q) return;
+        const typed = v.type === "short" || v.type === "essay";
+        out[v.i] = { ...q, text: v.text, options: typed ? [] : v.options, answers: typed ? [] : v.answers, answerText: typed ? v.answerText : q.answerText, explain: v.explain || q.explain };   // 지문·그림·태그는 원본 그대로
+        got++;
+      });
+      if (got < base.length) flash(`AI가 ${base.length - got}문항은 바꾸지 못해 원래 문항(객관식은 보기 섞기)으로 넣었습니다.`);
     }
     const title = `${src.title || pick.title || "시험지"} · 오답 변형`.slice(0, 80);
-    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항, 답안만 바꿈`, options: [], questions: out.map((q) => ({ ...q, id: uid() })) });
+    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항${how === "ai" ? "을 살짝 바꾼 변형 문제" : ", 보기 순서만 섞음"}`, options: [], questions: out.map((q) => ({ ...q, id: uid() })) });
   };
   const go = async (then) => {
     if (!chosen.length) return flash("문항을 하나 이상 골라 주세요.");
@@ -3889,7 +3894,7 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
     <Modal title="오답 변형 문제 만들기" onClose={onClose} wide>
       {!src ? (
         <>
-          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.55, margin: "0 0 12px" }}>시험지를 고르면 틀린 문항이 미리 체크됩니다. 문제는 그대로 두고 답안(보기)만 바꿔 다시 풉니다.</p>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.55, margin: "0 0 12px" }}>시험지를 고르면 틀린 문항이 미리 체크됩니다. 같은 개념으로 문제를 살짝 바꿔 답이 달라진 변형 문제를 다시 풉니다.</p>
           {exams.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>아직 푼 시험지 기록이 없습니다.</p>}
           <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
             {exams.map((it) => (
@@ -3920,15 +3925,17 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
                     <b style={{ flex: "0 0 auto" }}>{qi + 1}번</b>
                     <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{String(q.text || "").replace(/\s+/g, " ")}</span>
                     {d && <Badge tone={d.p ? "warn" : d.ok ? "good" : "bad"}>{d.p ? "채점 대기" : d.ok ? "맞음" : "틀림"}</Badge>}
-                    {(q.type === "short" || q.type === "essay") && <Badge>그대로</Badge>}
+                    {how === "shuffle" && shuffleUseless(q) && <Badge>그대로</Badge>}
                   </span>
                 </CheckRow>
               );
             })}
           </div>
-          <Seg value={how} onChange={(v) => (v === "ai" && !aiOk ? flash(ERR.perm_gen) : setHow(v))} items={[["shuffle", "보기 순서 섞기"], ["ai", "AI로 보기 새로 만들기"]]} />
+          <Seg value={how} onChange={(v) => (v === "ai" && !aiOk ? flash(ERR.perm_solve) : setHow(v))} items={[["ai", "문제 살짝 바꾸기 (AI)"], ["shuffle", "보기 순서만 섞기"]]} />
           <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.55, margin: "8px 0 12px" }}>
-            {how === "shuffle" ? "보기 내용은 그대로, 순서를 바꿔 정답 번호가 달라집니다(무료·즉시)." : "문제·지문·그림은 그대로, AI가 보기를 새로 써서 정답 표현과 오답이 모두 바뀝니다(AI 생성 1회 사용, 몇 초 걸림)."} 주관식·서술형은 그대로 들어갑니다.
+            {how === "ai"
+              ? "같은 개념·난이도로 숫자·조건·대상을 조금 바꿔 답이 달라지게 만듭니다. 참/거짓은 진술이 바뀌어 참·거짓이 뒤집히고, 주관식·서술형은 새 정답·모범 답안이 붙습니다. 지문·그림은 그대로입니다(AI 생성 1회, 몇 초 걸림)."
+              : "문제는 그대로, 보기 순서만 바꿔 정답 번호가 달라집니다(무료·즉시). 참/거짓·주관식·서술형은 바뀌지 않습니다."}
           </p>
           <div style={{ display: "grid", gap: 8 }}>
             <Btn onClick={() => go(onPractice)} disabled={busy || !chosen.length}>{busy ? "만드는 중…" : "바로 풀기 (기록 안 남음)"}</Btn>
