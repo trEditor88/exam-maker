@@ -132,9 +132,24 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
   .em-split{display:grid;grid-template-columns:300px minmax(0,1fr);gap:22px;align-items:start;}
   .em-split-side{display:block;}
 }
-.em-stats > .em-stat:last-child:nth-child(odd){grid-column:span 2;}
-@media (min-width:600px){.em-stats{grid-template-columns:repeat(3,1fr);} .em-stats > .em-stat:last-child:nth-child(odd){grid-column:auto;}}
 .em-only-d{display:none;}
+/* 하위 화면: PC 에선 옆 메뉴가 있으니 "← 홈으로"를 숨기고 본문을 넓힌다 */
+@media (min-width:1024px){body.em-has-nav .em-back-home{display:none;} body.em-has-nav .em-page.em-narrow{max-width:760px !important;}}
+/* 휴대폰: 위/아래 이동 버튼이 보기를 가리지 않게 숨김(손가락으로 스크롤) */
+@media (max-width:639px){.em-jump{display:none;}}
+input[aria-label="공유 코드"]::placeholder{font-size:17px;font-weight:500;letter-spacing:0.02em;color:${C.sub};}
+.em-filepick{position:relative;display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:999px;border:1px solid ${C.line};background:${C.field};color:${C.accent};font-size:15px;font-weight:700;cursor:pointer;min-height:44px;box-sizing:border-box;}
+.em-filepick:hover{border-color:${C.accent};} .em-filepick:focus-within{outline:2px solid ${C.accent};outline-offset:2px;}
+.em-filepick input{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}
+.em-filepick svg{width:20px;height:20px;}
+/* 응시 기록: 휴대폰은 카드, 그 이상은 표 */
+.em-rt-cards{display:none;}
+@media (max-width:639px){.em-rt-table{display:none;} .em-rt-cards{display:grid;gap:8px;}}
+.em-quick{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.em-quick .em-quick-wide{grid-column:1 / -1;}
+.em-ico svg{width:100%;height:100%;display:block;}
+.em-btn-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;}
+@media (max-width:639px){.em-btn-grid{grid-template-columns:1fr 1fr;} .em-btn-grid > :last-child:nth-child(odd){grid-column:1 / -1;}}
 /* 내 시험지: 휴대폰은 카드, PC(1024px+)는 한 줄 목록 */
 .em-exam-list{display:grid;gap:12px;}
 .em-exam-item{background:${C.card};border:1px solid ${C.line};border-radius:18px;padding:14px 16px;box-shadow:${C.shadow};}
@@ -1015,9 +1030,9 @@ function CheckRow({ on, onToggle, children, padding = "10px 12px", style }) {
   );
 }
 
-function Card({ children, style }) {
+function Card({ children, style, className }) {
   return (
-    <div className="em-card" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 18, boxShadow: C.shadow, ...style }}>
+    <div className={"em-card" + (className ? " " + className : "")} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 18, boxShadow: C.shadow, ...style }}>
       {children}
     </div>
   );
@@ -1107,10 +1122,10 @@ function ProgressBar({ value, max }) {
 function Shell({ children, back, backTo, toast, wide }) {
   return (
     <div className="em-root" style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, color: C.ink }}>
-      <div className="em-page" style={{ maxWidth: wide ? 1040 : 560, margin: "0 auto", padding: "22px 18px 60px" }}>
+      <div className={"em-page" + (wide ? "" : " em-narrow")} style={{ maxWidth: wide ? 1040 : 560, margin: "0 auto", padding: "22px 18px 60px" }}>
         {back && (
           <button
-            className="em-btn"
+            className={"em-btn" + (back === "홈으로" ? " em-back-home" : "")}
             onClick={backTo}
             style={{ background: "none", border: "none", color: C.accent, fontFamily: FONT, fontSize: 15, fontWeight: 600, padding: "4px 0 14px", cursor: "pointer" }}
           >
@@ -1202,6 +1217,31 @@ function QrIcon({ size = 26, color }) {
     </svg>
   );
 }
+/* 앱 아이콘(겹친 시험지 + 체크). bare 면 파란 바탕 없이 그림만(파란 배너 위) */
+function AppMark({ size = 28, bare }) {
+  return (
+    <svg viewBox={bare ? "120 100 272 320" : "0 0 512 512"} aria-hidden="true" style={{ width: size, height: size, display: "block", flex: `0 0 ${size}px` }}>
+      {!bare && <rect width="512" height="512" rx="112" fill="#267DD4" />}
+      <rect x="196" y="118" width="176" height="236" rx="26" fill="#fff" opacity=".75" />
+      <rect x="140" y="154" width="196" height="248" rx="26" fill="#fff" />
+      <path d="M172 206h128M172 238h112M172 270h78" stroke="#5C9DE0" strokeWidth="14" strokeLinecap="round" />
+      <path d="M176 342l30 30 56-62" fill="none" stroke="#2FA866" strokeWidth="24" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+/* 사진 고르기: 브라우저 기본 파일 버튼(영어) 대신 한국어 버튼 + 고른 장수 */
+function FilePick({ onFiles, count, inputRef, label = "사진 고르기" }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <label className="em-filepick">
+        <input ref={inputRef} type="file" accept="image/*" multiple onChange={(e) => { onFiles(Array.from(e.target.files || [])); e.target.value = ""; }} aria-label={label} />
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
+        {label}
+      </label>
+      <span style={{ fontSize: 13.5, color: C.sub }}>{count ? `${count}장 골랐어요` : "아직 고른 사진이 없어요"}</span>
+    </div>
+  );
+}
 /* 홈 히어로: 가장 가까운 마감 → 남은 배정 → 확인 질문 → 인사, 순서로 실제 데이터를 보여 준다 */
 function HomeHero({ d, user, onOpen, onAssign, onStudy, onCode }) {
   const now = Date.now();
@@ -1222,7 +1262,7 @@ function HomeHero({ d, user, onOpen, onAssign, onStudy, onCode }) {
         <span style={{ display: "block", fontSize: 19, fontWeight: 800, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
         <span style={{ display: "block", fontSize: 13.5, opacity: .9, marginTop: 5, fontWeight: 500, lineHeight: 1.4 }}>{sub}</span>
       </span>
-      <svg viewBox="0 0 100 100" aria-hidden="true" style={{ position: "relative", width: 76, height: 76, flex: "0 0 76px" }}>{SUBJ_ICON.ai}</svg>
+      <span style={{ position: "relative" }}><AppMark size={72} bare /></span>
     </button>
   );
 }
@@ -1281,9 +1321,11 @@ function HomeStats({ d, onMyResults, onStudy, onAssign, onRefresh }) {
     <div className="em-stats" aria-busy={L}>
       <StatCard label="최근 점수" value={L ? "…" : latest ? `${latest.score}/${latest.total}` : "—"} sub={L ? "불러오는 중" : latest ? latest.title || latest.code : "아직 응시 기록이 없음"} pct={latest ? pctOf(latest) : null} tone={latest && pctOf(latest) < 60 ? "bad" : "accent"} onClick={onMyResults} />
       <StatCard label="평균 정답률" value={L ? "…" : d.avg == null ? "—" : `${d.avg}%`} sub={L ? "" : `${d.count}회 응시`} pct={d && d.avg} tone="good" onClick={onMyResults} />
-      <StatCard label="완료율" value={L ? "…" : d.asgTotal ? `${asgPct}%` : "—"} sub={L ? "" : d.asgTotal ? `배정 ${d.asgTotal}개 중 ${d.asgDone}개 완료` : "배정된 시험 없음"} pct={asgPct} tone={d && d.asgTotal && d.asgDone < d.asgTotal ? "warn" : "accent"} onClick={onAssign} />
-      <StatCard label="확인 질문" value={L ? "…" : !d.shOn ? "—" : `${d.pending || 0}개`} sub={L ? "" : !d.shOn ? "오답노트 권한 없음" : d.shErr ? "목록을 불러오지 못함" : d.processing ? `처리 중 ${d.processing}개` : d.pending ? "답을 기다리는 질문" : "기다리는 질문 없음"} pct={d && d.pending ? 100 : 0} tone="warn" onClick={onStudy} />
-      <StatCard label="분석 리포트" value={L ? "…" : !d.repOn ? "—" : d.rep ? (repNew ? "새 리포트" : fmtDate(d.rep.updatedAt)) : "없음"} sub={L ? "" : !d.repOn ? "리포트 권한 없음" : d.rep ? `기록 ${d.rep.basis}회 기준` : "내 결과에서 요청"} pct={d && d.rep ? 100 : 0} tone="accent" onClick={onMyResults} />
+      <StatCard label="완료율" value={L ? "…" : d.asgTotal ? `${asgPct}%` : "—"} sub={L ? "" : d.asgTotal ? `배정 ${d.asgTotal}개 중 ${d.asgDone}개 완료` : "배정된 시험 없음"} pct={asgPct} tone="accent" onClick={onAssign} />
+      {/* 네 번째 칸: 오답노트를 쓰면 확인 질문(답할 게 있을 때만 경고색), 아니면 분석 리포트 */}
+      {L || d.shOn
+        ? <StatCard label="확인 질문" value={L ? "…" : `${d.pending || 0}개`} sub={L ? "" : d.shErr ? "목록을 불러오지 못함" : d.processing ? `처리 중 ${d.processing}개` : d.pending ? "답을 기다리는 질문" : "기다리는 질문 없음"} pct={d && d.pending ? 100 : 0} tone={d && d.pending ? "warn" : "accent"} onClick={onStudy} />
+        : <StatCard label="분석 리포트" value={!d.repOn ? "—" : d.rep ? (repNew ? "새 리포트" : fmtDate(d.rep.updatedAt)) : "없음"} sub={!d.repOn ? "리포트 권한 없음" : d.rep ? `기록 ${d.rep.basis}회 기준` : "분석 리포트에서 요청"} pct={d.rep ? 100 : 0} tone="accent" onClick={onMyResults} />}
       {d && d.err && <p style={{ gridColumn: "1 / -1", fontSize: 13.5, color: C.bad, margin: 0, display: "flex", alignItems: "center", gap: 4 }}>기록을 불러오지 못했습니다. {onRefresh && <TextBtn onClick={onRefresh} style={{ fontSize: 13.5 }}>다시 시도</TextBtn>}</p>}
     </div>
   );
@@ -1316,7 +1358,7 @@ function NavBar({ screen, role, go, onAccount, user, badge }) {
   items.push({ k: "account", t: "계정", i: "user", acct: true });
   return (
     <nav className="em-nav" aria-label="주요 메뉴">
-      <div className="em-nav-logo"><span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 22, height: 22, color: C.accent }}>{NAV_ICON.doc}</svg>시험지</span></div>
+      <div className="em-nav-logo"><span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}><AppMark size={30} />시험지</span></div>
       {items.map((it) => (
         <button key={it.k} className={"em-nav-item" + (it.more ? " em-nav-more" : "") + (it.acct ? " em-nav-acct" : "")} aria-current={screen === it.k ? "page" : undefined}
           onClick={() => (it.k === "account" ? onAccount() : go(it.k))}>
@@ -1352,17 +1394,17 @@ function TrendChart({ items }) {
   const desc = weeks.filter((w) => w.n).map((w) => `${new Date(w.s).getMonth() + 1}/${new Date(w.s).getDate()}주 ${Math.round((w.c / w.t) * 100)}%`).join(", ");
   return (
     <Card style={{ padding: "14px 16px 6px", marginBottom: 14 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
-        <span style={{ fontSize: 14.5, fontWeight: 700 }}>주간 정답률</span><span style={{ fontSize: 12.5, color: C.sub }}>최근 8주 · 주 시작일</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "2px 10px", marginBottom: 2 }}>
+        <span style={{ fontSize: 14.5, fontWeight: 700 }}>주간 정답률</span><span style={{ fontSize: 12.5, color: C.sub }}>최근 8주 · 진한 막대가 이번 주 · 빈 칸은 기록 없음</span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`주간 정답률: ${desc}`} style={{ display: "block" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`주간 정답률: ${desc}`} style={{ display: "block", maxWidth: 480, margin: "0 auto" }}>
         {weeks.map((w, i) => {
           const pct = w.t ? Math.round((w.c / w.t) * 100) : null;
           const h = pct == null ? 0 : Math.max(2, (pct / 100) * (H - 44));
           const x = i * bw + gap / 2, bwid = bw - gap;
           return (
             <g key={i}>
-              <rect x={x} y={H - 22 - (H - 44)} width={bwid} height={H - 44} rx={4} fill={C.lineSoft} />
+              {pct == null && <rect x={x} y={H - 25} width={bwid} height={3} rx={1.5} fill={C.line} />}
               {pct != null && <rect x={x} y={H - 22 - h} width={bwid} height={h} rx={4} fill={C.accent} opacity={i === 7 ? 1 : 0.55} style={{ transition: "height .6s ease" }} />}
               {pct != null && <text x={x + bwid / 2} y={H - 26 - h} textAnchor="middle" fontSize="10" fontWeight="700" fill={C.ink}>{pct}</text>}
               <text x={x + bwid / 2} y={H - 7} textAnchor="middle" fontSize="9" fill={C.sub}>{`${new Date(w.s).getMonth() + 1}/${new Date(w.s).getDate()}`}</text>
@@ -1559,9 +1601,8 @@ function AssignList({ d, onOpen }) {
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <SubjThumb subject={a.subject} size={46} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 15.5, fontWeight: 700, color: C.ink, flex: 1, minWidth: 0 }}>{a.title || a.code}</span><Badge tone={st.tone}>{st.t}</Badge>
-                  </div>
+                  <div style={{ fontSize: 15.5, fontWeight: 700, color: C.ink }}>{a.title || a.code}</div>
+                  <div style={{ marginTop: 4 }}><Badge tone={st.tone}>{st.t}</Badge></div>
                   <div style={{ fontSize: 13, color: C.sub, marginTop: 3 }}>
                     {a.owner ? `${a.owner} 출제 · ` : ""}{a.subject ? `${a.subject} · ` : ""}문제 {a.questions || 0}개{a.timeLimit ? ` · ${a.timeLimit}분` : ""} · 코드 {a.code}
                   </div>
@@ -1583,13 +1624,17 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
   const items = [];
   const server = mode === "server" && !!user;
   const allow = (k) => !server || can(user, k);
-  if (allow("gen")) items.push({ t: "새 시험지 만들기", d: "AI로 문제를 만들거나(기본) 직접 입력합니다. 객관식·주관식·서술형.", go: onNew });
-  items.push({ t: "내 시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
-  if (allow("solve")) items.push({ t: "코드로 문제 풀기", d: role === "student" ? "선생님이 준 코드를 입력해 문제를 풉니다." : "받은 코드를 입력해 문제를 풉니다.", go: onCode });
-  items.push({ t: "내 결과·리포트", d: "내가 푼 시험지의 점수·기록과 나의 분석 리포트를 봅니다.", go: onMyResults });
-  if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
-  items.push({ t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy });
-  if (role === "admin" || (server && isLite(user))) items.push({ t: "관리자", d: role === "admin" ? "계정·권한 관리, 전체 기록·시험지 열람, 알림 보내기." : "계정·기록·시험지 열람(제한 관리자).", go: onAdmin });
+  /* 메뉴(하단 탭·옆 메뉴)에 이미 있는 화면은 다시 보여 주지 않는다: 새 시험지는 항상, 오답노트·내 학생·관리자는 휴대폰(하단 탭에 없음)에서만 */
+  const hasNav = !!user;   // 로그인하면 메뉴가 보인다(App 의 navOn)
+  if (allow("gen")) items.push({ t: "새 시험지 만들기", d: "AI로 문제를 만들거나 직접 입력합니다.", go: onNew, wide: true });
+  if (!hasNav) {
+    items.push({ t: "시험지", d: exams.length ? `저장된 시험지 ${exams.length}개` : "아직 저장된 시험지가 없습니다.", go: onList });
+    items.push({ t: "풀기", d: "받은 코드로 문제 풀기", go: onCode });
+    items.push({ t: "분석 리포트", d: "내 점수·기록 보기", go: onMyResults });
+  }
+  items.push({ t: "오답노트", d: "사진으로 정답·해설 받기", go: onStudy, mOnly: hasNav });
+  if (role !== "student") items.push({ t: "내 학생", d: "결과·리포트 보기", go: onStudents, mOnly: hasNav });
+  if (role === "admin" || (server && isLite(user))) items.push({ t: "관리자", d: role === "admin" ? "계정·기록·알림" : "계정·기록 열람", go: onAdmin, mOnly: hasNav });
   const scrollAssign = () => { const el = [...document.querySelectorAll(".em-assign")].find((x) => x.offsetParent !== null); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
   const assignEl = server ? <AssignList d={d} onOpen={onOpenRecent} /> : null;
   const recentEl = recent.length > 0 ? (
@@ -1615,9 +1660,11 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "16px 0 10px" }}>
             <h1 style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>시험지</h1>
             {user && (
-              <button className="em-btn" onClick={onAccount} aria-label="내 계정" style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", padding: 4, cursor: "pointer", fontFamily: FONT, color: C.accent, fontSize: 14.5, fontWeight: 600 }}>
-                <span>{user.name} · {ROLE_KO[user.role] || user.role}</span><Avatar size={34} />
-              </button>
+              <div className="em-only-m">   {/* PC 는 옆 메뉴 아래에 같은 계정 버튼이 있다 */}
+                <button className="em-btn" onClick={onAccount} aria-label="내 계정" style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", padding: 4, cursor: "pointer", fontFamily: FONT, color: C.accent, fontSize: 14.5, fontWeight: 600 }}>
+                  <span>{user.name} · {ROLE_KO[user.role] || user.role}</span><Avatar size={34} />
+                </button>
+              </div>
             )}
           </div>
           <p style={{ fontSize: 16.5, lineHeight: 1.6, color: C.sub, margin: "0 0 6px" }}>문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.</p>
@@ -1626,12 +1673,12 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
           {server && <NoteList notes={notes || []} onOpen={onOpenNote} onSeenAll={onSeenAll} />}
           {server && <HomeStats d={d} onMyResults={onMyResults} onStudy={onStudy} onAssign={scrollAssign} onRefresh={refreshHome} />}
           {server && <div className="em-only-m">{assignEl}</div>}
-          <div style={{ display: "grid", gap: 12 }}>
+          <div className="em-quick">
             {items.map((it) => (
-              <button key={it.t} className="em-btn em-row" onClick={it.go}
-                style={{ textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: "18px 18px", cursor: "pointer", fontFamily: FONT, boxShadow: C.shadow }}>
-                <div style={{ fontSize: 18, fontWeight: 700, color: C.ink, marginBottom: 5 }}>{it.t}</div>
-                <div style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.5 }}>{it.d}</div>
+              <button key={it.t} className={"em-btn em-row" + (it.wide ? " em-quick-wide" : "") + (it.mOnly ? " em-only-m" : "")} onClick={it.go}
+                style={{ textAlign: "left", background: it.wide ? C.accentSoft : C.card, border: `1px solid ${it.wide ? C.accent : C.line}`, borderRadius: 16, padding: "14px 16px", cursor: "pointer", fontFamily: FONT, boxShadow: C.shadow }}>
+                <div style={{ fontSize: 16.5, fontWeight: 700, color: it.wide ? C.accent : C.ink, marginBottom: 3 }}>{it.wide ? "+ " : ""}{it.t}</div>
+                <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.45 }}>{it.d}</div>
               </button>
             ))}
           </div>
@@ -1687,7 +1734,7 @@ function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onE
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <h2 style={{ fontSize: 25, fontWeight: 800, margin: 0 }}>내 시험지</h2>
+        <h2 style={{ fontSize: 25, fontWeight: 800, margin: 0 }}>시험지</h2>
         <div style={{ display: "flex", gap: 2 }}>
           <TextBtn onClick={onImport}>가져오기</TextBtn>
           {exams.length > 0 && <TextBtn onClick={onExportAll}>내보내기</TextBtn>}
@@ -2255,7 +2302,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           {mode === "pro" && server && (
             <>
               {label(`사진으로 만들기 (선택, 최대 ${lim.photos}장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다`)}
-              <input type="file" accept="image/*" multiple onChange={(e) => { const all = [...photos, ...Array.from(e.target.files || [])]; setErr(all.length > lim.photos ? `사진은 ${lim.photos}장까지 넣을 수 있어 앞의 ${lim.photos}장만 넣었습니다.` : ""); setPhotos(all.slice(0, lim.photos)); e.target.value = ""; }} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
+              <FilePick count={photos.length} onFiles={(fs) => { const all = [...photos, ...fs]; setErr(all.length > lim.photos ? `사진은 ${lim.photos}장까지 넣을 수 있어 앞의 ${lim.photos}장만 넣었습니다.` : ""); setPhotos(all.slice(0, lim.photos)); }} />
               {photos.length > 0 && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                   {photos.map((f, i) => (
@@ -2647,8 +2694,8 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
   const [d] = useHomeData(server ? user : null, server ? "server" : "local");   // 배정된 시험지(홈과 같은 캐시)
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
-      <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 8px" }}>코드로 문제 풀기</h2>
-      <p style={{ fontSize: 15.5, color: C.sub, lineHeight: 1.6, margin: "0 0 20px" }}>받은 다섯 자리 코드를 넣으면 시험지가 열립니다.</p>
+      <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 8px" }}>풀기</h2>
+      <p style={{ fontSize: 15.5, color: C.sub, lineHeight: 1.6, margin: "0 0 20px" }}>받은 다섯 자리 코드(예: 7F3KM)를 넣으면 시험지가 열립니다.</p>
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <span style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: "0.12em", color: C.accent }}>시험 코드 입력</span>
@@ -2658,7 +2705,7 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
           value={codeInput}
           onChange={(v) => setCodeInput(cleanCode(v))}
           onEnter={() => codeInput.length === 5 && !busy && onLoad()}
-          placeholder="예: 7F3KM"
+          placeholder="코드 다섯 자리"
           maxLength={5}
           ariaLabel="공유 코드"
           style={{ fontSize: 30, fontWeight: 800, letterSpacing: "0.32em", textIndent: "0.32em", textAlign: "center", padding: "16px 12px", textTransform: "uppercase", borderRadius: 14 }}
@@ -2894,8 +2941,9 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
   const wrong = result.rows.filter((r) => !r.ok && !r.pending);
   const rows = showAll || wrong.length === 0 ? result.rows : wrong;
   const pct = result.total ? Math.round((result.score / result.total) * 100) : 0;
-  const msg = !result.total ? "서술형만 있는 시험지입니다. 선생님이 채점하면 내 결과에서 볼 수 있어요." : pct === 100 ? "모두 맞혔습니다. 완벽해요!" : pct >= 80 ? "잘했어요. 조금만 더 다듬으면 만점입니다." : pct >= 50 ? "절반 이상 맞혔어요. 틀린 문제를 한 번 더 봐요." : "아직 익숙하지 않네요. 해설을 보고 다시 도전해요.";
+  const msg = !result.total ? "서술형만 있는 시험지입니다. 선생님이 채점하면 분석 리포트에서 볼 수 있어요." : pct === 100 ? "모두 맞혔습니다. 완벽해요!" : pct >= 80 ? "잘했어요. 조금만 더 다듬으면 만점입니다." : pct >= 50 ? "절반 이상 맞혔어요. 틀린 문제를 한 번 더 봐요." : "아직 익숙하지 않네요. 해설을 보고 다시 도전해요.";
   const saveFail = saveState && saveState !== "ok" && saveState !== "saving";
+  const tone = !result.total ? C.sub : pct >= 80 ? C.good : pct >= 50 ? C.accent : C.warn;   // 점수 구간 색
 
   const copyResult = async () => {
     const text = `[${run.title}] ${result.score}/${result.total} (${pct}점)${pendingN ? ` · 채점 대기 ${pendingN}문항` : ""} · ${fmtSec(result.sec)}${run.partial ? " · 틀린 문제만" : ""}`;
@@ -2912,12 +2960,12 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
         </div>
       )}
       {saveState === "saving" && <p role="status" style={{ fontSize: 13.5, color: C.sub, margin: "0 0 10px", textAlign: "center" }}>결과를 서버에 저장하는 중…</p>}
-      <Card style={{ textAlign: "center", padding: 26, marginBottom: 22 }}>
+      <Card style={{ textAlign: "center", padding: 26, marginBottom: 22, borderTop: `5px solid ${tone}` }}>
         <div style={{ fontSize: 14.5, color: C.sub, marginBottom: 8 }}>
           {run.title}
           {run.partial ? " · 틀린 문제만" : ""}
         </div>
-        <div style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
+        <div style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1, color: tone }}>
           {result.score}
           <span style={{ color: C.sub, fontSize: 26, fontWeight: 700 }}> / {result.total}</span>
         </div>
@@ -2927,7 +2975,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
         <div style={{ marginTop: 12 }}>
           <ProgressBar value={result.score} max={result.total} />
         </div>
-        <p style={{ fontSize: 15, color: C.inkMid, margin: "14px 0 0", lineHeight: 1.6 }}>{msg}</p>
+        <p style={{ fontSize: 15.5, fontWeight: 600, color: C.ink, margin: "14px 0 0", lineHeight: 1.6 }}>{msg}</p>
       </Card>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -2978,7 +3026,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
                   if (isMine && isAns) tag = <span style={{ color: C.good, fontSize: 13, fontWeight: 700 }}>정답 · 내가 고름</span>;
                   return (
                     <div key={oi} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", border: `1px solid ${bd}`, background: bg, borderRadius: 10 }}>
-                      <span style={{ color: C.accent, fontSize: 16 }}>{mark(oi)}</span>
+                      <span aria-hidden="true" style={{ width: 26, height: 26, flex: "0 0 26px", borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13.5, fontWeight: 800, border: `1.5px solid ${isAns ? C.good : isMine ? C.bad : C.line}`, background: C.field, color: isAns ? C.good : isMine ? C.bad : C.accent }}>{oi + 1}</span>
                       <span style={{ fontSize: 15.5, color: tx, lineHeight: 1.45, flex: 1 }}><M t={o} /></span>
                       {tag}
                     </div>
@@ -3008,15 +3056,19 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
       </div>
 
       <div style={{ display: "grid", gap: 10, marginTop: 22 }}>
-        {wrong.length > 0 && <Btn onClick={() => onRetryWrong(wrong.map((r) => r.q.id))}>틀린 문제만 다시 풀기</Btn>}
-        <Btn kind="soft" onClick={onRetryAll}>처음부터 다시 풀기</Btn>
-        {loggedIn && onMyResults && <Btn kind="soft" onClick={onMyResults}>내 결과·리포트 보기</Btn>}
+        {wrong.length > 0 ? <Btn onClick={() => onRetryWrong(wrong.map((r) => r.q.id))}>틀린 문제만 다시 풀기</Btn> : <Btn onClick={onHome}>홈으로</Btn>}
+        <div style={{ display: "grid", gridTemplateColumns: loggedIn && onMyResults ? "1fr 1fr" : "1fr", gap: 10 }}>
+          <Btn kind="soft" onClick={onRetryAll}>처음부터 다시</Btn>
+          {loggedIn && onMyResults && <Btn kind="soft" onClick={onMyResults}>분석 리포트</Btn>}
+        </div>
         {loggedIn && canNote && resultId && wrong.length > 0 && !run.partial && (
-          <Btn kind="soft" onClick={async () => { if (await onMakeNote(resultId)) setNoteAsked(true); }} disabled={noteAsked}>{noteAsked ? "오답노트 요청됨 · 완료되면 알림" : "이 결과로 오답노트 만들기 (Claude)"}</Btn>
+          <Btn kind="ghost" onClick={async () => { if (await onMakeNote(resultId)) setNoteAsked(true); }} disabled={noteAsked}>{noteAsked ? "오답노트 요청됨 · 완료되면 알림" : "이 결과로 오답노트 만들기"}</Btn>
         )}
-        {loggedIn && onStudy && <Btn kind="ghost" onClick={onStudy}>오답노트 보기 · 사진 올리기</Btn>}
-        <Btn kind="ghost" onClick={copyResult}>결과 복사</Btn>
-        <Btn kind="ghost" onClick={onHome}>홈으로</Btn>
+        <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "0 18px", marginTop: 4 }}>
+          {loggedIn && onStudy && <TextBtn tone="sub" onClick={onStudy}>오답노트 보기</TextBtn>}
+          <TextBtn tone="sub" onClick={copyResult}>결과 복사</TextBtn>
+          {wrong.length > 0 && <TextBtn tone="sub" onClick={onHome}>홈으로</TextBtn>}
+        </div>
       </div>
     </Shell>
   );
@@ -3226,7 +3278,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
         <div style={{ fontSize: 14, color: C.sub, marginBottom: 6 }}>문제지 이름 (예: 통합과학_2학기_2차)</div>
         <Field value={wsName} onChange={setWsName} placeholder="과목_학기_회차" ariaLabel="문제지 이름" />
         <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>사진 (여러 장, 페이지 순서대로)</div>
-        <input ref={fileRef} type="file" accept="image/*" multiple onChange={(e) => setFiles(Array.from(e.target.files || []))} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
+        <FilePick inputRef={fileRef} count={files.length} onFiles={setFiles} />
         {files.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{files.map((f, i) => <img key={i} src={fileUrls[i]} alt={f.name} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}` }} />)}</div>}
         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
           <Btn onClick={upload} disabled={busy}>{progress || "올리기"}</Btn>
@@ -3334,7 +3386,13 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
   };
   return (
     <Shell toast={toast}>
-      <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", margin: "26px 0 8px" }}>시험지</h1>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "26px 0 10px" }}>
+        <AppMark size={56} />
+        <div>
+          <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", margin: 0, lineHeight: 1.15 }}>시험지</h1>
+          <div style={{ fontSize: 14, color: C.sub, marginTop: 2 }}>문제 만들기 · 풀기 · 바로 채점</div>
+        </div>
+      </div>
       <p style={{ fontSize: 15.5, color: C.sub, lineHeight: 1.6, margin: "0 0 20px" }}>
         {needSetup ? "처음 실행입니다. 관리자 계정을 만들어 주세요. 이 계정으로 선생님·학생 계정을 등록합니다." : signup ? "회원가입 뒤 바로 문제를 풀 수 있습니다. 문제 만들기·공유 같은 기능은 관리자가 권한을 열어 주면 쓸 수 있습니다(내 계정에서 요청)." : "아이디와 비밀번호로 들어갑니다. 계정이 없으면 회원가입하세요."}
       </p>
@@ -3348,6 +3406,15 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
           {!needSetup && <Btn kind="ghost" onClick={() => { setMode(signup ? "login" : "signup"); setPw2(""); }}>{signup ? "이미 계정이 있어요 · 로그인" : "회원가입"}</Btn>}
         </div>
       </Card>
+      {!needSetup && !signup && (
+        <ul style={{ listStyle: "none", padding: 0, margin: "22px 4px 0", display: "grid", gap: 10 }}>
+          {[["선생님이 준 5자리 코드로 바로 풀기", "play"], ["제출하면 바로 채점하고 해설 보기", "note"], ["틀린 문제와 분석 리포트로 복습", "chart"]].map(([t, i]) => (
+            <li key={t} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14.5, color: C.inkMid }}>
+              <span className="em-ico" style={{ width: 22, height: 22, color: C.accent, display: "inline-flex", flex: "0 0 22px" }}><NavIcon name={i} /></span>{t}
+            </li>
+          ))}
+        </ul>
+      )}
     </Shell>
   );
 }
@@ -3661,6 +3728,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
   const [form, setForm] = useState({ id: "", pw: "", name: "", role: "student", teacherId: "", subjects: "", shOn: false, repOn: false, perms: { ...PERMS_ALL } });
   const [allExams, setAllExams] = useState(null);
   const [bc, setBc] = useState({ title: "", body: "" });   // 전체 알림
+  const [newOpen, setNewOpen] = useState(false);   // 계정 만들기 폼 펼침
   const [tempPw, setTempPw] = useState(null);   // { id, pw } — 서버가 응답에 한 번만 주는 임시 비밀번호. 어디에도 저장하지 않는다
   const loadExams = async () => { const r = await remote().examListAll(); if (!r.ok) return flash(errMsg(r)); setAllExams(r.exams); };
   const delExam = async (e) => { if (!confirm(`"${e.title || "제목 없음"}" (${e.ownerName || e.ownerId}) 시험지를 지울까요? 공유 코드와 응시 기록도 지워집니다.`)) return; const r = await remote().examDelete(e.id); if (!r.ok) return flash(errMsg(r)); setAllExams(allExams.filter((x) => x.id !== e.id)); };
@@ -3763,19 +3831,13 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
       )}
       {tab === "textbook" && <TextbookAdmin flash={flash} />}
 
-      {tab === "users" && !lite && (
-        <Card style={{ margin: "14px 0" }}>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>전체 알림 보내기</div>
-          <div style={{ display: "grid", gap: 6 }}>
-            <Field value={bc.title} onChange={(v) => setBc({ ...bc, title: v })} placeholder="제목" ariaLabel="알림 제목" maxLength={80} />
-            <Field value={bc.body} onChange={(v) => setBc({ ...bc, body: v })} placeholder="내용" ariaLabel="알림 내용" multiline rows={2} maxLength={300} />
-            <Btn kind="soft" onClick={sendAll}>모든 계정에 보내기</Btn>
-          </div>
-        </Card>
-      )}
       {tab === "users" && (
         <>
-          {liteCan("liteUsers") && <Card style={{ margin: "14px 0" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, margin: "18px 0 8px" }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: C.inkMid }}>계정 목록 {users ? `(${users.length})` : ""}</h3>
+            {liteCan("liteUsers") && <TextBtn onClick={() => setNewOpen((v) => !v)} style={{ fontSize: 14.5 }}>{newOpen ? "만들기 닫기" : "+ 새 계정 만들기"}</TextBtn>}
+          </div>
+          {liteCan("liteUsers") && newOpen && <Card style={{ margin: "0 0 14px" }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>계정 만들기</div>
             <div style={{ display: "grid", gap: 8 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -3801,16 +3863,26 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
               <Btn onClick={create} disabled={busy}>계정 만들기</Btn>
             </div>
           </Card>}
-          <h3 style={{ fontSize: 16, fontWeight: 700, margin: "18px 0 8px", color: C.inkMid }}>계정 목록 {users ? `(${users.length})` : ""}</h3>
           {users === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
           {(users || []).map((u) => (
             <button key={u.id} className="em-btn em-row" onClick={() => { if (lite && !liteCan("liteUsers") && !liteCan("liteNotify")) return flash("제한 관리자는 열람만 할 수 있습니다."); if (lite && u.role === "admin" && !liteCan("liteNotify")) return flash("관리자 계정은 수정할 수 없습니다."); setEdit({ ...u, pw: "", newId: u.id, perms: u.perms || { ...PERMS_ALL } }); setMsg({ title: "", body: "" }); }}
               style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
               <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
               <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
-              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && BASE_KEYS.some((k) => k !== "adminLite" && k !== "genPlus" && !u.perms[k]) ? ` · 잠김 ${BASE_KEYS.filter((k) => k !== "adminLite" && k !== "genPlus" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
+              <span style={{ color: C.sub, fontSize: 13.5, flex: 1, minWidth: 0 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && BASE_KEYS.some((k) => k !== "adminLite" && k !== "genPlus" && !u.perms[k]) ? ` · 잠김 ${BASE_KEYS.filter((k) => k !== "adminLite" && k !== "genPlus" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
+              <span aria-hidden="true" style={{ color: C.sub, fontSize: 20, lineHeight: 1 }}>›</span>
             </button>
           ))}
+          {!lite && (
+            <details style={{ marginTop: 22, background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 16px" }}>
+              <summary style={{ fontSize: 15, fontWeight: 700, cursor: "pointer", color: C.inkMid }}>전체 알림 보내기 <span style={{ fontWeight: 400, fontSize: 13, color: C.sub }}>· 모든 계정에 한 번에</span></summary>
+              <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
+                <Field value={bc.title} onChange={(v) => setBc({ ...bc, title: v })} placeholder="제목" ariaLabel="알림 제목" maxLength={80} />
+                <Field value={bc.body} onChange={(v) => setBc({ ...bc, body: v })} placeholder="내용" ariaLabel="알림 내용" multiline rows={2} maxLength={300} />
+                <Btn kind="soft" onClick={sendAll}>모든 계정에 보내기</Btn>
+              </div>
+            </details>
+          )}
         </>
       )}
 
@@ -3998,7 +4070,23 @@ function ResultsTable({ items, onNote }) {
   return (
     <>
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 8px" }}>{items.length}회 응시 · 평균 {avg}점</p>
-      <Card style={{ padding: 8 }}>
+      {/* 휴대폰: 한 줄 카드(점수가 잘리지 않게) */}
+      <div className="em-rt-cards">
+        {items.map((it) => {
+          const wait = Array.isArray(it.detail) ? it.detail.filter((d) => d.p).length : 0;
+          const canNote = onNote && Array.isArray(it.detail) && it.detail.some((d) => !d.ok && !d.p);
+          return (
+            <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 10, background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "10px 14px" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title || it.code}</div>
+                <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>{fmtDate(it.at)} · {fmtSec(it.sec)}{wait ? ` · 채점 대기 ${wait}` : ""}{canNote && <> · <TextBtn onClick={() => onNote(it.id)} style={{ fontSize: 12.5, padding: 0, minHeight: 0 }}>오답노트</TextBtn></>}</div>
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: it.score === it.total ? C.good : C.ink, flex: "0 0 auto" }}>{it.score}<span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}>/{it.total}</span></div>
+            </div>
+          );
+        })}
+      </div>
+      <Card style={{ padding: 8 }} className="em-rt-table">
         <div className="em-tbl-wrap"><table className="em-tbl" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead><tr>{["때", "시험지", "점수", "시간"].concat(onNote ? [""] : []).map((h, i) => <th key={i} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
           <tbody>{items.map((it) => (
@@ -4211,7 +4299,8 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
   const [detail, setDetail] = useState(null);
   const [report, setReport] = useState(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { (async () => { const r = await remote().userList(); if (!r.ok) return flash(errMsg(r)); setStudents(r.users.filter((u) => u.role === "student")); })(); }, []);
+  const [tNames, setTNames] = useState({});   // 선생님 아이디 → 이름(관리자 화면의 담당 표시)
+  useEffect(() => { (async () => { const r = await remote().userList(); if (!r.ok) return flash(errMsg(r)); setStudents(r.users.filter((u) => u.role === "student")); setTNames(Object.fromEntries(r.users.filter((u) => u.role !== "student").map((u) => [u.id, u.name]))); })(); }, []);
   const open = async (st) => {
     setBusy(true);
     const r = await remote().studentResults(st.id);
@@ -4236,12 +4325,16 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
   if (detail)
     return (
       <Shell back="학생 목록" backTo={() => setDetail(null)} toast={toast}>
-        <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 4px" }}>{detail.student.name} <span style={{ color: C.sub, fontSize: 14, fontWeight: 500 }}>{detail.student.id}</span></h2>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 14px" }}>
-          {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
-          {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy}>리포트 새로 만들기</Btn>}
-          {onRemakeSave && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy}>오답 변형 문제 만들기</Btn>}
-          <Btn kind="soft" onClick={() => open(detail.student)} disabled={busy}>새로고침</Btn>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, margin: "6px 0 4px" }}>
+          <h2 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{detail.student.name} <span style={{ color: C.sub, fontSize: 14, fontWeight: 500 }}>{detail.student.id}</span></h2>
+          <TextBtn tone="sub" onClick={() => open(detail.student)} disabled={busy} style={{ fontSize: 14 }}>새로고침</TextBtn>
+        </div>
+        <div style={{ display: "grid", gap: 8, margin: "8px 0 14px" }}>
+          {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>리포트 열기</Btn>}
+          <div className="em-btn-grid">
+            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>리포트 새로 만들기</Btn>}
+            {onRemakeSave && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>오답 변형 문제</Btn>}
+          </div>
         </div>
         {!detail.student.repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 분석 리포트 허용이 꺼져 있습니다. 관리자 화면의 계정 수정에서 켤 수 있습니다.</p>}
         {detail.report && (
@@ -4267,7 +4360,8 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
       {(students || []).map((st) => (
         <button key={st.id} className="em-btn em-row" onClick={() => open(st)} disabled={busy}
           style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT }}>
-          <span style={{ fontWeight: 700, color: C.ink }}>{st.name}</span><span style={{ color: C.sub, fontSize: 13.5 }}>{st.id}{user.role === "admin" && st.teacherId ? ` · 담당 ${st.teacherId}` : ""}</span>
+          <span style={{ fontWeight: 700, color: C.ink }}>{st.name}</span><span style={{ color: C.sub, fontSize: 13.5, flex: 1, minWidth: 0 }}>{st.id}{user.role === "admin" && st.teacherId ? ` · 담당 ${tNames[st.teacherId] || st.teacherId}` : ""}</span>
+          <span aria-hidden="true" style={{ color: C.sub, fontSize: 20, lineHeight: 1 }}>›</span>
         </button>
       ))}
     </Shell>
@@ -4292,21 +4386,26 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
   const request = async () => { const r = await remote().reportRequest(); flash(r.ok ? "요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 만들어집니다." : errMsg(r)); };
   if (report !== null)
     return (
-      <Shell back="내 결과" backTo={() => setReport(null)} toast={toast}>
+      <Shell back="분석 리포트" backTo={() => setReport(null)} toast={toast}>
         <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => openHtmlWindow(report, flash)}>새 창에서 열기(인쇄·PDF)</Btn></div>
         <iframe title="분석 리포트" srcDoc={report} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
     );
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
-      <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>내 결과·리포트</h2>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, margin: "6px 0 12px" }}>
+        <h2 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>분석 리포트</h2>
+        <TextBtn tone="sub" onClick={load} disabled={busy} style={{ fontSize: 14 }}>새로고침</TextBtn>
+      </div>
       {remakeOpen && detail && <WrongRemakeModal items={detail.items} user={user} flash={flash} onClose={() => setRemakeOpen(false)} onPractice={onRemakePractice} onSave={onRemakeSave} />}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
-        {repOn && <Btn onClick={openReport} disabled={busy}>분석 리포트 보기</Btn>}
-        {repOn && <Btn kind="soft" onClick={request} disabled={busy}>리포트 새로 만들기</Btn>}
-        {onRemakePractice && detail && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy}>오답 변형 문제 만들기</Btn>}
-        {onWrongBank && detail && detail.items.length > 0 && <Btn kind="soft" onClick={async () => { setBusy(true); try { await onWrongBank(detail.items); } finally { setBusy(false); } }} disabled={busy}>틀린 문제 모아 풀기</Btn>}
-        <Btn kind="soft" onClick={load} disabled={busy}>새로고침</Btn>
+      {/* 주 버튼 하나(리포트 열기) + 작은 2열 버튼 */}
+      <div style={{ display: "grid", gap: 8, margin: "0 0 14px" }}>
+        {repOn && <Btn onClick={openReport} disabled={busy}>리포트 열기</Btn>}
+        <div className="em-btn-grid">
+          {repOn && <Btn kind="soft" onClick={request} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>리포트 새로 만들기</Btn>}
+          {onRemakePractice && detail && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>오답 변형 문제</Btn>}
+          {onWrongBank && detail && detail.items.length > 0 && <Btn kind="soft" onClick={async () => { setBusy(true); try { await onWrongBank(detail.items); } finally { setBusy(false); } }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>틀린 문제 모아 풀기</Btn>}
+        </div>
       </div>
       {!repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.</p>}
       {detail && detail.report && (
