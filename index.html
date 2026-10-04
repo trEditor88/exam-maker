@@ -11,7 +11,10 @@
 <meta property="og:description" content="문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.">
 <meta property="og:url" content="https://treditor88.github.io/exam-maker/">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%96%3C/text%3E%3C/svg%3E">
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23FFFFFF'/%3E%3Ctext x='50' y='.92em' font-size='72' text-anchor='middle'%3E%F0%9F%93%96%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="시험지">
 <meta name="description" content="문제를 만들어 코드로 나누고, 푼 사람은 바로 채점 결과를 봅니다.">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard-dynamic-subset.min.css">
@@ -27,6 +30,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <!-- app.js 는 app.jsx 를 esbuild 로 미리 변환한 결과(tools/build_app.py). 원본 수정은 app.jsx 에서만. ?v= 는 deploy-site.ps1 이 올림 -->
-<script src="app.js?v=46"></script>
+<script src="app.js?v=47"></script>
+<script>/* 홈 화면 앱(PWA)·푸시 알림용 서비스 워커. 캐시는 하지 않는다 */ if ("serviceWorker" in navigator) window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); });</script>
 </body>
 </html>

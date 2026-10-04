@@ -258,6 +258,7 @@ async function apiPost(body) {
 const serverRemote = {
   kind: "server",
   getQuiz: (code) => apiGet({ action: "quiz", code }),
+  itemReport: (code, qid, reason, note) => apiPost({ action: "itemReport", code, qid, reason, note: note || "" }),
   quizReview: (code, studentId) => apiGet({ action: "quizReview", code, ...(studentId ? { studentId } : {}) }),
   results: (code, key) => apiGet({ action: "results", code, key }),
   share: (code, key, quiz) => apiPost({ action: "share", code, key, quiz }),
@@ -301,8 +302,16 @@ const serverRemote = {
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
   assignList: (code) => apiGet(code ? { action: "assignList", code } : { action: "assignList" }),
   assignListMany: (codes) => apiGet({ action: "assignList", codes }),
-  assignSet: (code, studentIds, dueAt, memo) => apiPost({ action: "assignSet", code, studentIds, dueAt: dueAt || 0, memo: memo || "" }),
-  assignUpdate: (code, dueAt, memo) => apiPost({ action: "assignUpdate", code, dueAt: dueAt || 0, memo: memo || "" }),
+  assignSet: (code, studentIds, dueAt, memo, purgeDays) => apiPost({ action: "assignSet", code, studentIds, dueAt: dueAt || 0, memo: memo || "", purgeDays: purgeDays == null ? 30 : purgeDays }),
+  assignUpdate: (code, dueAt, memo, purgeDays) => apiPost({ action: "assignUpdate", code, dueAt: dueAt || 0, memo: memo || "", purgeDays: purgeDays == null ? 30 : purgeDays }),
+  examTrashList: (all) => apiGet({ action: "examTrashList", ...(all ? { all: "1" } : {}) }),
+  examTrash: (id) => apiPost({ action: "examTrash", id }),
+  examRestore: (id) => apiPost({ action: "examRestore", id }),
+  pushKey: () => apiGet({ action: "pushKey" }),
+  rcSubmit: (prompt, sessionId) => apiPost({ action: "rcSubmit", prompt, ...(sessionId ? { sessionId } : {}) }),
+  rcList: () => apiGet({ action: "rcList" }),
+  pushSubscribe: (sub) => apiPost({ action: "pushSubscribe", sub }),
+  pushUnsubscribe: (endpoint) => apiPost({ action: "pushUnsubscribe", endpoint }),
   assignRemind: (code) => apiPost({ action: "assignRemind", code }),
   assignRemove: (code, studentId) => apiPost({ action: "assignRemove", code, studentId }),
   profileUpdate: (b) => apiPost({ action: "profileUpdate", ...b }),
@@ -390,7 +399,12 @@ const ERR = {
   bad_key: "이 시험지를 고칠 권한이 없습니다. (다른 기기에서 만든 코드)",
   too_big: "시험지가 너무 큽니다. 문제 수를 줄여 주세요.",
   busy: "서버가 바쁩니다. 잠시 후 다시 시도해 주세요.",
+  gen_empty: "만든 문제가 모두 정답 검증에서 걸러졌습니다. 범위를 더 구체적으로 적거나 참고 자료를 넣어 다시 시도해 주세요.",
+  report_limit: "오늘은 문항 신고를 더 할 수 없습니다(하루 20건).",
   timeout: "서버 응답이 너무 늦습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.",
+  trashed: "휴지통으로 옮겨진 시험지입니다. 출제자에게 문의하세요.",
+  push_off: "서버에 알림(푸시) 설정이 아직 없습니다.",
+  rc_busy: "처리를 기다리는 요청이 이미 3개 있습니다. 끝난 뒤 다시 보내 주세요.",
   bad_id_chars: "아이디는 한글·영문·숫자·밑줄(_)만 쓸 수 있습니다(2~30자).",
   weak_pw: "비밀번호는 4자 이상으로 정해 주세요.",
   ip_limit: "이 기기(네트워크)에서는 오늘 더 가입할 수 없습니다. 내일 다시 시도하거나 관리자에게 문의하세요.",
@@ -798,9 +812,9 @@ function shuffleGroups(qs) {
 }
 /* 응시 런타임 만들기: 문제마다 쓰는 보기를 확정하고(문제별 보기 또는 공용 보기),
    셔플이 켜져 있으면 보기·문제 순서를 섞은 뒤 정답 위치를 재계산합니다. */
-const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin"];
+const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin", "remote"];
 const INITIAL_HASH = typeof location !== "undefined" ? location.hash : "";   // 첫 화면 효과가 주소를 #/home 으로 바꾸기 전에 기억
-const RESTORE_SCREENS = ["list", "study", "myresults", "code"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
+const RESTORE_SCREENS = ["list", "study", "myresults", "code", "remote"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
 const TAKE_KEEP_MS = 24 * 3600 * 1000;
 /* 이어 풀기 저장본이 같은 시험지 모양일 때만 되살린다(문항 id·보기 수) */
 const takeSig = (src) => src.questions.map((q) => `${q.id}:${(Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options || []).length}`).join(",");   // 이어 풀기 저장은 하루만 유지
@@ -1295,13 +1309,14 @@ function NavIcon({ name }) {
 function NavBar({ screen, role, go, onAccount, user, badge }) {
   const items = [
     { k: "home", t: "홈", i: "home" },
+    { k: "list", t: "시험지", i: "doc" },
+    { k: "myresults", t: "분석 리포트", i: "chart" },
     ...(user && remote().kind === "server" && !can(user, "solve") ? [] : [{ k: "code", t: "풀기", i: "play" }]),
-    { k: "myresults", t: "내 결과", i: "chart" },
-    { k: "study", t: "오답노트", i: "note" },
-    { k: "list", t: "내 시험지", i: "doc", more: true },
+    { k: "study", t: "오답노트", i: "note", more: true },   // 휴대폰 하단바: 홈·시험지·분석 리포트·풀기·계정(나머지는 홈 메뉴·PC 옆 메뉴)
   ];
   if (role !== "student") items.push({ k: "students", t: "내 학생", i: "people", more: true });
   if (role === "admin" || (user && isLite(user))) items.push({ k: "admin", t: "관리자", i: "gear", more: true });
+  if (role === "admin" && remote().kind === "server") items.push({ k: "remote", t: "원격 Claude", i: "play", more: true });
   items.push({ k: "account", t: "계정", i: "user", acct: true });
   return (
     <nav className="em-nav" aria-label="주요 메뉴">
@@ -1401,12 +1416,13 @@ function AssignModal({ exam, onClose, flash }) {
   const [dueAt, setDueAt] = useState(0);
   const [memo, setMemo] = useState("");
   const [remindAt, setRemindAt] = useState(0);
+  const [purgeDays, setPurgeDays] = useState(30);   // 마감 뒤 이 날짜가 지나면 시험지를 휴지통으로(기본 30일)
   const load = async () => {
     const [u, a] = await Promise.all([remote().userList(), remote().assignList(exam.code)]);
     if (u.ok) setStudents(u.users.filter((x) => x.role === "student" && x.active !== false)); else { setStudents([]); flash(errMsg(u)); }
     const rows = a.ok ? a.forCode || [] : [];
     setCur(rows);
-    if (rows.length) { setDueAt(rows[0].dueAt || 0); setMemo(rows[0].memo || ""); setRemindAt(Math.max(0, ...rows.map((x) => x.remindAt || 0))); }
+    if (rows.length) { setDueAt(rows[0].dueAt || 0); setMemo(rows[0].memo || ""); setPurgeDays(rows[0].purgeDays != null ? rows[0].purgeDays : 30); setRemindAt(Math.max(0, ...rows.map((x) => x.remindAt || 0))); }
   };
   useEffect(() => { load(); }, []);
   const assigned = new Set((cur || []).map((x) => x.studentId));
@@ -1417,14 +1433,14 @@ function AssignModal({ exam, onClose, flash }) {
     if (!ids.length) return flash("배정할 학생을 고르세요.");
     if (dueAt && dueAt < Date.now()) return flash("마감이 이미 지난 시각입니다. 마감을 고치거나 비워 주세요.");
     setBusy(true);
-    const r = await remote().assignSet(exam.code, ids, dueAt, memo.trim());
+    const r = await remote().assignSet(exam.code, ids, dueAt, memo.trim(), purgeDays);
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
     flash(`${r.added}명에게 배정하고 알림을 보냈습니다.`); setSel({}); load();
   };
   const saveCond = async () => {
     setBusy(true);
-    const r = await remote().assignUpdate(exam.code, dueAt, memo.trim());
+    const r = await remote().assignUpdate(exam.code, dueAt, memo.trim(), purgeDays);
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
     flash(r.notified ? `조건을 저장하고 아직 안 푼 ${r.notified}명에게 알렸습니다.` : "배정 조건을 저장했습니다."); load();
@@ -1439,7 +1455,7 @@ function AssignModal({ exam, onClose, flash }) {
   const removeOne = async (sid) => { const r = await remote().assignRemove(exam.code, sid); if (!r.ok) return flash(errMsg(r)); load(); };
   const doneN = (cur || []).filter((x) => x.done).length, todoN = (cur || []).length - doneN;
   const now = Date.now(), late = dueAt && now > dueAt;
-  const condChanged = cur && cur.length > 0 && ((cur[0].dueAt || 0) !== dueAt || (cur[0].memo || "") !== memo.trim());
+  const condChanged = cur && cur.length > 0 && ((cur[0].dueAt || 0) !== dueAt || (cur[0].memo || "") !== memo.trim() || (cur[0].purgeDays != null ? cur[0].purgeDays : 30) !== purgeDays);
   const labStyle = { display: "block", fontSize: 13, color: C.sub, marginBottom: 4 };
   return (
     <Modal title={`배정 · ${exam.title || "제목 없음"}`} onClose={onClose}>
@@ -1449,7 +1465,9 @@ function AssignModal({ exam, onClose, flash }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
           <label style={labStyle}>마감<input type="datetime-local" className="em-in" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} value={toLocalInput(dueAt)} onChange={(e) => setDueAt(fromLocalInput(e.target.value))} /></label>
           <label style={labStyle}>안내문<input className="em-in" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} maxLength={200} placeholder="예: 2단원 복습, 금요일까지" value={memo} onChange={(e) => setMemo(e.target.value)} /></label>
+          <label style={labStyle}>마감 뒤 자동 정리(일)<input type="number" min="0" max="365" className="em-in" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} value={purgeDays} onChange={(e) => setPurgeDays(Math.max(0, Math.min(365, parseInt(e.target.value, 10) || 0)))} aria-describedby="purge-help" /></label>
         </div>
+        <div id="purge-help" style={{ fontSize: 12.5, color: C.sub, marginTop: 6, lineHeight: 1.45 }}>마감이 지나면 학생과 선생님께 알림이 가고, 마감 {purgeDays}일 뒤 시험지가 휴지통으로 옮겨집니다(휴지통에서 30일 안에 되살릴 수 있음, 응시 기록은 남음).</div>
         <div style={{ fontSize: 12.5, color: late ? C.bad : C.sub, marginTop: 6, lineHeight: 1.45 }}>{dueAt ? `${fmtDateTime(dueAt)} 마감${late ? " · 이미 지난 시각입니다" : ""}. 지나도 풀 수는 있고 "기한 지남"으로 표시됩니다.` : "마감을 비우면 기한 없이 배정됩니다."}{exam.closeAt ? ` 응시 마감(${fmtDateTime(exam.closeAt)})이 지나면 열 수 없습니다.` : ""}</div>
         {condChanged && <div style={{ marginTop: 8 }}><Btn kind="ghost" onClick={saveCond} disabled={busy}>배정된 {cur.length}명에게 조건 저장</Btn></div>}
       </div>
@@ -1563,7 +1581,7 @@ function AssignList({ d, onOpen }) {
 }
 
 /* ── 화면: 홈 ────────────────────────────────── */
-function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount, notes, onOpenNote, onSeenAll }) {
+function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount, notes, onOpenNote, onSeenAll, onRemote }) {
   const role = (user && user.role) || "admin";
   const [d, refreshHome] = useHomeData(user, mode);
   const items = [];
@@ -1576,6 +1594,7 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
   if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
   items.push({ t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy });
   if (role === "admin" || (server && isLite(user))) items.push({ t: "관리자", d: role === "admin" ? "계정·권한 관리, 전체 기록·시험지 열람, 알림 보내기." : "계정·기록·시험지 열람(제한 관리자).", go: onAdmin });
+  if (role === "admin" && server && onRemote) items.push({ t: "원격 Claude", d: "관리자 PC의 Claude Code에게 일을 시키고 결과를 봅니다.", go: onRemote });
   const scrollAssign = () => { const el = [...document.querySelectorAll(".em-assign")].find((x) => x.offsetParent !== null); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
   const assignEl = server ? <AssignList d={d} onOpen={onOpenRecent} /> : null;
   const recentEl = recent.length > 0 ? (
@@ -1638,8 +1657,35 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
 }
 
 /* ── 화면: 내 시험지 목록 ────────────────────── */
-function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onExportAll, onBack, toast, user, flash }) {
+/* 휴지통: 1달 동안 쓰지 않았거나 배정 마감 뒤 정리 기한이 지난 시험지. 30일 안에 되살릴 수 있다 */
+function TrashModal({ onClose, onRestored, flash }) {
+  const [items, setItems] = useState(null);
+  const load = async () => { const r = await remote().examTrashList(); if (!r.ok) { flash(errMsg(r)); setItems([]); return; } setItems(r.items || []); };
+  useEffect(() => { load(); }, []);
+  const restore = async (it) => { const r = await remote().examRestore(it.id); if (!r.ok) return flash(errMsg(r)); flash(`"${it.title || "제목 없음"}"을(를) 되살렸습니다.`); load(); onRestored && onRestored(); };
+  return (
+    <Modal title="휴지통" onClose={onClose}>
+      <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: "0 0 12px" }}>한 달 동안 쓰지 않았거나 배정 마감 뒤 정리 기한이 지난 시험지가 여기로 옵니다. 30일이 지나면 완전히 지워지고(응시 기록은 남음), 그 전에는 되살릴 수 있습니다. 휴지통에 있는 동안에는 공유 코드로 풀 수 없습니다.</p>
+      {items === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
+      {items && items.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>휴지통이 비어 있습니다.</p>}
+      <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+        {(items || []).map((it) => (
+          <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: C.lineSoft, borderRadius: 12 }}>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title || "제목 없음"}</span>
+              <span style={{ display: "block", fontSize: 12.5, color: C.sub }}>{it.code ? `코드 ${it.code} · ` : ""}{it.purgeAt ? `${fmtDate(it.purgeAt)} 완전 삭제` : ""}</span>
+            </span>
+            <Btn kind="soft" onClick={() => restore(it)} style={{ width: "auto", padding: "8px 14px", fontSize: 14 }}>되살리기</Btn>
+          </div>
+        ))}
+      </div>
+      <Btn kind="ghost" onClick={onClose}>닫기</Btn>
+    </Modal>
+  );
+}
+function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onExportAll, onBack, toast, user, flash, onReload }) {
   const [confirmId, setConfirmId] = useState(null);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [assign, setAssign] = useState(null);
   const canAssign = remote().kind === "server" && user && user.role !== "student";
   const staleMap = useMemo(() => Object.fromEntries(exams.map((e) => [e.id, !!(e.code && e.sharedHash !== hashOf(e))])), [exams]);   // 매 렌더마다 시험지 수만큼 직렬화하지 않게
@@ -1650,8 +1696,10 @@ function ListScreen({ exams, onOpen, onNew, onDelete, onDuplicate, onImport, onE
         <div style={{ display: "flex", gap: 2 }}>
           <TextBtn onClick={onImport}>가져오기</TextBtn>
           {exams.length > 0 && <TextBtn onClick={onExportAll}>내보내기</TextBtn>}
+          {remote().kind === "server" && user && <TextBtn tone="sub" onClick={() => setTrashOpen(true)}>휴지통</TextBtn>}
         </div>
       </div>
+      {trashOpen && <TrashModal onClose={() => setTrashOpen(false)} onRestored={onReload} flash={flash} />}
       <div style={{ marginBottom: 16 }}><Btn onClick={onNew}>새 시험지 만들기</Btn></div>
       {exams.length === 0 ? (
         <Card>
@@ -1732,7 +1780,7 @@ function itemStats(exam, items) {
     return { qi, q, n, rate: n ? ok / n : null, disc: scored.length >= 6 && hiN && loN ? hiOk / hiN - loOk / loN : null, wrong: wrong != null ? { i: wrong, c: pick[wrong] } : null };
   });
 }
-function ItemAnalysis({ exam, items }) {
+function ItemAnalysis({ exam, items, reports }) {
   const rows = useMemo(() => itemStats(exam, items), [exam, items]);
   if (!rows.length) return null;
   return (
@@ -1743,6 +1791,9 @@ function ItemAnalysis({ exam, items }) {
         {rows.map((r) => {
           const pct = r.rate == null ? null : Math.round(r.rate * 100);
           const low = pct != null && pct < 40;
+          const rep = (reports || {})[String(r.q.id)];
+          /* 정답 오류 의심: 정답률이 매우 낮은데 상위권이 하위권보다 더 틀리거나(변별도 음수), 많이 고른 오답이 정답 수보다 많음 */
+          const suspect = pct != null && r.n >= 4 && pct < 25 && ((r.disc != null && r.disc < 0) || (r.wrong && r.wrong.c > Math.round(r.rate * r.n)));
           return (
             <div key={r.q.id} style={{ display: "grid", gridTemplateColumns: "44px 1fr auto", gap: 10, alignItems: "center", padding: "8px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14 }}>
               <span style={{ fontWeight: 800 }}>{r.qi + 1}번</span>
@@ -1754,6 +1805,12 @@ function ItemAnalysis({ exam, items }) {
                   {r.wrong ? `많이 고른 오답 ${CIRCLED[r.wrong.i] || r.wrong.i + 1} (${r.wrong.c}명)` : `${r.n}명 응답`}
                   {r.disc != null && ` · 변별도 ${r.disc.toFixed(2)}${r.disc < 0.1 ? " (낮음)" : ""}`}
                 </div>
+                {(suspect || rep) && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                    {suspect && <Badge tone="bad">정답 오류 의심 — 정답 확인</Badge>}
+                    {rep && <Badge tone="warn">{`신고 ${rep.n}건${rep.reasons && rep.reasons.answer ? ` (정답 ${rep.reasons.answer})` : ""}`}</Badge>}
+                  </div>
+                )}
               </div>
               <span style={{ fontWeight: 800, color: low ? C.bad : C.inkMid }}>{pct == null ? "–" : `${pct}%`}</span>
             </div>
@@ -1783,6 +1840,7 @@ function downloadFile(name, text, type) {
 }
 function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
   const [items, setItems] = useState(null);
+  const [reports, setReports] = useState({});
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -1790,6 +1848,7 @@ function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
     const r = await remote().results(code, ownerKey);
     if (!r.ok) flash(errMsg(r));
     setItems(r.ok && Array.isArray(r.items) ? r.items : []);
+    setReports(r.ok && r.reports ? r.reports : {});
     setBusy(false);
   };
   useEffect(() => {
@@ -1819,7 +1878,7 @@ function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
           <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 12px" }}>
             {items.length}명 응시 · 평균 {avg}점
           </p>
-          {exam && <ItemAnalysis exam={exam} items={items} />}
+          {exam && <ItemAnalysis exam={exam} items={items} reports={reports} />}
           <div style={{ fontSize: 15, fontWeight: 800, margin: "4px 0 6px" }}>응시자</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
             {items.map((r) => (
@@ -2153,7 +2212,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
       onQueue && onQueue(rq.job);
       return;
     }
-    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, textbook, explainLen });
+    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, textbook, explainLen, subject: subject || "" });
     setBusy(false);
     if (!r.ok) {
       setErr(errMsg(r));
@@ -2164,9 +2223,22 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
       setErr("만들어진 문제가 없습니다. 범위를 조금 더 구체적으로 적어 보세요.");
       return;
     }
-    setResult({ title: asStr(r.title), questions: qs, remaining: r.remaining });
+    setResult({ title: asStr(r.title), questions: qs, remaining: r.remaining, quality: r.quality || null, want: count });
     setSel(Object.fromEntries(qs.map((q) => [q.id, true])));
   };
+  /* 검증에서 빠져 모자란 문항만 다시 만들어 뒤에 붙인다 */
+  const more = async () => {
+    const need = result.want - result.questions.length;
+    if (need <= 0) return;
+    setBusy(true); setErr("");
+    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count: need, difficulty, kind, textbook, explainLen, subject: subject || "" });
+    setBusy(false);
+    if (!r.ok) return setErr(errMsg(r));
+    const qs = (r.questions || []).map((q) => normalizeQuestion(q, 0)).filter((q) => q.text && (q.type === "essay" ? true : q.type === "short" ? !!q.answerText : q.options && q.answers.length));
+    setResult((x) => ({ ...x, questions: [...x.questions, ...qs], quality: r.quality || x.quality }));
+    setSel((x) => ({ ...x, ...Object.fromEntries(qs.map((q) => [q.id, true])) }));
+  };
+  const GEN_WHY = { verify: "다른 풀이와 정답 불일치", self_mismatch: "정답 표시 불일치", calc: "계산 불일치", format: "형식 오류", no_material: "자료·지문 없이 자료 언급", hanja: "한자", artifact: "정답 끼워 맞춤" };
   const chosen = result ? result.questions.filter((q) => sel[q.id]) : [];
   const label = (t) => <div style={{ fontSize: 13.5, color: C.sub, margin: "14px 0 6px" }}>{t}</div>;
   const photoUrls = useObjectUrls(photos);
@@ -2237,6 +2309,13 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>
             문제 {result.questions.length}개를 만들었습니다. 추가할 문제를 고르세요. 정답은 초록색으로 표시됩니다.
           </p>
+          {result.quality && (
+            <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: "-4px 0 10px", padding: "8px 12px", background: C.lineSoft, borderRadius: 10 }}>
+              {result.quality.verified === false ? "정답 자동 검증을 하지 못했습니다. 추가하기 전에 정답을 꼭 확인하세요." : `정답 자동 검증 통과 ${result.questions.length}/${result.want}`}
+              {Object.keys(result.quality.dropped || {}).length > 0 && ` · 걸러낸 문항: ${Object.entries(result.quality.dropped).map(([k, n]) => `${GEN_WHY[k] || k} ${n}`).join(", ")}`}
+              {result.questions.length < result.want && <div style={{ marginTop: 6 }}><Btn kind="soft" onClick={more} disabled={busy}>{busy ? "만드는 중…" : `부족한 ${result.want - result.questions.length}문항 다시 만들기`}</Btn></div>}
+            </div>
+          )}
           <div style={{ display: "grid", gap: 8 }}>
             {result.questions.map((q, i) => {
               const on = !!sel[q.id];
@@ -2567,7 +2646,9 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
 }
 
 /* ── 화면: 코드 입력 ─────────────────────────── */
-function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, toast }) {
+function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, toast, user, onOpenCode }) {
+  const server = remote().kind === "server" && !!user;
+  const [d] = useHomeData(server ? user : null, server ? "server" : "local");   // 배정된 시험지(홈과 같은 캐시)
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 8px" }}>코드로 문제 풀기</h2>
@@ -2583,7 +2664,6 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
           onEnter={() => codeInput.length === 5 && !busy && onLoad()}
           placeholder="예: 7F3KM"
           maxLength={5}
-          autoFocus
           ariaLabel="공유 코드"
           style={{ fontSize: 30, fontWeight: 800, letterSpacing: "0.32em", textIndent: "0.32em", textAlign: "center", padding: "16px 12px", textTransform: "uppercase", borderRadius: 14 }}
         />
@@ -2599,6 +2679,7 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
           </Btn>
         </div>
       </Card>
+      {server && <div style={{ marginTop: 18 }}><AssignList d={d} onOpen={onOpenCode} /></div>}
     </Shell>
   );
 }
@@ -2798,6 +2879,16 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
 
 /* ── 화면: 결과 ──────────────────────────────── */
 function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, toast, onMyResults, onStudy, loggedIn, resultId, canNote, onMakeNote, saveState, onResend }) {
+  const [reported, setReported] = useState({});   // 문항 id → 신고함
+  const report = async (qid) => {
+    const pick = window.prompt("어떤 문제가 있나요? 번호를 적어 주세요.\n1 정답이 틀린 것 같아요\n2 문제나 보기에 오류가 있어요\n3 기타", "1");
+    if (pick === null) return;
+    const reason = { 1: "answer", 2: "broken", 3: "other" }[String(pick).trim()] || "other";
+    const r = await remote().itemReport(run.code, qid, reason);
+    if (!r.ok) return flash(errMsg(r));
+    setReported((x) => ({ ...x, [qid]: true }));
+    flash(r.dup ? "이미 신고한 문항입니다." : "신고했습니다. 출제자에게 알림이 갑니다.");
+  };
   const [noteAsked, setNoteAsked] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [explOpen, setExplOpen] = useState({});
@@ -2899,8 +2990,11 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
                 })}
               </div>}
               {!textQ && mine.length === 0 && <p style={{ fontSize: 13.5, color: C.bad, margin: "10px 0 0" }}>답을 고르지 않았습니다.</p>}
-              {q.explain && !isOpen(q.id) && (
-                <div style={{ marginTop: 10 }}><TextBtn onClick={() => setExplOpen({ ...explOpen, [q.id]: true })} style={{ padding: 0, fontSize: 14 }}>해설 보기</TextBtn></div>
+              {(q.explain && !isOpen(q.id) || loggedIn && run.code) && (
+                <div style={{ marginTop: 10, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                  {q.explain && !isOpen(q.id) && <TextBtn onClick={() => setExplOpen({ ...explOpen, [q.id]: true })} style={{ padding: 0, fontSize: 14 }}>해설 보기</TextBtn>}
+                  {loggedIn && run.code && <TextBtn tone="sub" onClick={() => report(q.id)} disabled={!!reported[q.id]} style={{ padding: 0, fontSize: 13 }}>{reported[q.id] ? "신고함" : "문항 신고"}</TextBtn>}
+                </div>
               )}
               {q.explain && isOpen(q.id) && (
                 <div style={{ marginTop: 12, padding: "10px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5, lineHeight: 1.6, color: C.inkMid, whiteSpace: "pre-wrap" }}>
@@ -3154,7 +3248,44 @@ function StudyScreen({ onBack, flash, toast, user }) {
 /* ── 계정: 로그인·역할별 화면 ─────────────────────
    토큰은 이 브라우저에 저장(localStorage). 서버가 역할(admin/teacher/student)을 판정한다. */
 const authGet = () => { try { return JSON.parse(localStorage.getItem(LS_PREFIX + "auth") || "null"); } catch (e) { return null; } };
-const authSet = (a) => { try { a ? localStorage.setItem(LS_PREFIX + "auth", JSON.stringify(a)) : localStorage.removeItem(LS_PREFIX + "auth"); } catch (e) {} };
+const authSet = (a) => { try { a ? localStorage.setItem(LS_PREFIX + "auth", JSON.stringify(a)) : localStorage.removeItem(LS_PREFIX + "auth"); } catch (e) {} idbPut("auth", a && a.token ? { api: syncUrl(), token: a.token } : null); };
+/* 서비스 워커(sw.js)와 같은 IndexedDB "exam-maker" / store "kv" */
+function idbPut(key, val) {
+  try {
+    if (typeof indexedDB === "undefined") return;
+    const req = indexedDB.open("exam-maker", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("kv");
+    req.onsuccess = () => { try { const tx = req.result.transaction("kv", "readwrite"); val == null ? tx.objectStore("kv").delete(key) : tx.objectStore("kv").put(val, key); } catch (e) {} };
+  } catch (e) {}
+}
+/* ── 웹 푸시: 이 기기로 알림 받기 ── */
+const isIOS = () => /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+const isStandalone = () => (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+const b64uToU8 = (s) => { const p = "=".repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
+async function pushState() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") return isIOS() && !isStandalone() ? "ios-home" : "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && (await reg.pushManager.getSubscription()); return sub ? "on" : "off"; } catch (e) { return "off"; }
+}
+async function pushEnable() {
+  const st = await pushState();
+  if (st === "ios-home" || st === "unsupported" || st === "denied") return { ok: false, state: st };
+  const k = await remote().pushKey();
+  if (!k.ok) return { ok: false, msg: errMsg(k) };
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") return { ok: false, state: "denied" };
+  const reg = await navigator.serviceWorker.register("sw.js");
+  await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToU8(k.key) });
+  const a = authGet(); idbPut("auth", a && a.token ? { api: syncUrl(), token: a.token } : null);
+  const r = await remote().pushSubscribe(sub.toJSON());
+  return r.ok ? { ok: true } : { ok: false, msg: errMsg(r) };
+}
+async function pushDisable() {
+  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && (await reg.pushManager.getSubscription()); if (sub) { await remote().pushUnsubscribe(sub.endpoint); await sub.unsubscribe(); } } catch (e) {}
+}
+const PUSH_MSG = { "ios-home": "아이폰·아이패드는 Safari 의 공유 → \"홈 화면에 추가\"로 앱을 깔고, 그 아이콘으로 연 뒤에 알림을 켤 수 있습니다.", unsupported: "이 브라우저는 알림을 지원하지 않습니다. 크롬·엣지·삼성 인터넷이나 홈 화면 앱에서 켜 주세요.", denied: "알림이 차단돼 있습니다. 브라우저 주소창의 자물쇠(사이트 설정)에서 알림을 허용한 뒤 다시 눌러 주세요." };
 const ROLE_KO = { admin: "관리자", teacher: "선생님", student: "학생" };
 /* 계정 권한: 관리자는 전부, 그 외는 서버가 준 perms */
 const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", genPlus: "확장 생성(사진 30장·문제 100개)", adminLite: "제한 관리자(열람)", liteResults: "제한: 결과 수정·삭제", liteAssign: "제한: 배정", liteUsers: "제한: 학생·선생님 계정", liteCopy: "제한: 시험지 복제", liteNotify: "제한: 개인 알림" };
@@ -3225,6 +3356,33 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
   );
 }
 
+function PushCard({ flash }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { pushState().then(setSt); }, []);
+  if (remote().kind !== "server" || st === null) return null;
+  const on = st === "on";
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      if (on) { await pushDisable(); setSt("off"); flash("이 기기의 알림을 껐습니다."); return; }
+      const r = await pushEnable();
+      if (r.ok) { setSt("on"); flash("이 기기로 알림을 받습니다. 배정·마감·결과 알림이 휴대폰·컴퓨터 알림으로 옵니다."); }
+      else { if (r.state) setSt(r.state); flash(r.msg || PUSH_MSG[r.state] || "알림을 켜지 못했습니다."); }
+    } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ background: C.field, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "4px 0 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", fontSize: 14.5, fontWeight: 700 }}>이 기기로 알림 받기</span>
+          <span style={{ display: "block", fontSize: 12.5, color: C.sub, lineHeight: 1.45 }}>{on ? "켜져 있음 · 앱을 닫아도 알림이 옵니다" : PUSH_MSG[st] || "배정·마감·결과 알림을 휴대폰·컴퓨터 알림으로 받습니다"}</span>
+        </span>
+        {st !== "unsupported" && st !== "ios-home" && <Btn kind={on ? "ghost" : "soft"} onClick={toggle} disabled={busy} style={{ width: "auto", padding: "9px 14px", fontSize: 14, flexShrink: 0 }}>{busy ? "…" : on ? "끄기" : "켜기"}</Btn>}
+      </div>
+    </div>
+  );
+}
 function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   const [theme, setTheme] = useState(themeGet);
   const [subj, setSubj] = useState((user.subjects || []).join(", "));
@@ -3331,6 +3489,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
             <Field value={pid} onChange={setPid} placeholder="아이디" ariaLabel="아이디" maxLength={30} style={{ fontSize: 14.5 }} />
             <Btn kind="soft" onClick={saveProfile} disabled={pBusy || !can(user, "rename")} style={{ width: "auto", padding: "10px 14px", fontSize: 14, whiteSpace: "nowrap", flexShrink: 0 }}>저장</Btn>
           </div>
+          <PushCard flash={flash} />
           <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>학습 범위 · 개인 맞춤 지시{can(user, "custom") ? "" : " (권한 없음)"} <span style={{ fontSize: 12 }}>(AI 문제 만들기에 자동으로 반영)</span></div>
           <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
             <Field value={pscope} onChange={setPscope} placeholder="범위 예: 고1 통합과학 2단원, 한국사 1-1" ariaLabel="학습 범위" maxLength={200} style={{ fontSize: 14.5 }} />
@@ -3735,6 +3894,21 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
                 <Tbl by={usage.todayByModel} />
                 <div style={{ fontSize: 14.5, fontWeight: 700, margin: "16px 0 4px" }}>누적 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>{usage.rows}건{usage.first ? ` · ${fmtDate(new Date(usage.first).getTime())}부터` : ""}</span></div>
                 <Tbl by={usage.byModel} />
+                {usage.quality && usage.quality.calls > 0 && (
+                  <>
+                    <div style={{ fontSize: 14.5, fontWeight: 700, margin: "16px 0 4px" }}>Gemini 생성 품질 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>(최근 7일 · {usage.quality.calls}회)</span></div>
+                    <p style={{ fontSize: 14, lineHeight: 1.6, margin: 0 }}>
+                      검증 통과 {usage.quality.passed}/{usage.quality.generated}문항({usage.quality.passRate}%) · 요청 {usage.quality.requested} → 전달 {usage.quality.delivered}
+                      {usage.quality.unverifiedCalls > 0 && ` · 검증 실패 호출 ${usage.quality.unverifiedCalls}회`}
+                    </p>
+                    <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, margin: "2px 0 0" }}>
+                      걸러낸 이유: {Object.entries(usage.quality.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${{ verify: "정답 불일치", self_mismatch: "정답 표시 불일치", calc: "계산 불일치", format: "형식", no_material: "자료 없음", hanja: "한자", artifact: "끼워 맞춤" }[k] || k} ${n}`).join(" · ") || "없음"}
+                    </p>
+                    <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, margin: "2px 0 0" }}>
+                      과목별 통과율: {Object.entries(usage.quality.bySubject || {}).map(([k, v]) => `${k} ${v.generated ? Math.round(v.passed / v.generated * 100) : 0}%`).join(" · ")}
+                    </p>
+                  </>
+                )}
                 {Array.isArray(usage.recent) && usage.recent.length > 0 && (
                   <>
                     <div style={{ fontSize: 14.5, fontWeight: 700, margin: "16px 0 4px" }}>최근 호출 {usage.recent.length}건</div>
@@ -4032,6 +4206,61 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
         </>
       )}
     </Modal>
+  );
+}
+
+/* ── 원격 Claude: 이 사이트(관리자 로그인)에서 보낸 요청을 관리자 PC 의 Claude Code 가 실행(tools/remote_claude.py) ── */
+const RC_ST = { queued: ["대기", "neutral"], running: ["실행 중", "accent"], done: ["완료", "good"], error: ["오류", "bad"] };
+function RemoteClaudeScreen({ onBack, toast, flash }) {
+  const [items, setItems] = useState(null);
+  const [prompt, setPrompt] = useState("");
+  const [cont, setCont] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState({});
+  const load = async () => { const r = await remote().rcList(); if (!r.ok) { flash(errMsg(r)); setItems([]); return; } setItems(r.items || []); };
+  useEffect(() => { load(); }, []);
+  const active = (items || []).some((x) => x.status === "queued" || x.status === "running");
+  useEffect(() => { if (!active) return; const t = setInterval(load, 5000); return () => clearInterval(t); }, [active]);
+  const lastSession = ((items || []).find((x) => x.status === "done" && x.sessionId) || {}).sessionId || "";
+  const send = async () => {
+    const t = prompt.trim(); if (!t) return;
+    setBusy(true);
+    const r = await remote().rcSubmit(t, cont ? lastSession : "");
+    setBusy(false);
+    if (!r.ok) return flash(errMsg(r));
+    setPrompt(""); load();
+  };
+  const stale = (items || []).some((x) => x.status === "queued" && Date.now() - x.createdAt > 60000);
+  return (
+    <Shell back="홈으로" backTo={onBack} toast={toast}>
+      <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 8px" }}>원격 Claude</h2>
+      <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>관리자 PC의 Claude Code에게 일을 시킵니다(작업 폴더 D:\AI_HEO). PC에서 <code>python tools\remote_claude.py</code> 가 켜져 있어야 처리됩니다. 파일 수정·배포까지 할 수 있으니 무엇을 시킬지 신중히 적어 주세요.</p>
+      {stale && <p role="alert" style={{ fontSize: 14, color: C.warn, margin: "0 0 12px" }}>1분 넘게 대기 중인 요청이 있습니다. PC가 꺼져 있거나 다리 프로그램이 멈췄을 수 있습니다.</p>}
+      <Card style={{ marginBottom: 16 }}>
+        <Field value={prompt} onChange={setPrompt} placeholder="예: 시험지 사이트 상태 점검해 줘 / reports 폴더의 최신 리포트 요약해 줘" multiline rows={4} maxLength={4000} ariaLabel="요청" />
+        <div style={{ marginTop: 8 }}><CheckRow on={cont && !!lastSession} onToggle={() => setCont(!cont)} padding="8px 10px"><span style={{ fontSize: 14 }}>이전 대화 이어서{lastSession ? "" : " (이어 갈 대화 없음)"}</span></CheckRow></div>
+        <div style={{ marginTop: 10 }}><Btn onClick={send} disabled={busy || !prompt.trim()}>{busy ? "보내는 중…" : "보내기"}</Btn></div>
+      </Card>
+      {items === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
+      {items && items.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>아직 보낸 요청이 없습니다.</p>}
+      <div style={{ display: "grid", gap: 10 }}>
+        {(items || []).map((x) => {
+          const [lbl, tone] = RC_ST[x.status] || [x.status, "neutral"];
+          const isOpen = open[x.id] !== undefined ? open[x.id] : x === items[0];
+          return (
+            <Card key={x.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <Badge tone={tone}>{lbl}</Badge>
+                <span style={{ fontSize: 12.5, color: C.sub }}>{fmtDateTime(x.createdAt)}{x.sec ? ` · ${x.sec}초` : ""}</span>
+                {(x.result || x.error) && <TextBtn tone="sub" onClick={() => setOpen({ ...open, [x.id]: !isOpen })} style={{ marginLeft: "auto", fontSize: 13 }}>{isOpen ? "접기" : "결과 보기"}</TextBtn>}
+              </div>
+              <div style={{ fontSize: 14.5, fontWeight: 600, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{x.prompt}</div>
+              {isOpen && (x.result || x.error) && <div style={{ marginTop: 10, padding: "10px 12px", background: x.error ? C.badSoft : C.lineSoft, borderRadius: 10, fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 480, overflowY: "auto" }}>{x.result || x.error}</div>}
+            </Card>
+          );
+        })}
+      </div>
+    </Shell>
   );
 }
 
@@ -4701,6 +4930,7 @@ function ExamMaker() {
     return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
 
   if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} user={user} onCopyExam={copyExamIn} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
+  if (screen === "remote") return <>{<RemoteClaudeScreen onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
   if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} exams={exams} onRemakePractice={practiceNow} onRemakeSave={remote().kind === "server" ? remakeSave : null} />}{chrome}</>;
   if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} onWrongBank={remote().kind === "server" ? wrongBank : null} onRemakePractice={remote().kind === "server" ? practiceNow : null} onRemakeSave={remakeSave} />}{chrome}</>;
 
@@ -4739,6 +4969,7 @@ function ExamMaker() {
           setCodeErr("");
           setScreen("code");
         }}
+        onRemote={() => setScreen("remote")}
         onOpenRecent={(code) => {
           setCodeInput(code);
           setCodeErr("");
@@ -4766,6 +4997,7 @@ function ExamMaker() {
           onImport={() => setImportOpen(true)}
           onExportAll={exportAll}
           onBack={goHome}
+          onReload={() => loadServerExams(user)}
         />
         {overlays}
       </>
@@ -4795,7 +5027,7 @@ function ExamMaker() {
     );
 
   if (screen === "code")
-    return <>{<CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} />}{chrome}</>;
+    return <>{<CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} user={user} onOpenCode={(code) => { setCodeInput(code); setCodeErr(""); loadByCode(code); }} />}{chrome}</>;
 
   if (screen === "take" && run)
     return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={() => { if (!run.partial && !run.preview && (Object.keys(picked).length || Object.values(typed || {}).some(Boolean))) flash("푼 답은 이 기기에 저장돼 같은 코드로 다시 열면 이어서 풉니다."); goHome(); }} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} onManualDone={(r) => { flash(`결과를 기록했습니다. ${r.score}/${r.total}`); setScreen("myresults"); }} />}{chrome}</>;
