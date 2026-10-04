@@ -308,8 +308,6 @@ const serverRemote = {
   examTrash: (id) => apiPost({ action: "examTrash", id }),
   examRestore: (id) => apiPost({ action: "examRestore", id }),
   pushKey: () => apiGet({ action: "pushKey" }),
-  rcSubmit: (prompt, sessionId) => apiPost({ action: "rcSubmit", prompt, ...(sessionId ? { sessionId } : {}) }),
-  rcList: () => apiGet({ action: "rcList" }),
   pushSubscribe: (sub) => apiPost({ action: "pushSubscribe", sub }),
   pushUnsubscribe: (endpoint) => apiPost({ action: "pushUnsubscribe", endpoint }),
   assignRemind: (code) => apiPost({ action: "assignRemind", code }),
@@ -404,7 +402,6 @@ const ERR = {
   timeout: "서버 응답이 너무 늦습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.",
   trashed: "휴지통으로 옮겨진 시험지입니다. 출제자에게 문의하세요.",
   push_off: "서버에 알림(푸시) 설정이 아직 없습니다.",
-  rc_busy: "처리를 기다리는 요청이 이미 3개 있습니다. 끝난 뒤 다시 보내 주세요.",
   bad_id_chars: "아이디는 한글·영문·숫자·밑줄(_)만 쓸 수 있습니다(2~30자).",
   weak_pw: "비밀번호는 4자 이상으로 정해 주세요.",
   ip_limit: "이 기기(네트워크)에서는 오늘 더 가입할 수 없습니다. 내일 다시 시도하거나 관리자에게 문의하세요.",
@@ -812,9 +809,9 @@ function shuffleGroups(qs) {
 }
 /* 응시 런타임 만들기: 문제마다 쓰는 보기를 확정하고(문제별 보기 또는 공용 보기),
    셔플이 켜져 있으면 보기·문제 순서를 섞은 뒤 정답 위치를 재계산합니다. */
-const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin", "remote"];
+const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin"];
 const INITIAL_HASH = typeof location !== "undefined" ? location.hash : "";   // 첫 화면 효과가 주소를 #/home 으로 바꾸기 전에 기억
-const RESTORE_SCREENS = ["list", "study", "myresults", "code", "remote"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
+const RESTORE_SCREENS = ["list", "study", "myresults", "code"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
 const TAKE_KEEP_MS = 24 * 3600 * 1000;
 /* 이어 풀기 저장본이 같은 시험지 모양일 때만 되살린다(문항 id·보기 수) */
 const takeSig = (src) => src.questions.map((q) => `${q.id}:${(Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options || []).length}`).join(",");   // 이어 풀기 저장은 하루만 유지
@@ -1316,7 +1313,6 @@ function NavBar({ screen, role, go, onAccount, user, badge }) {
   ];
   if (role !== "student") items.push({ k: "students", t: "내 학생", i: "people", more: true });
   if (role === "admin" || (user && isLite(user))) items.push({ k: "admin", t: "관리자", i: "gear", more: true });
-  if (role === "admin" && remote().kind === "server") items.push({ k: "remote", t: "원격 Claude", i: "play", more: true });
   items.push({ k: "account", t: "계정", i: "user", acct: true });
   return (
     <nav className="em-nav" aria-label="주요 메뉴">
@@ -1581,7 +1577,7 @@ function AssignList({ d, onOpen }) {
 }
 
 /* ── 화면: 홈 ────────────────────────────────── */
-function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount, notes, onOpenNote, onSeenAll, onRemote }) {
+function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecent, onSettings, mode, toast, user, onAdmin, onStudents, onMyResults, onAccount, notes, onOpenNote, onSeenAll }) {
   const role = (user && user.role) || "admin";
   const [d, refreshHome] = useHomeData(user, mode);
   const items = [];
@@ -1594,7 +1590,6 @@ function HomeScreen({ exams, recent, onNew, onList, onCode, onStudy, onOpenRecen
   if (role !== "student") items.push({ t: "내 학생", d: role === "admin" ? "모든 학생의 결과와 분석 리포트를 봅니다." : "담당 학생의 결과와 분석 리포트를 봅니다.", go: onStudents });
   items.push({ t: "오답노트", d: "푼 시험지 사진을 올리면 정답·해설·오답노트를 만들어 줍니다.", go: onStudy });
   if (role === "admin" || (server && isLite(user))) items.push({ t: "관리자", d: role === "admin" ? "계정·권한 관리, 전체 기록·시험지 열람, 알림 보내기." : "계정·기록·시험지 열람(제한 관리자).", go: onAdmin });
-  if (role === "admin" && server && onRemote) items.push({ t: "원격 Claude", d: "관리자 PC의 Claude Code에게 일을 시키고 결과를 봅니다.", go: onRemote });
   const scrollAssign = () => { const el = [...document.querySelectorAll(".em-assign")].find((x) => x.offsetParent !== null); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
   const assignEl = server ? <AssignList d={d} onOpen={onOpenRecent} /> : null;
   const recentEl = recent.length > 0 ? (
@@ -4209,61 +4204,6 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
   );
 }
 
-/* ── 원격 Claude: 이 사이트(관리자 로그인)에서 보낸 요청을 관리자 PC 의 Claude Code 가 실행(tools/remote_claude.py) ── */
-const RC_ST = { queued: ["대기", "neutral"], running: ["실행 중", "accent"], done: ["완료", "good"], error: ["오류", "bad"] };
-function RemoteClaudeScreen({ onBack, toast, flash }) {
-  const [items, setItems] = useState(null);
-  const [prompt, setPrompt] = useState("");
-  const [cont, setCont] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState({});
-  const load = async () => { const r = await remote().rcList(); if (!r.ok) { flash(errMsg(r)); setItems([]); return; } setItems(r.items || []); };
-  useEffect(() => { load(); }, []);
-  const active = (items || []).some((x) => x.status === "queued" || x.status === "running");
-  useEffect(() => { if (!active) return; const t = setInterval(load, 5000); return () => clearInterval(t); }, [active]);
-  const lastSession = ((items || []).find((x) => x.status === "done" && x.sessionId) || {}).sessionId || "";
-  const send = async () => {
-    const t = prompt.trim(); if (!t) return;
-    setBusy(true);
-    const r = await remote().rcSubmit(t, cont ? lastSession : "");
-    setBusy(false);
-    if (!r.ok) return flash(errMsg(r));
-    setPrompt(""); load();
-  };
-  const stale = (items || []).some((x) => x.status === "queued" && Date.now() - x.createdAt > 60000);
-  return (
-    <Shell back="홈으로" backTo={onBack} toast={toast}>
-      <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 8px" }}>원격 Claude</h2>
-      <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>관리자 PC의 Claude Code에게 일을 시킵니다(작업 폴더 D:\AI_HEO). PC에서 <code>python tools\remote_claude.py</code> 가 켜져 있어야 처리됩니다. 파일 수정·배포까지 할 수 있으니 무엇을 시킬지 신중히 적어 주세요.</p>
-      {stale && <p role="alert" style={{ fontSize: 14, color: C.warn, margin: "0 0 12px" }}>1분 넘게 대기 중인 요청이 있습니다. PC가 꺼져 있거나 다리 프로그램이 멈췄을 수 있습니다.</p>}
-      <Card style={{ marginBottom: 16 }}>
-        <Field value={prompt} onChange={setPrompt} placeholder="예: 시험지 사이트 상태 점검해 줘 / reports 폴더의 최신 리포트 요약해 줘" multiline rows={4} maxLength={4000} ariaLabel="요청" />
-        <div style={{ marginTop: 8 }}><CheckRow on={cont && !!lastSession} onToggle={() => setCont(!cont)} padding="8px 10px"><span style={{ fontSize: 14 }}>이전 대화 이어서{lastSession ? "" : " (이어 갈 대화 없음)"}</span></CheckRow></div>
-        <div style={{ marginTop: 10 }}><Btn onClick={send} disabled={busy || !prompt.trim()}>{busy ? "보내는 중…" : "보내기"}</Btn></div>
-      </Card>
-      {items === null && <p style={{ color: C.sub }}>불러오는 중…</p>}
-      {items && items.length === 0 && <p style={{ color: C.sub, fontSize: 14.5 }}>아직 보낸 요청이 없습니다.</p>}
-      <div style={{ display: "grid", gap: 10 }}>
-        {(items || []).map((x) => {
-          const [lbl, tone] = RC_ST[x.status] || [x.status, "neutral"];
-          const isOpen = open[x.id] !== undefined ? open[x.id] : x === items[0];
-          return (
-            <Card key={x.id} style={{ padding: 14 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <Badge tone={tone}>{lbl}</Badge>
-                <span style={{ fontSize: 12.5, color: C.sub }}>{fmtDateTime(x.createdAt)}{x.sec ? ` · ${x.sec}초` : ""}</span>
-                {(x.result || x.error) && <TextBtn tone="sub" onClick={() => setOpen({ ...open, [x.id]: !isOpen })} style={{ marginLeft: "auto", fontSize: 13 }}>{isOpen ? "접기" : "결과 보기"}</TextBtn>}
-              </div>
-              <div style={{ fontSize: 14.5, fontWeight: 600, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{x.prompt}</div>
-              {isOpen && (x.result || x.error) && <div style={{ marginTop: 10, padding: "10px 12px", background: x.error ? C.badSoft : C.lineSoft, borderRadius: 10, fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 480, overflowY: "auto" }}>{x.result || x.error}</div>}
-            </Card>
-          );
-        })}
-      </div>
-    </Shell>
-  );
-}
-
 function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, onRemakeSave }) {
   const [remakeOpen, setRemakeOpen] = useState(false);
   const [students, setStudents] = useState(null);
@@ -4930,7 +4870,6 @@ function ExamMaker() {
     return <LoginScreen needSetup={needSetup} onDone={afterLogin} toast={toast} flash={flash} />;
 
   if (screen === "admin") return <>{<AdminScreen onBack={goHome} toast={toast} flash={flash} lite={!!user && user.role !== "admin"} user={user} onCopyExam={copyExamIn} onOpenExam={(e) => openEditor(JSON.parse(JSON.stringify(normalizeExam(e))), false)} />}{chrome}</>;
-  if (screen === "remote") return <>{<RemoteClaudeScreen onBack={goHome} toast={toast} flash={flash} />}{chrome}</>;
   if (screen === "students") return <>{<StudentsScreen user={user} onBack={goHome} toast={toast} flash={flash} exams={exams} onRemakePractice={practiceNow} onRemakeSave={remote().kind === "server" ? remakeSave : null} />}{chrome}</>;
   if (screen === "myresults") return <>{<MyResultsScreen user={user} onBack={goHome} toast={toast} flash={flash} onPractice={practiceExam} onMakeNote={canNote() ? makeNote : null} onWrongBank={remote().kind === "server" ? wrongBank : null} onRemakePractice={remote().kind === "server" ? practiceNow : null} onRemakeSave={remakeSave} />}{chrome}</>;
 
@@ -4969,7 +4908,6 @@ function ExamMaker() {
           setCodeErr("");
           setScreen("code");
         }}
-        onRemote={() => setScreen("remote")}
         onOpenRecent={(code) => {
           setCodeInput(code);
           setCodeErr("");
