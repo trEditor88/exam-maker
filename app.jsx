@@ -415,7 +415,7 @@ const ERR = {
   job_started: "이미 처리가 시작된 작업이라 취소할 수 없습니다.",
   bad_scope: "범위를 적어 주세요.",
   no_photo: "사진을 한 장 이상 골라 주세요.",
-  too_many: "사진은 20장까지입니다.",
+  too_many: "사진 수 한도를 넘었습니다(기본 10장, 확장 생성 권한은 30장).",
   no_detail: "문항별 기록이 없는 결과라 오답노트를 만들 수 없습니다.",
   no_wrong: "틀린 문제가 없어 오답노트를 만들 필요가 없습니다.",
   job_dup: "이 결과의 오답노트는 이미 요청했습니다. 완료되면 알림이 뜹니다.",
@@ -2020,6 +2020,8 @@ function openHtmlWindow(html, flash) {
 
 /* ── AI 문제 생성 모달 ───────────────────────── */
 function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, manual }) {
+  const me = (authGet() || {}).user;
+  const lim = genLimitsOf(me);   // 기본 사진 10장·문제 50개, 확장 생성 권한이면 30장·100개
   const server = remote().kind === "server";
   const [mode, setModeRaw] = useState(genAvail ? "fast" : "pro");   // fast = Gemini 즉시, pro = Claude 워커(고급)
   const modeTouched = useRef(false);
@@ -2107,8 +2109,8 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           <Field multiline rows={2} value={scope} onChange={setScope} placeholder={mode === "pro" ? "범위 또는 시험지 제목 (사진을 올리면 비워도 됩니다)" : "범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)"} maxLength={500} autoFocus />
           {mode === "pro" && server && (
             <>
-              {label("사진으로 만들기 (선택, 최대 20장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다")}
-              <input type="file" accept="image/*" multiple onChange={(e) => { setPhotos([...photos, ...Array.from(e.target.files || [])].slice(0, 20)); e.target.value = ""; }} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
+              {label(`사진으로 만들기 (선택, 최대 ${lim.photos}장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다`)}
+              <input type="file" accept="image/*" multiple onChange={(e) => { const all = [...photos, ...Array.from(e.target.files || [])]; setErr(all.length > lim.photos ? `사진은 ${lim.photos}장까지 넣을 수 있어 앞의 ${lim.photos}장만 넣었습니다.` : ""); setPhotos(all.slice(0, lim.photos)); e.target.value = ""; }} style={{ fontFamily: FONT, fontSize: 14 }} aria-label="사진 선택" />
               {photos.length > 0 && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                   {photos.map((f, i) => (
@@ -2124,7 +2126,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
           {label("문제 수")}
           <Seg value={custom ? "custom" : count} onChange={(v) => { if (v === "custom") { setCustom(true); setCountStr(String(count)); } else { setCustom(false); setCount(v); } }} items={[[10, "10개"], [25, "25개"], ["custom", "직접 입력"]]} />
-          {custom && <input type="number" min="1" max="40" value={countStr} onChange={(e) => { setCountStr(e.target.value); const n = parseInt(e.target.value, 10); if (n >= 1 && n <= 40) setCount(n); }} onBlur={() => setCountStr(String(count))} className="em-in" aria-label="문제 수" style={{ marginTop: 8, width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 15, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px" }} />}
+          {custom && <input type="number" min="1" max={lim.count} placeholder={`1~${lim.count}`} value={countStr} onChange={(e) => { setCountStr(e.target.value); const n = parseInt(e.target.value, 10); if (n >= 1 && n <= lim.count) setCount(n); }} onBlur={() => setCountStr(String(count))} className="em-in" aria-label="문제 수" style={{ marginTop: 8, width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 15, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px" }} />}
           {label("난이도 (인쇄 색: 기초 초록 · 기본 파랑 · 발전 노랑 · 심화 빨강)")}
           <Seg value={difficulty} onChange={setDifficulty} items={[["기초", "기초"], ["기본", "기본"], ["발전", "발전"], ["심화", "심화"]]} />
           {label("유형")}
@@ -3076,13 +3078,15 @@ const authGet = () => { try { return JSON.parse(localStorage.getItem(LS_PREFIX +
 const authSet = (a) => { try { a ? localStorage.setItem(LS_PREFIX + "auth", JSON.stringify(a)) : localStorage.removeItem(LS_PREFIX + "auth"); } catch (e) {} };
 const ROLE_KO = { admin: "관리자", teacher: "선생님", student: "학생" };
 /* 계정 권한: 관리자는 전부, 그 외는 서버가 준 perms */
-const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", adminLite: "제한 관리자(열람)", liteResults: "제한: 결과 수정·삭제", liteAssign: "제한: 배정", liteUsers: "제한: 학생·선생님 계정", liteCopy: "제한: 시험지 복제", liteNotify: "제한: 개인 알림" };
+const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", genPlus: "확장 생성(사진 30장·문제 100개)", adminLite: "제한 관리자(열람)", liteResults: "제한: 결과 수정·삭제", liteAssign: "제한: 배정", liteUsers: "제한: 학생·선생님 계정", liteCopy: "제한: 시험지 복제", liteNotify: "제한: 개인 알림" };
 /* 제한 관리자 세부 권한: adminLite 가 켜져 있을 때만 의미 있음(관리자는 전부) */
 const LITE_KEYS = ["liteResults", "liteAssign", "liteUsers", "liteCopy", "liteNotify"];
 const PERM_KEYS = Object.keys(PERM_KO);
 const BASE_KEYS = PERM_KEYS.filter((k) => !LITE_KEYS.includes(k));   // 잠김 개수 셀 때 쓰는 일반 기능 권한
 const can = (u, k) => !!u && (u.role === "admin" || !!((u.perms || {})[k]));
 const isLite = (u) => !!u && (u.role === "admin" || !!((u.perms || {}).adminLite));
+/* 출제 한도(서버 genLimits 와 같은 규칙) */
+const genLimitsOf = (u) => (u && (u.role === "admin" || (u.perms || {}).genPlus) ? { count: 100, photos: 30 } : { count: 50, photos: 10 });
 const isLiteCan = (u, k) => !!u && (u.role === "admin" || (!!((u.perms || {}).adminLite) && !!((u.perms || {})[k])));
 function PermPicker({ value, onChange, hideLite }) {
   const v = value || {};
@@ -3098,7 +3102,7 @@ function PermPicker({ value, onChange, hideLite }) {
     </div>
   );
 }
-const PERMS_ALL = { custom: true, gen: true, solve: true, share: true, rename: true, adminLite: false, liteResults: false, liteAssign: false, liteUsers: false, liteCopy: false, liteNotify: false };
+const PERMS_ALL = { custom: true, gen: true, solve: true, share: true, rename: true, genPlus: false, adminLite: false, liteResults: false, liteAssign: false, liteUsers: false, liteCopy: false, liteNotify: false };
 
 function LoginScreen({ needSetup, onDone, toast, flash }) {
   const [mode, setMode] = useState("login");   // login | signup
@@ -3568,7 +3572,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
               style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer", fontFamily: FONT, opacity: u.active ? 1 : 0.55 }}>
               <span style={{ fontWeight: 700, color: C.ink }}>{u.name}</span>
               <Badge tone={u.role === "admin" ? "accent" : u.role === "teacher" ? "good" : "neutral"}>{ROLE_KO[u.role]}</Badge>
-              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && BASE_KEYS.some((k) => k !== "adminLite" && !u.perms[k]) ? ` · 잠김 ${BASE_KEYS.filter((k) => k !== "adminLite" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
+              <span style={{ color: C.sub, fontSize: 13.5 }}>{u.id}{u.role === "student" && u.teacherId ? ` · 담당 ${teacherName(u.teacherId)}` : ""}{u.shOn && u.role !== "admin" ? " · 오답노트" : ""}{u.repOn && u.role !== "admin" ? " · 리포트" : ""}{u.active ? "" : " · 정지"}{u.role !== "admin" && u.perms && BASE_KEYS.some((k) => k !== "adminLite" && k !== "genPlus" && !u.perms[k]) ? ` · 잠김 ${BASE_KEYS.filter((k) => k !== "adminLite" && k !== "genPlus" && !u.perms[k]).length}` : ""}{u.perms && u.perms.adminLite && u.role !== "admin" ? " · 제한 관리자" : ""}</span>
             </button>
           ))}
         </>
