@@ -2307,6 +2307,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           {result.quality && (
             <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: "-4px 0 10px", padding: "8px 12px", background: C.lineSoft, borderRadius: 10 }}>
               {result.quality.verified === false ? "정답 자동 검증을 하지 못했습니다. 추가하기 전에 정답을 꼭 확인하세요." : `정답 자동 검증 통과 ${result.questions.length}/${result.want}`}
+              {result.quality.verified !== false && result.quality.verifyLevel === "weak" && <b style={{ color: C.warn }}> · 약한 검증(상위 검증 모델 한도 초과) — 정답을 꼭 확인하세요</b>}
               {Object.keys(result.quality.dropped || {}).length > 0 && ` · 걸러낸 문항: ${Object.entries(result.quality.dropped).map(([k, n]) => `${GEN_WHY[k] || k} ${n}`).join(", ")}`}
               {result.questions.length < result.want && <div style={{ marginTop: 6 }}><Btn kind="soft" onClick={more} disabled={busy}>{busy ? "만드는 중…" : `부족한 ${result.want - result.questions.length}문항 다시 만들기`}</Btn></div>}
             </div>
