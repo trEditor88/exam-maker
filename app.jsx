@@ -58,6 +58,7 @@ function pickTextbook(tbs, text, grade) {
   const t = norm(text); if (!t || !tbs.length) return -1;
   let best = -1, bestScore = 0;
   tbs.forEach((tb, i) => {
+    if (grade && tb.grade && tb.grade !== grade) return;   // 다른 학년 과목은 고르지 않는다
     const base = norm(tb.subject).replace(/\d+$/, ""); if (!base) return;
     let sc = 0;
     if (t.startsWith(norm(tb.subject))) sc = 3; else if (t.includes(base) || base.includes(t)) sc = 2;
@@ -149,6 +150,10 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
   .em-home{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:28px;align-items:start;}
 }
 @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
+.m-rt{white-space:nowrap;} .m-rad{border-top:1.5px solid currentColor;padding:0 2px 0 1px;margin-left:1px;}
+.m-frac{display:inline-flex;flex-direction:column;vertical-align:middle;text-align:center;font-size:.88em;line-height:1.15;margin:0 2px;}
+.m-frac>span:first-child{border-bottom:1.5px solid currentColor;padding:0 3px 1px;} .m-frac>span:last-child{padding:1px 3px 0;}
+.m-txt sup,.m-txt sub{font-size:.72em;line-height:0;}
 `;
 (function installTheme() {
   const st = document.createElement("style"); st.textContent = UI_CSS; document.head.appendChild(st);
@@ -560,12 +565,76 @@ function sanitizeSvg(v) {
   walk(root);
   try { return new XMLSerializer().serializeToString(root); } catch (e) { return ""; }
 }
+/* ── 수식 표시: 글자 표기(x^2, √(x+1), (a+b)/(c+d), x_1, <=)를 손글씨처럼(위첨자·근호 막대·세로 분수) 바꾼 HTML.
+   먼저 글자를 이스케이프해 만들므로 dangerouslySetInnerHTML 에 써도 안전하다. 수식 기호가 없으면 그대로 */
+const MATH_HINT = /[√^_\/<>!=*]|sqrt\(/;
+const escHtml = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function mathHtml(raw) {
+  const t = String(raw == null ? "" : raw);
+  if (!MATH_HINT.test(t)) return escHtml(t);
+  const close = (i, open, shut) => { let d = 0; for (let j = i; j < t.length; j++) { if (t[j] === open) d++; else if (t[j] === shut && --d === 0) return j; } return -1; };
+  const tokenAt = (i) => { const m = /^-?[0-9A-Za-z.]+/.exec(t.slice(i)); return m ? m[0] : ""; };
+  const isWord = (c) => !!c && /[0-9A-Za-z가-힣]/.test(c);
+  const frac = (a, b) => `<span class="m-frac"><span>${a}</span><span>${b}</span></span>`;
+  let out = "", i = 0;
+  while (i < t.length) {
+    const c = t[i];
+    // 근호: √( … ) / sqrt( … ) / √토큰
+    if (c === "√" || t.startsWith("sqrt(", i)) {
+      const st = c === "√" ? i + 1 : i + 4;
+      if (t[st] === "(") { const e = close(st, "(", ")"); if (e > 0) { out += `<span class="m-rt">√<span class="m-rad">${mathHtml(t.slice(st + 1, e))}</span></span>`; i = e + 1; continue; } }
+      const tk = c === "√" ? /^[0-9A-Za-z.]+/.exec(t.slice(st)) : null;
+      if (tk) { out += `<span class="m-rt">√<span class="m-rad">${escHtml(tk[0])}</span></span>`; i = st + tk[0].length; continue; }
+      out += escHtml(c); i++; continue;
+    }
+    // 괄호 분수: (A)/(B)
+    if (c === "(") {
+      const e = close(i, "(", ")");
+      if (e > 0 && t[e + 1] === "/" && t[e + 2] === "(") { const e2 = close(e + 2, "(", ")"); if (e2 > 0) { out += frac(mathHtml(t.slice(i + 1, e)), mathHtml(t.slice(e + 3, e2))); i = e2 + 1; continue; } }
+      if (e > 0 && t[e + 1] === "/") { const m = /^[0-9A-Za-z]{1,4}(?![0-9A-Za-z가-힣\/])/.exec(t.slice(e + 2)); if (m) { out += frac(mathHtml(t.slice(i + 1, e)), escHtml(m[0])); i = e + 2 + m[0].length; continue; } }
+    }
+    // 짧은 토큰 분수: 1/2, a/b (앞뒤가 글자에 붙어 있지 않을 때, 각 4자 이하)
+    if (/[0-9A-Za-z]/.test(c) && !isWord(t[i - 1]) && t[i - 1] !== "/" && t[i - 1] !== ".") {
+      const m = /^([0-9A-Za-z]{1,4})\/([0-9A-Za-z]{1,4})(?![0-9A-Za-z가-힣\/])/.exec(t.slice(i));
+      if (m) { out += frac(escHtml(m[1]), escHtml(m[2])); i += m[0].length; continue; }
+      const m2 = /^([0-9A-Za-z]{1,4})\/\(/.exec(t.slice(i));
+      if (m2) { const st = i + m2[0].length - 1, e2 = close(st, "(", ")"); if (e2 > 0) { out += frac(escHtml(m2[1]), mathHtml(t.slice(st + 1, e2))); i = e2 + 1; continue; } }
+    }
+    // 위첨자·아래첨자: x^2, x^(n+1), x^{2}, x_1, a_(n+1)
+    if ((c === "^" || (c === "_" && /[A-Za-z)]/.test(t[i - 1] || ""))) && i > 0) {
+      const tag = c === "^" ? "sup" : "sub", n1 = t[i + 1];
+      if (n1 === "(" || n1 === "{") { const e = close(i + 1, n1, n1 === "(" ? ")" : "}"); if (e > 0) { out += `<${tag}>${mathHtml(t.slice(i + 2, e))}</${tag}>`; i = e + 1; continue; } }
+      const tk = tokenAt(i + 1);
+      if (tk) { out += `<${tag}>${escHtml(tk)}</${tag}>`; i += 1 + tk.length; continue; }
+    }
+    // 부등호·기호
+    const two = t.slice(i, i + 2);
+    if (two === "<=") { out += "≤"; i += 2; continue; }
+    if (two === ">=") { out += "≥"; i += 2; continue; }
+    if (two === "!=") { out += "≠"; i += 2; continue; }
+    if (two === "+-") { out += "±"; i += 2; continue; }
+    if (c === "*" && /[0-9A-Za-z)\s]/.test(t[i - 1] || "") && /[0-9A-Za-z(\s]/.test(t[i + 1] || "")) { out += "×"; i++; continue; }
+    out += escHtml(c); i++;
+  }
+  return out;
+}
+/* 수식이 들어간 글을 손글씨처럼 보여 주는 span (부모의 pre-wrap 줄바꿈은 그대로) */
+function M({ t }) {
+  const html = useMemo(() => mathHtml(t), [t]);
+  return <span className="m-txt" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+/* 원본 문제 번호 알약(문제 오른쪽 위) */
+function SrcPill({ src }) {
+  if (!src) return null;
+  return <span title="원본 문제 번호" style={{ marginLeft: "auto", flex: "0 0 auto", fontSize: 12.5, fontWeight: 700, color: C.inkMid, background: C.lineSoft, border: `1px solid ${C.line}`, borderRadius: 999, padding: "3px 10px", whiteSpace: "nowrap" }}>원본 {src}</span>;
+}
+
 function PassageBox({ text }) {
   if (!text) return null;
   return (
     <div style={{ border: `1px solid ${C.line}`, background: C.card, borderRadius: 14, padding: "12px 14px", margin: "4px 0 10px" }}>
       <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", color: C.sub, marginBottom: 4 }}>지문</div>
-      <div style={{ fontSize: 15, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{text}</div>
+      <div style={{ fontSize: 15, lineHeight: 1.7, whiteSpace: "pre-wrap" }}><M t={text} /></div>
     </div>
   );
 }
@@ -607,9 +676,16 @@ function normalizeQuestion(q, nOpt) {
     passage: asStr(src.passage).slice(0, 4000),                  // 세트형 지문(같은 지문을 이어지는 문항에 두면 한 번만 표시)
     answerText: asStr(src.answerText),                          // 주관식 정답(| 로 여러 개) / 서술형 모범 답안
     tags: Array.isArray(src.tags) ? src.tags.map(asStr).map((t) => t.trim()).filter(Boolean).slice(0, 8) : [],
+    src: asStr(src.src).slice(0, 20),                            // 원본 문제 번호(변형 문제). 문제 글에 넣지 않고 오른쪽 위 알약으로 표시
   };
 }
 
+/* 옛 "[변형]" 시험지는 문제 글 앞에 원본 번호("08 ", "01 (2) ")가 붙어 있었다 → src 로 옮긴다 */
+function legacySrc(q, title) {
+  if (q.src || !/^\[변형\]/.test(title || "")) return q;
+  const m = /^(\d{2,3}(?:\s*\(\d{1,2}\))?)\s+(?=\S)/.exec(q.text);
+  return m ? { ...q, src: m[1].replace(/\s+/g, " "), text: q.text.slice(m[0].length) } : q;
+}
 function normalizeExam(x) {
   const src = x && typeof x === "object" ? x : {};
   const options = Array.isArray(src.options) ? src.options.map(asStr) : [];
@@ -620,7 +696,7 @@ function normalizeExam(x) {
     title: asStr(src.title),
     desc: asStr(src.desc),
     options,
-    questions: questionsRaw.map((q) => normalizeQuestion(q, options.length)),
+    questions: questionsRaw.map((q) => legacySrc(normalizeQuestion(q, options.length), asStr(src.title))),
     shuffle: !!src.shuffle,
     subject: asStr(src.subject),
     level: LEVELS.indexOf(src.level) >= 0 ? src.level : "기본",
@@ -653,6 +729,7 @@ function payloadOf(exam) {
       ...(q.type && q.type !== "mc" ? { type: q.type, answerText: q.answerText || "" } : {}),
       ...(q.svg ? { svg: q.svg } : {}),
       ...(q.passage ? { passage: q.passage } : {}),
+      ...(q.src ? { src: q.src } : {}),
     })),
     shuffle: !!exam.shuffle,
     /* 아래는 값이 있을 때만 넣어 기존 공유본의 해시가 바뀌지 않게 한다 */
@@ -675,7 +752,7 @@ function parsePayload(raw) {
   if (!data || typeof data !== "object") return null;
   const options = Array.isArray(data.options) ? data.options.map(asStr) : [];
   if (options.length < 2) return null;
-  const questions = Array.isArray(data.questions) ? data.questions.map((q) => normalizeQuestion(q, options.length)) : [];
+  const questions = Array.isArray(data.questions) ? data.questions.map((q) => legacySrc(normalizeQuestion(q, options.length), asStr(data.title))) : [];
   if (!questions.length) return null;
   return {
     title: asStr(data.title) || "제목 없음",
@@ -1853,7 +1930,7 @@ function SettingsModal({ onClose, flash }) {
 function printableItems(src) {
   const shared = src.options || [];
   const strip = (t) => String(t || "").replace(/\s*[\(（]\s*정답\s*\d+\s*개\s*[\)）]\s*$/, "");   // 본문 끝의 "(정답 N개)"는 지우고 양식이 한 번만 붙인다
-  return (src.questions || []).map((q, i, arr) => ({ no: i + 1, type: q.type || "mc", answerText: q.answerText || "", svg: sanitizeSvg(q.svg), passage: q.passage && (i === 0 || (arr[i - 1].passage || "") !== q.passage) ? q.passage : "", text: strip(q.text), options: (q.type && q.type !== "mc") ? [] : (Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared), answers: q.answers || [], explain: q.explain || "" }));
+  return (src.questions || []).map((q, i, arr) => ({ no: i + 1, type: q.type || "mc", answerText: q.answerText || "", svg: sanitizeSvg(q.svg), passage: q.passage && (i === 0 || (arr[i - 1].passage || "") !== q.passage) ? q.passage : "", text: strip(q.text), options: (q.type && q.type !== "mc") ? [] : (Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared), answers: q.answers || [], explain: q.explain || "", src: q.src || "" }));
 }
 function quizKindLabel(items) {
   const mc = items.filter((q) => q.type === "mc");
@@ -1879,9 +1956,9 @@ function buildPrintHtml(src, opts) {
   if (opts.nameLine) first += `<div class="name">이름 <span class="blank"></span> 날짜 <span class="blank"></span> 점수 <span class="blank sm"></span> / ${items.length}</div>`;
   if (desc) first += `<div class="sec">안내 · 개념 정리</div><div class="box"><div class="boxh">읽고 시작하기</div><p>${esc(desc)}</p></div>`;
   first += `<div class="pill">확인 문제</div>`;
-  const optHtml = (o) => `<div class="opts ${o.every((x) => String(x).length <= 14) ? "two" : "one"}">${o.map((x, i) => `<div class="o"><span class="m">${mark(i)}</span><span>${esc(x)}</span></div>`).join("")}</div>`;
+  const optHtml = (o) => `<div class="opts ${o.every((x) => String(x).length <= 14) ? "two" : "one"}">${o.map((x, i) => `<div class="o"><span class="m">${mark(i)}</span><span>${mathHtml(x)}</span></div>`).join("")}</div>`;
   const bodyHtml = (q) => q.type === "short" ? `<div class="short">답: <span class="line"></span></div>` : q.type === "essay" ? `<div class="essay"><i></i><i></i><i></i><i></i><i></i></div>` : optHtml(q.options) + `<div class="space"></div>`;
-  const qHtml = (q) => `<div class="q">${q.passage ? `<div class="pas">${esc(q.passage)}</div>` : ""}<div class="qh"><span class="qn">Q${q.no}.</span><span class="qt">${esc(q.text)}${q.type === "short" ? ` <span class="sub">(주관식)</span>` : q.type === "essay" ? ` <span class="sub">(서술형)</span>` : q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</span></div>${q.svg ? `<div class="fig">${q.svg}</div>` : ""}${bodyHtml(q)}</div>`;
+  const qHtml = (q) => `<div class="q">${q.passage ? `<div class="pas">${mathHtml(q.passage)}</div>` : ""}<div class="qh"><span class="qn">Q${q.no}.</span><span class="qt">${mathHtml(q.text)}${q.type === "short" ? ` <span class="sub">(주관식)</span>` : q.type === "essay" ? ` <span class="sub">(서술형)</span>` : q.answers.length > 1 ? ` <span class="sub">(정답 ${q.answers.length}개)</span>` : ""}</span>${q.src ? `<span class="srcp">원본 ${esc(q.src)}</span>` : ""}</div>${q.svg ? `<div class="fig">${q.svg}</div>` : ""}${bodyHtml(q)}</div>`;
   let tbl = "";
   for (let i = 0; i < items.length; i += 10) {
     const ch = items.slice(i, i + 10);
@@ -1908,7 +1985,8 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 .pill{display:inline-block;border:1.5px solid var(--ac);color:var(--ac);font-weight:800;font-size:10.5pt;border-radius:999px;padding:1.2mm 6mm;margin:0 0 4mm}
 .cols{display:flex;gap:7mm;align-items:flex-start} .col{flex:1 1 0;min-width:0}
 .q{border-top:1px dashed var(--line);padding-top:3mm;margin-top:4mm} .col .q:first-child{border-top:none;padding-top:0;margin-top:0}
-.qh{display:flex;gap:2.5mm;margin:0 0 2.5mm} .qn{font-weight:800;font-size:12pt;white-space:nowrap} .qt{font-weight:700;white-space:pre-wrap} .sub{color:var(--sub);font-weight:400;font-size:9.5pt}
+.qh{display:flex;gap:2.5mm;margin:0 0 2.5mm;align-items:flex-start} .srcp{margin-left:auto;flex:0 0 auto;font-size:8.5pt;font-weight:700;color:var(--sub);border:0.3mm solid var(--line);border-radius:99px;padding:0.4mm 2.4mm;white-space:nowrap}
+.m-rt{white-space:nowrap} .m-rad{border-top:0.3mm solid currentColor;padding:0 0.4mm} .m-frac{display:inline-flex;flex-direction:column;vertical-align:middle;text-align:center;font-size:.88em;line-height:1.1;margin:0 0.5mm} .m-frac>span:first-child{border-bottom:0.3mm solid currentColor;padding:0 0.8mm} sup,sub{font-size:.72em;line-height:0} .qn{font-weight:800;font-size:12pt;white-space:nowrap} .qt{font-weight:700;white-space:pre-wrap} .sub{color:var(--sub);font-weight:400;font-size:9.5pt}
 .opts{display:grid;gap:1.2mm 4mm;margin:0 0 3mm 1mm} .opts.two{grid-template-columns:1fr 1fr} .opts.one{grid-template-columns:1fr} .o{display:flex;gap:1.5mm} .m{color:var(--ac);font-weight:700}
 .space{height:14mm}
 .pas{border:1px solid var(--line);border-radius:6px;padding:2.5mm 3mm;margin:0 0 3mm;font-size:10pt;line-height:1.5;white-space:pre-wrap;background:#FAFAFA}
@@ -2141,7 +2219,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
               ) : (
                 <select value={tbSel} onChange={(e) => setTbSel(e.target.value)} className="em-in" aria-label="교과서" style={{ width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 14.5, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px" }}>
                   <option value="auto">{sugIdx >= 0 ? `자동 · ${tbLabel(tbs[sugIdx])}` : "자동 (과목을 적으면 고릅니다)"}</option>
-                  {tbs.map((t, i) => <option key={i} value={String(i)}>{t.grade ? `${t.grade}학년 · ` : ""}{tbLabel(t)}</option>)}
+                  {tbs.map((t, i) => (!t.grade || !sc.grade || t.grade === sc.grade) && <option key={i} value={String(i)}>{tbLabel(t)}</option>)}
                   <option value="none">교과서 지정 안 함</option>
                 </select>
               )}
@@ -2360,7 +2438,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
         {draft.questions.map((q, qi) => (
           <Card key={q.id} style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span><SrcPill src={q.src} /></span>
               <div style={{ display: "flex", gap: 0 }}>
                 <TextBtn tone="sub" ariaLabel="위로" onClick={() => moveQ(qi, -1)} disabled={qi === 0} style={{ fontSize: 15 }}>▲</TextBtn>
                 <TextBtn tone="sub" ariaLabel="아래로" onClick={() => moveQ(qi, 1)} disabled={qi === draft.questions.length - 1} style={{ fontSize: 15 }}>▼</TextBtn>
@@ -2673,8 +2751,8 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
             <React.Fragment key={q.id}>
             {q.passage && (!prev || prev.passage !== q.passage) && <PassageBox text={q.passage} />}
             <Card style={{ padding: 16 }}>
-              <div style={{ fontSize: 14.5, fontWeight: 700, color: C.accent, marginBottom: 8 }}>{qi + 1}번</div>
-              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}{q.type && q.type !== "mc" && <span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}> · {QTYPE_KO[q.type]}</span>}</p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span><SrcPill src={q.src} /></div>
+              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}><M t={q.text} />{q.type && q.type !== "mc" && <span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}> · {QTYPE_KO[q.type]}</span>}</p>
               <Figure svg={q.svg} />
               {(q.type || "mc") !== "mc" && (
                 <Field value={(typed || {})[q.id] || ""} onChange={(v) => setTyped((t) => ({ ...(t || {}), [q.id]: v }))} placeholder={q.type === "essay" ? "답을 문장으로 적어 주세요" : "답을 적어 주세요"} multiline={q.type === "essay"} rows={q.type === "essay" ? 5 : 2} maxLength={q.type === "essay" ? 2000 : 200} ariaLabel={`${qi + 1}번 답`} />
@@ -2685,7 +2763,7 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
                   return (
                     <CheckRow key={oi} on={on} onToggle={() => togglePick(q.id, oi)} padding="10px 12px" style={{ minHeight: 52, borderRadius: 14, boxSizing: "border-box" }}>
                       <span aria-hidden="true" style={{ width: 30, height: 30, flex: "0 0 30px", borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14.5, fontWeight: 800, border: `1.5px solid ${on ? C.accent : C.line}`, background: on ? C.accent : C.field, color: on ? C.onAccent : C.accent, transition: "background .15s" }}>{oi + 1}</span>
-                      <span style={{ fontSize: 16, lineHeight: 1.45, color: on ? C.ink : C.inkMid, fontWeight: on ? 600 : 400, flex: 1 }}>{o}</span>
+                      <span style={{ fontSize: 16, lineHeight: 1.45, color: on ? C.ink : C.inkMid, fontWeight: on ? 600 : 400, flex: 1 }}><M t={o} /></span>
                       {on && <span aria-hidden="true" style={{ color: C.accent, fontWeight: 800, fontSize: 16, flex: "0 0 auto" }}>✓</span>}
                     </CheckRow>
                   );
@@ -2786,14 +2864,15 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
                 <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span>
                 <Badge tone={pending ? "warn" : ok ? "good" : "bad"}>{pending ? "채점 대기 (서술형)" : ok ? "정답" : "오답"}</Badge>
                 {textQ && <Badge>{QTYPE_KO[q.type]}</Badge>}
+                <SrcPill src={q.src} />
               </div>
-              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}>{q.text}</p>
+              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}><M t={q.text} /></p>
               <Figure svg={q.svg} />
               {textQ && (
                 <div style={{ display: "grid", gap: 8, marginBottom: 6 }}>
                   <div style={{ padding: "10px 12px", border: `1px solid ${pending ? C.line : ok ? C.good : C.bad}`, background: pending ? C.field : ok ? C.goodSoft : C.badSoft, borderRadius: 10, fontSize: 15, whiteSpace: "pre-wrap" }}><span style={{ fontSize: 12.5, color: C.sub, display: "block" }}>내 답</span>{t || "(비어 있음)"}</div>
                   {q.type === "short" && <div style={{ padding: "10px 12px", border: `1px solid ${C.good}`, background: C.goodSoft, borderRadius: 10, fontSize: 15 }}><span style={{ fontSize: 12.5, color: C.sub, display: "block" }}>정답</span>{String(q.answerText || "").split("|").join(" / ")}</div>}
-                  {q.type === "essay" && q.answerText && <div style={{ padding: "10px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5, whiteSpace: "pre-wrap" }}><span style={{ fontSize: 12.5, color: C.sub, display: "block" }}>모범 답안</span>{q.answerText}</div>}
+                  {q.type === "essay" && q.answerText && <div style={{ padding: "10px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5, whiteSpace: "pre-wrap" }}><span style={{ fontSize: 12.5, color: C.sub, display: "block" }}>모범 답안</span><M t={q.answerText} /></div>}
                 </div>
               )}
               {!textQ && <div style={{ display: "grid", gap: 7 }}>
@@ -2813,7 +2892,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
                   return (
                     <div key={oi} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", border: `1px solid ${bd}`, background: bg, borderRadius: 10 }}>
                       <span style={{ color: C.accent, fontSize: 16 }}>{mark(oi)}</span>
-                      <span style={{ fontSize: 15.5, color: tx, lineHeight: 1.45, flex: 1 }}>{o}</span>
+                      <span style={{ fontSize: 15.5, color: tx, lineHeight: 1.45, flex: 1 }}><M t={o} /></span>
                       {tag}
                     </div>
                   );
@@ -2829,7 +2908,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
                     <span style={{ fontWeight: 700, color: C.ink }}>해설</span>
                     <TextBtn tone="sub" onClick={() => setExplOpen({ ...explOpen, [q.id]: false })} style={{ padding: 0, fontSize: 13 }}>닫기</TextBtn>
                   </div>
-                  {q.explain}
+                  <M t={q.explain} />
                 </div>
               )}
             </Card>
@@ -3173,6 +3252,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   const [pid, setPid] = useState(user.id || "");
   const [pscope, setPscope] = useState(user.scope || "");
   const [pprompt, setPprompt] = useState(user.prompt || "");
+  const [pproof, setPproof] = useState(!!(user.prefs || {}).proof);   // 서술형 증명·설명 문제(기본 끔)
   const [reqMsg, setReqMsg] = useState("");
   const [reqSel, setReqSel] = useState({});
   const [pBusy, setPBusy] = useState(false);
@@ -3193,7 +3273,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   };
   const saveCustom = async () => {
     setPBusy(true);
-    const r = await remote().profileUpdate({ scope: pscope, prompt: pprompt });
+    const r = await remote().profileUpdate({ scope: pscope, prompt: pprompt, proof: pproof });
     setPBusy(false);
     if (!r.ok) return flash(errMsg(r));
     if (onUser && r.user) onUser(r.user);
@@ -3255,6 +3335,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
           <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
             <Field value={pscope} onChange={setPscope} placeholder="범위 예: 고1 통합과학 2단원, 한국사 1-1" ariaLabel="학습 범위" maxLength={200} style={{ fontSize: 14.5 }} />
             <Field value={pprompt} onChange={setPprompt} placeholder="맞춤 지시 예: 해설은 쉬운 말로 길게, 계산 문제는 풀이 과정까지, 영어 지시문은 한국어로" ariaLabel="개인 맞춤 지시" multiline rows={3} maxLength={1000} style={{ fontSize: 14 }} />
+            <CheckRow on={pproof} onToggle={() => can(user, "custom") && setPproof(!pproof)} padding="10px 12px"><span style={{ fontSize: 14.5, lineHeight: 1.45 }}>서술형에 "증명하시오·설명하시오" 문제도 내기 <span style={{ color: C.sub, fontSize: 13 }}>(끄면 값·식·용어를 쓰는 서술형만)</span></span></CheckRow>
             <Btn kind="soft" onClick={saveCustom} disabled={pBusy || !can(user, "custom")} style={{ fontSize: 14 }}>맞춤 설정 저장</Btn>
           </div>
           {locked.length > 0 && (
@@ -3889,7 +3970,7 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
       else if (got < base.length) flash(`${base.length - got}문항은 원래 문항(객관식은 보기 섞기)으로 넣었습니다${vfail ? ` — 그중 ${vfail}문항은 AI 정답 검증에서 걸러짐` : ""}.`);
     }
     const title = `${src.title || pick.title || "시험지"} · 오답 변형`.slice(0, 80);
-    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항${how === "ai" ? "을 살짝 바꾼 변형 문제" : ", 보기 순서만 섞음"}`, options: [], questions: out.map((q) => ({ ...q, id: uid() })) });
+    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항${how === "ai" ? "을 살짝 바꾼 변형 문제" : ", 보기 순서만 섞음"}`, options: [], questions: out.map((q) => ({ ...q, id: uid(), src: q.src || String(src.questions.findIndex((x) => x.id === q.id) + 1) })) });
   };
   const go = async (then) => {
     if (!chosen.length) return flash("문항을 하나 이상 골라 주세요.");
@@ -4295,7 +4376,7 @@ function ExamMaker() {
         if (!src) return;   // 마감·삭제된 시험지는 건너뛴다
         src.questions.filter((q) => wrongBy[i].ids.has(String(q.id))).forEach((q) => {
           const own = Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options;
-          questions.push({ ...q, id: `${wrongBy[i].code}:${q.id}`, options: own, tags: [...(q.tags || []), src.title].filter(Boolean) });
+          questions.push({ ...q, id: `${wrongBy[i].code}:${q.id}`, src: q.src || `${(src.title || wrongBy[i].code).slice(0, 10)} ${src.questions.indexOf(q) + 1}번`, options: own, tags: [...(q.tags || []), src.title].filter(Boolean) });
         });
       });
       if (!questions.length) return flash("틀린 문제가 있던 시험지를 지금은 열 수 없습니다(마감·삭제).");
