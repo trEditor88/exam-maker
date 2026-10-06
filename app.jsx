@@ -2293,7 +2293,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           <Seg value={mode} onChange={setMode} items={[["fast", "기본 (바로 만들기)"], ["pro", "고급 (Claude · 10분 안에)"]]} />
           <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: "8px 0 12px" }}>
             {mode === "pro"
-              ? "관리자 PC의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(PC가 켜져 있을 때 보통 10분 안). 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
+              ? "서버의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(서버가 켜져 있을 때 보통 10분 안). 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
               : genAvail
                 ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
                 : "기본 방식은 지금 쓸 수 없습니다(서버에 Gemini 설정 없음). 고급 방식을 골라 주세요."}
@@ -3457,7 +3457,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
     if (remote().kind !== "server") return flash("저장했습니다.");
     const r = await remote().schoolLookup({ school: v.school, year: v.year, grade: v.grade });
     if (!r.ok) return flash(errMsg(r));
-    setSchMsg(r.found ? `교과서 ${r.items.length}과목 있음` : "교과서 목록을 찾는 중 — 찾으면 알림이 옵니다 (관리자 PC가 켜져 있을 때)");
+    setSchMsg(r.found ? `교과서 ${r.items.length}과목 있음` : "교과서 목록을 찾는 중 — 찾으면 알림이 옵니다 (서버가 켜져 있을 때)");
     flash(r.found ? `저장했습니다. 교과서 ${r.items.length}과목이 등록되어 있습니다.` : "저장했습니다. 이 학교의 교과서 목록을 찾아 두겠습니다.");
   };
   const [subjBusy, setSubjBusy] = useState(false);
@@ -3955,7 +3955,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
         return (
           <Card style={{ marginTop: 14 }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>AI 문제 생성 사용량</div>
-            <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>Gemini(기본 방식)는 무료 등급이라 요금 0원, Claude(고급 방식·오답노트·리포트)는 관리자 PC의 구독 예약 작업이라 요금 0원입니다. "오늘"은 매일 0시(한국 시간)에 새로 셉니다.</p>
+            <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>Gemini(기본 방식)는 무료 등급이라 요금 0원, Claude(고급 방식·오답노트·리포트)는 서버의 구독 예약 작업이라 요금 0원입니다. "오늘"은 매일 0시(한국 시간)에 새로 셉니다.</p>
             {usage === null ? <Btn kind="soft" onClick={loadUsage}>불러오기</Btn> : (
               <>
                 <div style={{ fontSize: 14.5, fontWeight: 700, margin: "6px 0 4px" }}>오늘 <span style={{ color: C.sub, fontWeight: 400, fontSize: 13 }}>({usage.today}) · {usage.todayRows}건</span></div>
@@ -3996,7 +3996,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
       {tab === "worker" && (
         <Card style={{ marginTop: 14 }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>분석 리포트 워커 연결</div>
-          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>학생 분석 리포트는 관리자 PC 의 Claude 예약 작업이 만듭니다. PC 의 study-helper\sync.json 에 있는 연결 코드를 등록하면 그 PC 만 기록을 읽고 리포트를 올릴 수 있습니다.</p>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>학생 분석 리포트는 서버의 Claude 예약 작업이 만듭니다. 서버의 study-helper\sync.json 에 있는 연결 코드를 등록하면 그 서버만 기록을 읽고 리포트를 올릴 수 있습니다.</p>
           <Field value={workerKey} onChange={setWorkerKey} placeholder="연결 코드" ariaLabel="연결 코드" onEnter={setWorker} />
           <div style={{ marginTop: 10 }}><Btn kind="soft" onClick={setWorker}>등록</Btn></div>
         </Card>
@@ -4312,7 +4312,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
     setBusy(true);
     const r = await remote().reportGet(detail.student.id);
     setBusy(false);
-    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 만들어지지 않았습니다. 관리자 PC가 켜져 있으면 응시 후 10분 안에 만들어집니다." : errMsg(r));
+    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 만들어지지 않았습니다. 서버가 켜져 있으면 응시 후 10분 안에 만들어집니다." : errMsg(r));
     setReport(r.html);
   };
   if (detail && report !== null)
@@ -4332,7 +4332,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
         <div style={{ display: "grid", gap: 8, margin: "8px 0 14px" }}>
           {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>리포트 열기</Btn>}
           <div className="em-btn-grid">
-            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>리포트 새로 만들기</Btn>}
+            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 서버가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>리포트 새로 만들기</Btn>}
             {onRemakeSave && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>오답 변형 문제</Btn>}
           </div>
         </div>
@@ -4380,10 +4380,10 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
     setBusy(true);
     const r = await remote().reportGet(user.id);
     setBusy(false);
-    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 관리자 PC가 켜져 있을 때 10분 안에 만들어집니다." : errMsg(r));
+    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 서버가 켜져 있을 때 10분 안에 만들어집니다." : errMsg(r));
     setReport(r.html);
   };
-  const request = async () => { const r = await remote().reportRequest(); flash(r.ok ? "요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 만들어집니다." : errMsg(r)); };
+  const request = async () => { const r = await remote().reportRequest(); flash(r.ok ? "요청했습니다. 서버가 켜져 있으면 10분 안에 만들어집니다." : errMsg(r)); };
   if (report !== null)
     return (
       <Shell back="분석 리포트" backTo={() => setReport(null)} toast={toast}>
@@ -4473,7 +4473,7 @@ function ExamMaker() {
   const canNote = () => remote().kind === "server" && !!user && (user.role === "admin" || !!user.shOn);
   const makeNote = async (rid) => {
     const r = await remote().jobCreate({ resultId: rid }, "note");
-    flash(r.ok ? "오답노트를 요청했습니다. 관리자 PC가 켜져 있으면 10분 안에 만들어지고 알림이 뜹니다." : errMsg(r));
+    flash(r.ok ? "오답노트를 요청했습니다. 서버가 켜져 있으면 10분 안에 만들어지고 알림이 뜹니다." : errMsg(r));
     return r.ok;
   };
 
