@@ -137,6 +137,37 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
 @media (min-width:1024px){body.em-has-nav .em-back-home{display:none;} body.em-has-nav .em-page.em-narrow{max-width:760px !important;}}
 /* 휴대폰: 위/아래 이동 버튼이 보기를 가리지 않게 숨김(손가락으로 스크롤) */
 @media (max-width:639px){.em-jump{display:none;}}
+/* 문제지 편집(종이 모양): 테마와 무관하게 흰 종이 */
+.em-ebar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:6px;background:${C.bg};padding:8px 0;margin-bottom:12px;border-bottom:1px solid ${C.line};}
+.em-ebar .eb{width:40px;height:40px;border-radius:10px;border:1px solid ${C.line};background:${C.card};color:${C.ink};display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
+.em-ebar .eb:disabled{opacity:.35;cursor:default;} .em-ebar .eb svg{width:20px;height:20px;display:block;}
+.eb-add{position:relative;display:inline-flex;} .eb-add .eb.main{border-radius:10px 0 0 10px;background:${C.accent};border-color:${C.accent};color:#fff;} .eb-add .eb.caret{width:28px;border-radius:0 10px 10px 0;border-left:none;}
+.em-paper{background:#fff;color:#1D1D1F;border-radius:6px;box-shadow:0 2px 14px rgba(0,0,0,.12);padding:26px 28px 40px;font-size:15px;line-height:1.6;}
+@media (max-width:639px){.em-paper{padding:16px 14px 28px;}}
+.pp-hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;border:2px solid var(--pac);border-radius:14px;padding:12px 14px;margin:0 0 14px;}
+.pp-tag{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:800;} .pp-tag span{border-radius:6px;padding:1px 8px;text-align:center;} .pp-tag span:first-child{background:var(--pacs);color:var(--pac);} .pp-tag span:last-child{background:var(--pac);color:#fff;}
+.pp-ttl{text-align:center;font-size:20px;font-weight:800;min-width:0;} .pp-kind{font-size:12px;font-weight:800;color:var(--pac);border:1.5px solid var(--pac);border-radius:999px;padding:2px 10px;white-space:nowrap;}
+@media (max-width:639px){.pp-hd{grid-template-columns:1fr;text-align:center;} .pp-tag{flex-direction:row;justify-content:center;} .pp-kind{justify-self:center;white-space:normal;}}
+.pp-box{border:1.5px solid var(--pac);border-radius:10px;padding:8px 12px;margin:0 0 14px;font-size:14px;white-space:pre-wrap;}
+.pp-pill{display:inline-block;border:1.5px solid var(--pac);color:var(--pac);font-weight:800;font-size:13.5px;border-radius:999px;padding:3px 16px;margin:0 0 10px;}
+.pp-cols{columns:2;column-gap:30px;column-rule:1px dashed #E5E5EA;} @media (max-width:760px){.pp-cols{columns:1;}}
+.em-pq{position:relative;break-inside:avoid;padding:10px 12px;margin:0 -12px 6px;border:2px solid transparent;border-radius:10px;cursor:pointer;}
+.em-pq:hover{border-color:#E3F1FC;} .em-pq.on{border-color:#8CCBF5;background:#F6FBFF;cursor:default;}
+.pq-dots{position:absolute;top:4px;right:4px;width:32px;height:32px;border:none;border-radius:8px;background:#E3F1FC;color:#1A8FE0;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;} .pq-dots svg{width:20px;height:20px;}
+.pq-menu{position:absolute;top:40px;right:4px;z-index:25;background:#fff;color:#1D1D1F;border:1px solid #D5D5DA;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:6px;min-width:180px;display:grid;}
+.pq-menu button{text-align:left;font:inherit;font-size:14.5px;padding:9px 12px;border:none;background:none;border-radius:8px;cursor:pointer;color:inherit;} .pq-menu button:hover{background:#F2F2F5;} .pq-menu button.danger{color:#C0392B;}
+.eb-types{top:46px;right:0;}
+.pq-h{display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;padding-right:32px;} .pq-n{font-weight:800;font-size:16px;white-space:nowrap;} .pq-t{font-weight:700;white-space:pre-wrap;flex:1;min-width:0;} .pq-sub{color:#6E6E73;font-weight:400;font-size:13px;}
+.pq-src{flex:0 0 auto;font-size:12px;font-weight:700;color:#6E6E73;border:1px solid #D5D5DA;border-radius:99px;padding:1px 8px;white-space:nowrap;}
+.em-pq.on .pq-ed{cursor:text;border-radius:4px;} .em-pq.on .pq-ed:hover,.pp-ttl .pq-ed:hover,.pp-box .pq-ed:hover{background:#E3F1FC;cursor:text;} .pq-ph{color:#A1A1A6;font-weight:400;}
+.pq-in{width:100%;box-sizing:border-box;font:inherit;color:inherit;background:#fff;border:1.5px solid #1A8FE0;border-radius:6px;padding:2px 6px;resize:none;overflow:hidden;outline:none;display:block;}
+.pq-opts{display:grid;gap:4px 14px;margin:0 0 4px 2px;} .pq-opts.two{grid-template-columns:1fr 1fr;} .pq-o{display:flex;gap:6px;min-width:0;} .pq-ot{flex:1;min-width:0;} .pq-m{color:var(--pac);font-weight:700;}
+.pq-o.ans .pq-m{text-decoration:underline 2px;text-underline-offset:3px;}
+.pq-pas{border:1px solid #D5D5DA;border-radius:6px;padding:8px 10px;margin:0 0 8px;font-size:14px;white-space:pre-wrap;background:#FAFAFA;}
+.pq-fig{position:relative;display:block;width:100%;max-width:420px;margin:2px 0 8px;} .pq-fig.on{outline:2px dashed #8CCBF5;outline-offset:3px;border-radius:4px;}
+.pq-trash{position:absolute;top:-12px;right:-12px;width:32px;height:32px;border-radius:999px;border:none;background:#C0392B;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 2px 6px rgba(0,0,0,.2);} .pq-trash svg{width:18px;height:18px;}
+.pq-figph{border:1.5px dashed #C7C7CC;border-radius:8px;padding:16px;text-align:center;color:#8E8E93;font-size:13px;margin:2px 0 8px;}
+.pq-short{margin:4px 0;font-size:14px;} .pq-short i{display:inline-block;width:60%;border-bottom:1px solid #1D1D1F;vertical-align:-3px;} .pq-essay{border:1px solid #D5D5DA;border-radius:6px;height:80px;margin:4px 0;}
 input[aria-label="공유 코드"]::placeholder{font-size:17px;font-weight:500;letter-spacing:0.02em;color:${C.sub};}
 .em-filepick{position:relative;display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:999px;border:1px solid ${C.line};background:${C.field};color:${C.accent};font-size:15px;font-weight:700;cursor:pointer;min-height:44px;box-sizing:border-box;}
 .em-filepick:hover{border-color:${C.accent};} .em-filepick:focus-within{outline:2px solid ${C.accent};outline-offset:2px;}
@@ -254,7 +285,7 @@ async function apiPost(body) {
   try {
     const a = authGet();
     /* 서버가 응답하지 않으면 무한 "불러오는 중" 대신 시간 초과로 끝낸다(AI 생성·사진 올리기는 넉넉히) */
-    const long = /^(generate|jobCreate|jobPhoto|sh_upload|sh_confirm|reportRequest|reportGet|sh_note|sh_detail|jobFile)$/.test(String(body.action || ""));
+    const long = /^(generate|aiEdit|jobCreate|jobPhoto|sh_upload|sh_confirm|reportRequest|reportGet|sh_note|sh_detail|jobFile)$/.test(String(body.action || ""));
     const ctl = typeof AbortController === "function" ? new AbortController() : null;
     const timer = ctl ? setTimeout(() => ctl.abort(), long ? 150000 : 35000) : null;
     try {
@@ -281,6 +312,7 @@ const serverRemote = {
   submit: (code, entry) => apiPost({ action: "submit", code, entry }),
   clearResults: (code, key) => apiPost({ action: "clearResults", code, key }),
   generate: (params) => apiPost({ action: "generate", ...params }),
+  aiEdit: (params) => apiPost({ action: "aiEdit", ...params }),
   genAvailable: async () => { const r = await apiGet({ action: "ping" }); return !!(r && r.ok && r.gen); },
   shList: () => apiGet({ action: "sh_list" }),
   shDetail: (ws) => apiGet({ action: "sh_detail", ws }),
@@ -364,6 +396,7 @@ const localBase = {
   },
   async clearResults(code) { await store.del(`results:${code}`, true); return { ok: true }; },
   async generate() { return { ok: false, error: "gen_local" }; },
+  async aiEdit() { return { ok: false, error: "gen_local" }; },
   async genAvailable() { return false; },
   async shList() { return { ok: false, error: "sh_local" }; },
   async shDetail() { return { ok: false, error: "sh_local" }; },
@@ -2395,6 +2428,238 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
 }
 
 /* ── 화면: 편집 ──────────────────────────────── */
+/* ── 문제지 편집(종이 모양) ── 문항을 누르면 하늘색 테두리 + ⋮, 고른 문항의 글·보기를 누르면 그 자리에서 고친다 */
+const PP_ICONS = {
+  undo: <><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></>,
+  redo: <><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  caret: <path d="m7 10 5 5 5-5" />,
+  dots: <><circle cx="12" cy="5" r="1.6" fill="currentColor" /><circle cx="12" cy="12" r="1.6" fill="currentColor" /><circle cx="12" cy="19" r="1.6" fill="currentColor" /></>,
+  trash: <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />,
+};
+const PpIco = ({ n }) => <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{PP_ICONS[n]}</svg>;
+const blankQ = (kind) => ({ id: uid(), text: "", explain: "", options: kind === "tf" ? ["참", "거짓"] : kind === "essay" ? null : DEFAULT_OPTS(), answers: [], type: kind === "essay" ? "essay" : "mc", answerText: "", tags: [], svg: "", passage: "", src: "" });
+/* 가지형: 마지막 문장(구하는 것)은 "(1) …" 문제로, 그 앞의 조건은 지문(단락)으로. 소수점(1.5)에서 끊기지 않게 문장부호 뒤 공백에서만 나눈다.
+   한 문장이면 마지막 쉼표("…일 때, …")에서 나눈다. 나눌 곳이 없으면 null. (lookbehind 정규식은 옛 iOS 사파리에서 번들 전체가 깨져 쓰지 않음) */
+function branchOf(q) {
+  const t = String(q.text || "").trim();
+  const parts = []; let cur = "";
+  for (let i = 0; i < t.length; i++) { cur += t[i]; if (/[.?!。]/.test(t[i]) && (i === t.length - 1 || /\s/.test(t[i + 1]))) { parts.push(cur.trim()); cur = ""; } }
+  if (cur.trim()) parts.push(cur.trim());
+  let cond = "", ask = "";
+  if (parts.length >= 2) { ask = parts.pop(); cond = parts.join(" "); }
+  else { const k = t.lastIndexOf(","); if (k > 0 && k < t.length - 1) { cond = t.slice(0, k + 1).trim(); ask = t.slice(k + 1).trim(); } }
+  if (!cond || !ask) return null;
+  return { passage: [q.passage, cond].filter((x) => String(x || "").trim()).join("\n"), text: "(1) " + ask };
+}
+function PaperText({ value, editing, onStart, onChange, onDone, placeholder, oneLine, maxLength = 3000 }) {
+  const ref = useRef(null);
+  const fit = () => { const el = ref.current; if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; } };
+  useEffect(() => { const el = ref.current; if (editing && el) { fit(); el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, [editing]);
+  if (editing) return <textarea ref={ref} className="pq-in" value={value || ""} rows={1} maxLength={maxLength} placeholder={placeholder} aria-label={placeholder}
+    onClick={(e) => e.stopPropagation()} onChange={(e) => { onChange(e.target.value); fit(); }} onBlur={onDone}
+    onKeyDown={(e) => { if (e.key === "Escape" || (oneLine && e.key === "Enter" && !e.nativeEvent.isComposing)) { e.preventDefault(); onDone(); } }} />;
+  return <span className="pq-ed" onClick={onStart ? (e) => { e.stopPropagation(); onStart(); } : undefined}>{String(value || "").trim() ? <M t={value} /> : <span className="pq-ph">{placeholder}</span>}</span>;
+}
+function PaperAnswerModal({ q, opts, patch, onClose, flash }) {
+  const type = q.type || "mc";
+  const toggle = (oi) => {
+    const on = q.answers.includes(oi);
+    if (!on && q.answers.length >= maxMulti(opts.length)) return flash(`복수 정답은 보기 ${opts.length}개 중 ${maxMulti(opts.length)}개까지입니다. 다른 정답을 먼저 해제하세요.`);
+    patch({ answers: on ? q.answers.filter((a) => a !== oi) : [...q.answers, oi].sort((a, b) => a - b) });
+  };
+  return (
+    <Modal title="정답 수정" onClose={onClose}>
+      {type === "mc" && <div style={{ display: "grid", gap: 7 }}>
+        {opts.map((o, oi) => { const on = q.answers.includes(oi); return (
+          <CheckRow key={oi} on={on} onToggle={() => toggle(oi)}><Check on={on} size={20} /><span style={{ color: C.accent, fontSize: 16 }}>{mark(oi)}</span><span style={{ fontSize: 15.5, color: o.trim() ? C.ink : C.sub }}>{o.trim() || "(보기가 비어 있음)"}</span></CheckRow>
+        ); })}
+      </div>}
+      {type === "short" && <Field value={q.answerText || ""} onChange={(v) => patch({ answerText: v })} placeholder="정답 (여러 개를 인정하면 | 로 구분)" maxLength={300} ariaLabel="정답" autoFocus />}
+      {type === "essay" && <Field value={q.answerText || ""} onChange={(v) => patch({ answerText: v })} placeholder="모범 답안·채점 기준 (선택)" multiline rows={3} maxLength={1000} ariaLabel="모범 답안" />}
+      <Field value={q.explain || ""} onChange={(v) => patch({ explain: v })} placeholder="해설 (선택)" multiline rows={2} maxLength={500} style={{ marginTop: 10, fontSize: 14.5 }} ariaLabel="해설" />
+      <div style={{ display: "grid", marginTop: 14 }}><Btn onClick={onClose}>완료</Btn></div>
+    </Modal>
+  );
+}
+function PaperAiModal({ q, onClose, onApply }) {
+  const [mode, setMode] = useState(q.svg ? "edit" : "figure");
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    if (!prompt.trim()) return setErr(mode === "figure" ? "어떤 그림을 그릴지 적어 주세요." : "어떻게 고칠지 적어 주세요.");
+    setBusy(true); setErr("");
+    const r = await remote().aiEdit({ mode, prompt: prompt.trim(), question: { type: q.type || "mc", text: q.text, passage: q.passage || "", options: q.options || [], answers: q.answers || [], answerText: q.answerText || "", explain: q.explain || "", svg: q.svg || "" } });
+    setBusy(false);
+    if (!r || !r.ok) return setErr(errMsg(r));
+    const e = onApply(mode, r);
+    if (e) setErr(e);
+  };
+  return (
+    <Modal title="AI 사용" onClose={busy ? () => {} : onClose}>
+      <Seg value={mode} onChange={(v) => { setMode(v); setErr(""); }} items={[["figure", q.svg ? "그림 다시 그리기" : "그림 생성"], ["edit", "문제 수정"]]} />
+      <Field value={prompt} onChange={setPrompt} multiline rows={3} maxLength={1000} autoFocus ariaLabel="AI 에게 시킬 일" style={{ marginTop: 12, fontSize: 15 }}
+        placeholder={mode === "figure" ? "예: 빗변이 5, 밑변이 3인 직각삼각형. 각 변에 길이 표시" : "예: 숫자를 바꿔 난이도를 조금 올려 줘 / 보기를 4개로 줄여 줘"} />
+      <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.55, margin: "8px 0 0" }}>무료 AI(Gemini)가 이 문항을 보고 바로 반영합니다. 마음에 안 들면 편집 바의 ↶(실행 취소)로 되돌리세요. 개인정보는 넣지 마세요.</p>
+      {err && <p role="alert" style={{ fontSize: 14, color: C.bad, margin: "10px 0 0" }}>{err}</p>}
+      <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+        <Btn onClick={go} disabled={busy}>{busy ? "AI가 작업하는 중…" : "실행"}</Btn>
+        <Btn kind="ghost" onClick={onClose} disabled={busy}>닫기</Btn>
+      </div>
+    </Modal>
+  );
+}
+function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
+  const [sel, setSel] = useState(null);         // 고른 문항 id
+  const [edit, setEdit] = useState(null);       // 고치는 칸: "title" | "desc" | "<id>:text" | "<id>:passage" | "<id>:o2"
+  const [figOn, setFigOn] = useState(false);    // 고른 문항의 그림을 눌렀는지(휴지통 표시)
+  const [menu, setMenu] = useState(false);      // ⋮ 메뉴
+  const [typesOpen, setTypesOpen] = useState(false);
+  const [ansId, setAnsId] = useState(null);
+  const [aiId, setAiId] = useState(null);
+  const [figWant, setFigWant] = useState({});   // 자료형으로 만든 문항: 그림이 없으면 그림 자리 표시
+  const qs = draft.questions;
+  const level = LEVELS.indexOf(draft.level) >= 0 ? draft.level : "기본";
+  const kindLabel = useMemo(() => quizKindLabel(printableItems(draft)), [draft]);
+  /* id 로 고친다(AI 응답을 기다리는 동안 순서가 바뀌어도 맞는 문항에 들어가게) */
+  const patchQ = (id, patch) => setDraft((d) => ({ ...d, questions: d.questions.map((x) => (x.id === id ? { ...x, ...(typeof patch === "function" ? patch(x) : patch) } : x)) }));
+  const pick = (id) => { setSel(id); setEdit(null); setFigOn(false); setMenu(false); setTypesOpen(false); };
+  const clear = () => pick(null);
+  useEffect(() => {
+    if (!menu && !typesOpen) return;
+    const h = () => { setMenu(false); setTypesOpen(false); };
+    document.addEventListener("click", h);
+    return () => document.removeEventListener("click", h);
+  }, [menu, typesOpen]);
+  const scrollTo = (id) => setTimeout(() => { const el = document.getElementById("pq-" + id); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
+  const addQ = (kind) => {
+    const q = blankQ(kind);
+    setDraft((d) => ({ ...d, questions: [...d.questions, q] }));
+    if (kind === "fig") setFigWant((w) => ({ ...w, [q.id]: true }));
+    pick(q.id); scrollTo(q.id);
+  };
+  /* 지문은 같은 지문으로 이어진 문항 묶음 전체를 함께 고친다(묶음이 갈라지지 않게) */
+  const setPassage = (id, v) => setDraft((d) => {
+    const i = d.questions.findIndex((x) => x.id === id); if (i < 0) return d;
+    const old = d.questions[i].passage || "";
+    let a = i, b = i;
+    if (old) { while (a > 0 && d.questions[a - 1].passage === old) a--; while (b < d.questions.length - 1 && d.questions[b + 1].passage === old) b++; }
+    return { ...d, questions: d.questions.map((x, k) => (k >= a && k <= b ? { ...x, passage: v } : x)) };
+  });
+  const toBranch = (id) => {
+    const q = qs.find((x) => x.id === id); if (!q) return;
+    if (/^\(1\)/.test(q.text.trim())) return flash("이미 가지형 문제입니다. 복제하면 (2) 문제가 아래에 생깁니다.");
+    const b = branchOf(q); setMenu(false);
+    if (!b) return flash("조건과 구하는 것을 나눌 곳(문장 끝이나 쉼표)이 없습니다. 조건 문장과 묻는 문장을 나눠 쓴 뒤 다시 눌러 주세요.");
+    patchQ(id, b);
+    flash("조건은 단락으로, 구하는 것은 (1) 문제로 바꿨습니다. 복제로 (2)를 만들 수 있습니다.");
+  };
+  const dup = (id) => {
+    const nid = uid();
+    setDraft((d) => {
+      const i = d.questions.findIndex((x) => x.id === id); if (i < 0) return d;
+      const s = d.questions[i], m = /^\((\d{1,2})\)\s*/.exec(s.text);
+      const copy = { ...JSON.parse(JSON.stringify(s)), id: nid, text: m ? `(${Number(m[1]) + 1}) ` + s.text.slice(m[0].length) : s.text };
+      const next = [...d.questions]; next.splice(i + 1, 0, copy);
+      return { ...d, questions: next };
+    });
+    pick(nid); scrollTo(nid); flash("아래에 복제했습니다.");
+  };
+  const del = (id) => {
+    if (qs.length <= 1) return flash("문항이 하나뿐이라 지울 수 없습니다.");
+    setDraft((d) => ({ ...d, questions: d.questions.filter((x) => x.id !== id) }));
+    clear(); flash("문항을 지웠습니다. 되돌리려면 ↶(실행 취소)");
+  };
+  const applyAi = (id, mode, r) => {
+    if (mode === "figure") {
+      const svg = sanitizeSvg(r.svg);
+      if (!svg) return "그림을 만들지 못했습니다. 설명을 조금 바꿔 다시 시도해 주세요.";
+      patchQ(id, { svg });
+    } else {
+      const n = normalizeQuestion(r.question, draft.options.length);
+      if (!n.text.trim()) return "AI가 문제를 돌려주지 않았습니다. 다시 시도해 주세요.";
+      patchQ(id, { text: n.text, passage: n.passage || (qs.find((x) => x.id === id) || {}).passage || "", explain: n.explain, type: n.type, options: n.type === "mc" ? n.options || DEFAULT_OPTS() : null, answers: n.answers, answerText: n.answerText });
+    }
+    setAiId(null);
+    flash("AI 결과를 반영했습니다. 마음에 안 들면 ↶(실행 취소)");
+    return "";
+  };
+  const ansQ = ansId && qs.find((x) => x.id === ansId);
+  const aiQ = aiId && qs.find((x) => x.id === aiId);
+  return (
+    <>
+      <div className="em-ebar" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className="eb" onClick={hist.undo} disabled={!hist.canUndo} aria-label="실행 취소" title="실행 취소 (Ctrl+Z)"><PpIco n="undo" /></button>
+        <button type="button" className="eb" onClick={hist.redo} disabled={!hist.canRedo} aria-label="다시 실행" title="다시 실행 (Ctrl+Y)"><PpIco n="redo" /></button>
+        <span style={{ flex: 1, fontSize: 12.5, color: C.sub, padding: "0 6px", lineHeight: 1.4 }}>문항을 눌러 고르고, 고른 문항의 글·보기를 누르면 고칩니다</span>
+        <div className="eb-add">
+          <button type="button" className="eb main" onClick={() => addQ("mc")} aria-label="문제 추가" title="문제 추가 (객관식)"><PpIco n="plus" /></button>
+          <button type="button" className="eb caret" onClick={() => { setMenu(false); setTypesOpen((v) => !v); }} aria-label="문제 유형 골라 추가" aria-expanded={typesOpen} title="문제 유형 골라 추가"><PpIco n="caret" /></button>
+          {typesOpen && <div className="pq-menu eb-types" role="menu">
+            {[["tf", "참·거짓"], ["mc", "객관식"], ["essay", "서술형"], ["fig", "자료형 (그림 있는 문제)"]].map(([k, l]) => <button key={k} type="button" role="menuitem" onClick={() => addQ(k)}>{l}</button>)}
+          </div>}
+        </div>
+      </div>
+      <div className="em-paper" style={{ "--pac": LEVEL_COLOR[level], "--pacs": LEVEL_SOFT[level] }} onClick={clear}>
+        <div className="pp-hd">
+          <div className="pp-tag"><span>{draft.subject || "시험지"}</span><span>{level}</span></div>
+          <div className="pp-ttl"><PaperText value={draft.title} editing={edit === "title"} onStart={() => { pick(null); setEdit("title"); }} onChange={(v) => setDraft((d) => ({ ...d, title: v }))} onDone={() => setEdit(null)} placeholder="시험지 제목" oneLine maxLength={80} /></div>
+          <div className="pp-kind">{kindLabel}</div>
+        </div>
+        {(draft.desc || edit === "desc") && <div className="pp-box"><PaperText value={draft.desc} editing={edit === "desc"} onStart={() => { pick(null); setEdit("desc"); }} onChange={(v) => setDraft((d) => ({ ...d, desc: v }))} onDone={() => setEdit(null)} placeholder="안내문" maxLength={300} /></div>}
+        <div className="pp-pill">확인 문제</div>
+        <div className="pp-cols">
+          {qs.map((q, i) => {
+            const on = sel === q.id, type = q.type || "mc", opts = type === "mc" ? (q.options || draft.options) : [];
+            const key = (f) => q.id + ":" + f;
+            const ed = (f) => on && edit === key(f);
+            const start = (f) => (on ? () => { setEdit(key(f)); setFigOn(false); setMenu(false); } : undefined);
+            const done = () => setEdit(null);
+            const showPas = ed("passage") || (!!q.passage && (i === 0 || qs[i - 1].passage !== q.passage));
+            return (
+              <div key={q.id} id={"pq-" + q.id} className={"em-pq" + (on ? " on" : "")} onClick={(e) => { e.stopPropagation(); if (!on) pick(q.id); else { setFigOn(false); setMenu(false); } }}>
+                {on && <button type="button" className="pq-dots" aria-label={`${i + 1}번 문항 메뉴`} aria-expanded={menu} onClick={(e) => { e.stopPropagation(); setEdit(null); setTypesOpen(false); setMenu((v) => !v); }}><PpIco n="dots" /></button>}
+                {on && menu && <div className="pq-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                  <button type="button" role="menuitem" onClick={() => toBranch(q.id)}>가지형 문제로 전환</button>
+                  <button type="button" role="menuitem" onClick={() => { setMenu(false); dup(q.id); }}>복제</button>
+                  <button type="button" role="menuitem" onClick={() => { setMenu(false); setAnsId(q.id); }}>정답 수정</button>
+                  {aiOk && <button type="button" role="menuitem" onClick={() => { setMenu(false); setAiId(q.id); }}>AI 사용</button>}
+                  <button type="button" role="menuitem" className="danger" onClick={() => { setMenu(false); del(q.id); }}>삭제</button>
+                </div>}
+                {showPas && <div className="pq-pas"><PaperText value={q.passage} editing={ed("passage")} onStart={start("passage")} onChange={(v) => setPassage(q.id, v)} onDone={done} placeholder="지문" maxLength={4000} /></div>}
+                <div className="pq-h">
+                  <span className="pq-n">Q{i + 1}.</span>
+                  <span className="pq-t"><PaperText value={q.text} editing={ed("text")} onStart={start("text")} onChange={(v) => patchQ(q.id, { text: v })} onDone={done} placeholder="문제를 입력하세요" />{!ed("text") && (type === "short" ? <span className="pq-sub"> (주관식)</span> : type === "essay" ? <span className="pq-sub"> (서술형)</span> : q.answers.length > 1 ? <span className="pq-sub"> (정답 {q.answers.length}개)</span> : null)}</span>
+                  {q.src && <span className="pq-src">원본 {q.src}</span>}
+                </div>
+                {q.svg ? (
+                  <div className={"pq-fig" + (on && figOn ? " on" : "")} onClick={on ? (e) => { e.stopPropagation(); setFigOn(true); setEdit(null); setMenu(false); } : undefined}>
+                    <Figure svg={q.svg} style={{ margin: 0 }} />
+                    {on && figOn && <button type="button" className="pq-trash" aria-label="그림 지우기" title="그림 지우기" onClick={(e) => { e.stopPropagation(); patchQ(q.id, { svg: "" }); setFigOn(false); flash("그림을 지웠습니다. 되돌리려면 ↶(실행 취소)"); }}><PpIco n="trash" /></button>}
+                  </div>
+                ) : figWant[q.id] ? <div className="pq-figph">그림 자리 — {aiOk ? "⋮ › AI 사용 › 그림 생성" : "'자세히 편집'에서 그림(SVG) 넣기"}</div> : null}
+                {type === "mc" && <div className={"pq-opts " + (opts.every((o) => String(o).length <= 14) ? "two" : "one")}>
+                  {opts.map((o, oi) => (
+                    <div key={oi} className={"pq-o" + (q.answers.includes(oi) ? " ans" : "")}>
+                      <span className="pq-m">{mark(oi)}</span>
+                      <span className="pq-ot"><PaperText value={o} editing={ed("o" + oi)} onStart={start("o" + oi)} onChange={(v) => patchQ(q.id, (x) => ({ options: (x.options || draft.options).map((y, k) => (k === oi ? v : y)) }))} onDone={done} placeholder={`보기 ${oi + 1}`} oneLine maxLength={200} /></span>
+                    </div>
+                  ))}
+                </div>}
+                {type === "short" && <div className="pq-short">답: <i /></div>}
+                {type === "essay" && <div className="pq-essay" />}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {ansQ && <PaperAnswerModal q={ansQ} opts={(ansQ.type || "mc") === "mc" ? (ansQ.options || draft.options) : []} patch={(p) => patchQ(ansQ.id, p)} onClose={() => setAnsId(null)} flash={flash} />}
+      {aiQ && <PaperAiModal q={aiQ} onClose={() => setAiId(null)} onApply={(mode, r) => applyAi(aiQ.id, mode, r)} />}
+    </>
+  );
+}
+
 function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast, genInit, genAuto, onGenInitUsed, onPrint }) {
   const [shareCode, setShareCode] = useState(null);
   const [showProblems, setShowProblems] = useState(false);
@@ -2410,6 +2675,41 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   const labStyle = { display: "block", fontSize: 12.5, color: C.sub, fontWeight: 600 };
   const [genAvail, setGenAvail] = useState(false); // 서버가 생성 기능을 켰을 때만 버튼 표시(기본 숨김 = 비용 0)
   useEffect(() => { let alive = true; remote().genAvailable().then((v) => { if (alive) setGenAvail(v); }); return () => { alive = false; }; }, []);
+
+  const [view, setView] = useState("paper");   // paper = 문제지(인쇄 모양)에서 바로 고치기(기본) / form = 자세히 편집
+  /* 실행 취소·다시 실행: 내용 칸만 기억한다(저장·공유로 바뀌는 code·ownerKey 등은 되돌리지 않음). 0.8초 안의 연속 입력은 한 단계로 묶음 */
+  const HIST_KEYS = ["title", "desc", "subject", "questions", "options", "shuffle", "level", "timeLimit", "openAt", "closeAt"];
+  const hist = useRef({ past: [], future: [], prev: draft, last: 0, skip: false });
+  const [, setHv] = useState(0);
+  useEffect(() => {
+    const h = hist.current, prev = h.prev;
+    h.prev = draft;
+    if (h.skip) { h.skip = false; return; }
+    if (prev === draft || HIST_KEYS.every((k) => prev[k] === draft[k])) return;
+    const now = Date.now();
+    if (now - h.last > 800 || !h.past.length) { h.past.push(prev); if (h.past.length > 100) h.past.shift(); }
+    h.last = now; h.future = []; setHv((v) => v + 1);
+  }, [draft]);
+  const pickContent = (d) => Object.fromEntries(HIST_KEYS.map((k) => [k, d[k]]));
+  const histGo = (from, to) => {
+    const h = hist.current; if (!h[from].length) return;
+    const snap = h[from].pop(); h[to].push(draft); h.skip = true; h.last = 0;
+    setDraft((d) => ({ ...d, ...pickContent(snap) })); setHv((v) => v + 1);
+  };
+  const undo = () => histGo("past", "future"), redo = () => histGo("future", "past");
+  const undoRef = useRef(null); undoRef.current = { undo, redo };
+  useEffect(() => {
+    const h = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const t = e.target, tag = t && t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable) || document.querySelector('[role="dialog"]')) return;   // 모달이 열려 있을 때도 무시   // 입력칸 안에서는 브라우저 기본 되돌리기
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) { e.preventDefault(); undoRef.current.undo(); }
+      else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); undoRef.current.redo(); }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
 
   const upd = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const problems = useMemo(() => problemsOf(draft), [draft]);
@@ -2515,7 +2815,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   const back = () => (dirty ? setLeaveAsk(true) : onBack());
 
   return (
-    <Shell back="홈으로" backTo={back} toast={toast}>
+    <Shell back="홈으로" backTo={back} toast={toast} wide={view === "paper"}>
       {undoDel && (
         <div className="em-toast" role="status" style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", marginBottom: toast ? 56 : 0, background: C.ink, color: C.bg, padding: "4px 8px 4px 18px", borderRadius: 12, fontSize: 14.5, maxWidth: "88vw", zIndex: 71, display: "flex", alignItems: "center", gap: 8 }}>
           <span>{undoDel.qi + 1}번 문항을 지웠습니다.</span>
@@ -2539,6 +2839,11 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
         </div>
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <Seg value={view} onChange={setView} items={[["paper", "문제지"], ["form", "자세히 편집"]]} />
+        {view === "paper" && <span style={{ fontSize: 12.5, color: C.sub }}>과목·난이도·응시 조건·태그·문항 유형 바꾸기는 '자세히 편집'에서</span>}
+      </div>
+      {view === "paper" ? <PaperEditor draft={draft} setDraft={setDraft} flash={flash} aiOk={genAvail} hist={{ undo, redo, canUndo: hist.current.past.length > 0, canRedo: hist.current.future.length > 0 }} /> : <>
       <Field value={draft.title} onChange={(v) => upd({ title: v })} placeholder="시험지 제목" maxLength={80} style={{ fontSize: 21, fontWeight: 700, padding: "14px 15px", marginBottom: 10 }} />
       <Field value={draft.desc} onChange={(v) => upd({ desc: v })} placeholder="안내문 (선택) — 응시자에게 첫 화면에서 보여줍니다" maxLength={300} multiline rows={2} style={{ marginBottom: 10, fontSize: 15 }} />
       <Field value={draft.subject || ""} onChange={(v) => upd({ subject: v })} placeholder="과목 (선택) 예: 통합과학 — 결과 화면에서 과목별 정답률에 쓰입니다" maxLength={20} style={{ marginBottom: 10, fontSize: 15 }} ariaLabel="과목" />
@@ -2633,6 +2938,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5 }}>푸는 사람마다 순서가 달라집니다. 답을 외워서 찍는 것을 막고 싶을 때 켜세요.</div>
         </div>
       </CheckRow>
+      </>}
 
       {showProblems && problems.length > 0 && (
         <div style={{ marginTop: 18, padding: "12px 14px", background: C.warnSoft, border: `1px solid ${C.warnLine}`, borderRadius: 12 }}>
