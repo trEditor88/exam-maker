@@ -153,6 +153,10 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
 .pp-cols{columns:2;column-gap:30px;column-rule:1px dashed #E5E5EA;} @media (max-width:760px){.pp-cols{columns:1;}}
 .em-pq{position:relative;break-inside:avoid;padding:10px 12px;margin:0 -12px 6px;border:2px solid transparent;border-radius:10px;cursor:pointer;}
 .em-pq:hover{border-color:#E3F1FC;} .em-pq.on{border-color:#8CCBF5;background:#F6FBFF;cursor:default;}
+.pq-grip{position:absolute;top:4px;right:4px;width:28px;height:32px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;border:none;border-radius:8px;background:none;color:#A1A1A6;display:flex;align-items:center;justify-content:center;cursor:grab;padding:0;touch-action:none;opacity:.55;} .pq-grip svg{width:18px;height:18px;} .em-pq:hover .pq-grip,.em-pq.on .pq-grip,.pq-grip:focus-visible{opacity:1;color:#1A8FE0;background:#E3F1FC;}
+.em-pq.on .pq-grip{right:40px;} .em-pq.on .pq-h{padding-right:70px;}
+[data-drop="before"]{box-shadow:0 -4px 0 0 #1A8FE0;} [data-drop="after"]{box-shadow:0 4px 0 0 #1A8FE0;} [data-dragging]{opacity:.35;}
+.em-grip{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;width:36px;height:36px;border:none;border-radius:8px;background:none;color:#A1A1A6;display:inline-flex;align-items:center;justify-content:center;cursor:grab;padding:0;touch-action:none;} .em-grip:hover,.em-grip:focus-visible{color:#1A8FE0;background:#E3F1FC;} .em-grip svg{width:18px;height:18px;}
 .pq-dots{position:absolute;top:4px;right:4px;width:32px;height:32px;border:none;border-radius:8px;background:#E3F1FC;color:#1A8FE0;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;} .pq-dots svg{width:20px;height:20px;}
 .pq-menu{position:absolute;top:40px;right:4px;z-index:25;background:#fff;color:#1D1D1F;border:1px solid #D5D5DA;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:6px;min-width:180px;display:grid;}
 .pq-menu button{text-align:left;font:inherit;font-size:14.5px;padding:9px 12px;border:none;background:none;border-radius:8px;cursor:pointer;color:inherit;} .pq-menu button:hover{background:#F2F2F5;} .pq-menu button.danger{color:#C0392B;}
@@ -2436,7 +2440,75 @@ const PP_ICONS = {
   caret: <path d="m7 10 5 5 5-5" />,
   dots: <><circle cx="12" cy="5" r="1.6" fill="currentColor" /><circle cx="12" cy="12" r="1.6" fill="currentColor" /><circle cx="12" cy="19" r="1.6" fill="currentColor" /></>,
   trash: <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />,
+  grip: <><circle cx="9" cy="6" r="1.5" fill="currentColor" /><circle cx="15" cy="6" r="1.5" fill="currentColor" /><circle cx="9" cy="12" r="1.5" fill="currentColor" /><circle cx="15" cy="12" r="1.5" fill="currentColor" /><circle cx="9" cy="18" r="1.5" fill="currentColor" /><circle cx="15" cy="18" r="1.5" fill="currentColor" /></>,
 };
+/* 문항 끌어서 순서 바꾸기: 손잡이(⠿)를 누른 채 끌어 놓으면(마우스·터치 모두 — pointer 이벤트) 그 자리로 옮긴다.
+   대상은 data-dragid 가 붙은 문항. 2단(columns) 문제지에서도 가장 가까운 문항을 찾고, 그 문항의 위/아래 절반으로 앞·뒤를 정한다.
+   키보드: 손잡이에 초점을 두고 위/아래 화살표로 한 칸씩. onMove(id, overId, after) 는 순서만 바꾼다(문항 내용은 그대로) */
+function useDragSort(onMove, onKeyMove) {
+  const [drag, setDrag] = useState(null);   // { id, over, after }
+  const cur = useRef(null);
+  useEffect(() => () => { if (cur.current) cur.current.stop(); }, []);
+  const start = (e, id) => {
+    if (e.button || cur.current) return;   // 왼쪽 버튼(또는 터치)만, 이미 끄는 중이면 무시
+    e.preventDefault(); e.stopPropagation();
+    const pid = e.pointerId;
+    let st = { id, over: null, after: false };
+    const move = (ev) => {
+      if (ev.pointerId !== pid) return;   // 다른 손가락·포인터는 무시
+      let best = null, bd = Infinity;
+      document.querySelectorAll("[data-dragid]").forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const dx = ev.clientX < r.left ? r.left - ev.clientX : ev.clientX > r.right ? ev.clientX - r.right : 0;
+        const dy = ev.clientY < r.top ? r.top - ev.clientY : ev.clientY > r.bottom ? ev.clientY - r.bottom : 0;
+        const d = dx * 3 + dy;   // 같은 단(열)을 우선
+        if (d < bd) { bd = d; best = { id: el.getAttribute("data-dragid"), after: ev.clientY > r.top + r.height / 2 }; }
+      });
+      if (ev.clientY < 70) window.scrollBy(0, -14); else if (ev.clientY > window.innerHeight - 70) window.scrollBy(0, 14);   // 화면 끝에서 자동 스크롤
+      st = { id, over: best && best.id !== id ? best.id : null, after: !!(best && best.after) };
+      setDrag(st);
+    };
+    const stop = (ok) => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancel);
+      cur.current = null; setDrag(null);
+      if (ok && st.over) {
+        /* 누른 곳과 놓은 곳이 다르면 브라우저가 공통 조상에 click 을 보내 문항 선택을 풀어 버림 → 바로 다음 click 한 번만 삼킨다 */
+        const eat = (ce) => { ce.stopPropagation(); ce.preventDefault(); };
+        window.addEventListener("click", eat, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener("click", eat, { capture: true }), 50);
+        onMove(st.id, st.over, st.after);
+      }
+    };
+    const up = (ev) => { if (ev.pointerId === pid) stop(true); }, cancel = (ev) => { if (ev.pointerId === pid) stop(false); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", cancel);
+    cur.current = { stop: () => stop(false) };
+    setDrag(st);
+  };
+  /* 손잡이 버튼 속성 + 문항(놓을 자리) 속성 */
+  const grip = (id, label) => ({
+    onPointerDown: (e) => start(e, id), onClick: (e) => e.stopPropagation(), "aria-label": label, title: "끌어서 순서 바꾸기 (위/아래 화살표 키로도 이동)",
+    onKeyDown: (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault(); e.stopPropagation();
+      onKeyMove(id, e.key === "ArrowUp" ? -1 : 1);
+      /* 자리를 옮긴 DOM 노드는 초점을 잃으므로 같은 문항의 손잡이에 다시 초점(연속으로 누를 수 있게) */
+      requestAnimationFrame(() => { const el = document.querySelector(`[data-dragid="${CSS.escape(id)}"] .pq-grip, [data-dragid="${CSS.escape(id)}"] .em-grip`); if (el) el.focus(); });
+    },
+  });
+  const item = (id) => ({ "data-dragid": id, "data-dragging": drag && drag.id === id ? "" : undefined, "data-drop": drag && drag.over === id ? (drag.after ? "after" : "before") : undefined });
+  return { grip, item };
+}
+/* 순서 바꾸기 계산: id 문항을 overId 문항의 앞(after=false)·뒤로. 나머지 순서는 그대로 */
+function moveById(list, id, overId, after) {
+  const from = list.findIndex((x) => x.id === id);
+  if (from < 0 || id === overId) return list;
+  const rest = list.filter((x) => x.id !== id);
+  let to = rest.findIndex((x) => x.id === overId);
+  if (to < 0) return list;
+  if (after) to += 1;
+  rest.splice(to, 0, list[from]);
+  return rest;
+}
 const PpIco = ({ n }) => <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{PP_ICONS[n]}</svg>;
 const blankQ = (kind) => ({ id: uid(), text: "", explain: "", options: kind === "tf" ? ["참", "거짓"] : kind === "essay" ? null : DEFAULT_OPTS(), answers: [], type: kind === "essay" ? "essay" : "mc", answerText: "", tags: [], svg: "", passage: "", src: "" });
 /* 가지형: 마지막 문장(구하는 것)은 "(1) …" 문제로, 그 앞의 조건은 지문(단락)으로. 소수점(1.5)에서 끊기지 않게 문장부호 뒤 공백에서만 나눈다.
@@ -2585,6 +2657,11 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
     flash("AI 결과를 반영했습니다. 마음에 안 들면 ↶(실행 취소)");
     return "";
   };
+  /* 끌어서 옮기기 — 옮긴 뒤 몇 번이 됐는지 알려 주고 그 문항을 고른 상태로 */
+  const placedMsg = (list, id) => { const n = list.findIndex((x) => x.id === id); if (n >= 0) flash(`${n + 1}번 자리로 옮겼습니다. 되돌리려면 ↶(실행 취소)`); };
+  const ds = useDragSort(
+    (id, over, after) => { const next = moveById(qs, id, over, after); setDraft((d) => ({ ...d, questions: moveById(d.questions, id, over, after) })); pick(id); placedMsg(next, id); },
+    (id, dir) => { const i = qs.findIndex((x) => x.id === id), j = i + dir; if (i < 0 || j < 0 || j >= qs.length) return; const next = moveById(qs, id, qs[j].id, dir > 0); setDraft((d) => ({ ...d, questions: moveById(d.questions, id, qs[j].id, dir > 0) })); placedMsg(next, id); });
   const ansQ = ansId && qs.find((x) => x.id === ansId);
   const aiQ = aiId && qs.find((x) => x.id === aiId);
   return (
@@ -2592,7 +2669,7 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
       <div className="em-ebar" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="eb" onClick={hist.undo} disabled={!hist.canUndo} aria-label="실행 취소" title="실행 취소 (Ctrl+Z)"><PpIco n="undo" /></button>
         <button type="button" className="eb" onClick={hist.redo} disabled={!hist.canRedo} aria-label="다시 실행" title="다시 실행 (Ctrl+Y)"><PpIco n="redo" /></button>
-        <span style={{ flex: 1, fontSize: 12.5, color: C.sub, padding: "0 6px", lineHeight: 1.4 }}>문항을 눌러 고르고, 고른 문항의 글·보기를 누르면 고칩니다</span>
+        <span style={{ flex: 1, fontSize: 12.5, color: C.sub, padding: "0 6px", lineHeight: 1.4 }}>문항을 눌러 고르고, 고른 문항의 글·보기를 누르면 고칩니다. ⠿ 를 끌면 순서가 바뀝니다</span>
         <div className="eb-add">
           <button type="button" className="eb main" onClick={() => addQ("mc")} aria-label="문제 추가" title="문제 추가 (객관식)"><PpIco n="plus" /></button>
           <button type="button" className="eb caret" onClick={() => { setMenu(false); setTypesOpen((v) => !v); }} aria-label="문제 유형 골라 추가" aria-expanded={typesOpen} title="문제 유형 골라 추가"><PpIco n="caret" /></button>
@@ -2618,7 +2695,8 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
             const done = () => setEdit(null);
             const showPas = ed("passage") || (!!q.passage && (i === 0 || qs[i - 1].passage !== q.passage));
             return (
-              <div key={q.id} id={"pq-" + q.id} className={"em-pq" + (on ? " on" : "")} onClick={(e) => { e.stopPropagation(); if (!on) pick(q.id); else { setFigOn(false); setMenu(false); } }}>
+              <div key={q.id} id={"pq-" + q.id} {...ds.item(q.id)} className={"em-pq" + (on ? " on" : "")} onClick={(e) => { e.stopPropagation(); if (!on) pick(q.id); else { setFigOn(false); setMenu(false); } }}>
+                {qs.length > 1 && <button type="button" className="pq-grip" {...ds.grip(q.id, `${i + 1}번 문항 끌어서 옮기기`)}><PpIco n="grip" /></button>}
                 {on && <button type="button" className="pq-dots" aria-label={`${i + 1}번 문항 메뉴`} aria-expanded={menu} onClick={(e) => { e.stopPropagation(); setEdit(null); setTypesOpen(false); setMenu((v) => !v); }}><PpIco n="dots" /></button>}
                 {on && menu && <div className="pq-menu" role="menu" onClick={(e) => e.stopPropagation()}>
                   <button type="button" role="menuitem" onClick={() => toBranch(q.id)}>가지형 문제로 전환</button>
@@ -2793,6 +2871,8 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
   }, [dirty]);
+  const formDrag = useDragSort((id, over, after) => { setUndoDel(null); setDraft((d) => ({ ...d, questions: moveById(d.questions, id, over, after) })); },
+    (id, dir) => { const i = draft.questions.findIndex((x) => x.id === id); if (i >= 0) moveQ(i, dir); });
   const moveQ = (qi, dir) => {
     setUndoDel(null);
     const to = qi + dir;
@@ -2863,9 +2943,10 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
 
       <div style={{ display: "grid", gap: 12 }}>
         {draft.questions.map((q, qi) => (
-          <Card key={q.id} style={{ padding: 16 }}>
+          <div key={q.id} {...formDrag.item(q.id)} style={{ borderRadius: 18 }}>
+          <Card style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span><SrcPill src={q.src} /></span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>{draft.questions.length > 1 && <button type="button" className="em-grip" {...formDrag.grip(q.id, `${qi + 1}번 문항 끌어서 옮기기`)}><PpIco n="grip" /></button>}<span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span><SrcPill src={q.src} /></span>
               <div style={{ display: "flex", gap: 0 }}>
                 <TextBtn tone="sub" ariaLabel="위로" onClick={() => moveQ(qi, -1)} disabled={qi === 0} style={{ fontSize: 15 }}>▲</TextBtn>
                 <TextBtn tone="sub" ariaLabel="아래로" onClick={() => moveQ(qi, 1)} disabled={qi === draft.questions.length - 1} style={{ fontSize: 15 }}>▼</TextBtn>
@@ -2924,6 +3005,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
             <Field value={q.explain} onChange={(v) => setQ(qi, { explain: v })} placeholder="해설 (선택)" multiline rows={1} maxLength={500} style={{ marginTop: 12, fontSize: 14.5, background: C.lineSoft }} />
             <Field value={tagsRaw[q.id] !== undefined ? tagsRaw[q.id] : (q.tags || []).join(", ")} onChange={(v) => { setTagsRaw({ ...tagsRaw, [q.id]: v }); setQ(qi, { tags: splitTags(v) }); }} placeholder="태그 (선택, 쉼표로) 예: 이온, 화학 반응식" maxLength={120} style={{ marginTop: 8, fontSize: 13.5, padding: "9px 11px" }} ariaLabel={`${qi + 1}번 태그`} />
           </Card>
+          </div>
         ))}
       </div>
 
