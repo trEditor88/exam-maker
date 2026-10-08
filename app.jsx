@@ -4935,6 +4935,14 @@ function ExamMaker() {
       if (rawName) setName(rawName);
       /* 계정 확인: 저장된 토큰이 살아 있으면 자동 로그인, 아니면 로그인 화면(관리자가 없으면 설정 화면) */
       if (remote().kind === "server") {
+        /* HEO Works(heoworks.pages.dev)에서 열었으면 주소의 일회용 코드(#sso=…)로 로그인. 코드는 바로 주소에서 지운다 */
+        const sso = (INITIAL_HASH.match(/[#&]sso=([A-Za-z0-9]{40})/) || [])[1];
+        if (sso) {
+          try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+          const r = await apiPost({ action: "ssoRedeem", svc: "exam", code: sso });
+          if (r.ok) authSet({ token: r.token, user: r.user });
+          else flash("공유 계정 로그인 코드가 만료됐어요. 다시 열거나 직접 로그인해 주세요.");
+        }
         const a = authGet();
         const meR = a && a.token ? await remote().me() : { ok: false };
         if (meR.ok) {
