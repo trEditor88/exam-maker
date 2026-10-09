@@ -351,6 +351,8 @@ const serverRemote = {
   reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
   reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
+  genApiGet: () => apiPost({ action: "genApiGet" }),
+  genApiSet: (cfg) => apiPost({ action: "genApiSet", ...cfg }),
   assignList: (code) => apiGet(code ? { action: "assignList", code } : { action: "assignList" }),
   assignListMany: (codes) => apiGet({ action: "assignList", codes }),
   assignSet: (code, studentIds, dueAt, memo, purgeDays) => apiPost({ action: "assignSet", code, studentIds, dueAt: dueAt || 0, memo: memo || "", purgeDays: purgeDays == null ? 30 : purgeDays }),
@@ -428,6 +430,8 @@ const localBase = {
   async reportGet() { return { ok: false, error: "no_report" }; },
   async reportRequest() { return { ok: false, error: "sh_local" }; },
   async workerKeySet() { return { ok: false, error: "sh_local" }; },
+  async genApiGet() { return { ok: false, error: "sh_local" }; },
+  async genApiSet() { return { ok: false, error: "sh_local" }; },
   async usage() { return { ok: false, error: "sh_local" }; },
   /* 목록을 그리는 화면은 빈 목록을 받아 "없음" 으로 보이게 */
   async examListAll() { return { ok: true, exams: [] }; },
@@ -4127,6 +4131,13 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
   const [workerKey, setWorkerKey] = useState("");
+  const [genApi, setGenApi] = useState(null);   // 고급 생성 Claude API 대체: { cfg:{on,daily,waitMin}, hasKey, pcSeenAt, today, err, queued, running }
+  const loadGenApi = async () => { const r = await remote().genApiGet(); if (r.ok) setGenApi(r); };
+  const saveGenApi = async (patch) => {
+    const r = await remote().genApiSet(patch);
+    if (!r.ok) return flash(errMsg(r));
+    setGenApi((g) => ({ ...g, cfg: r.cfg })); flash("저장했습니다.");
+  };
   const [usage, setUsage] = useState(null);
   const loadUsage = async () => { const r = await remote().usage(); if (!r.ok) return flash(errMsg(r)); setUsage(r); };
   const teachers = (users || []).filter((u) => u.role === "teacher" || u.role === "admin");
@@ -4192,7 +4203,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
-      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ...(liteCan("liteCopy") || liteCan("liteAssign") ? [["exams", "시험지"]] : [])] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); if (v === "worker") loadGenApi(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ...(liteCan("liteCopy") || liteCan("liteAssign") ? [["exams", "시험지"]] : [])] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
       {lite && <p style={{ fontSize: 13, color: C.sub, margin: "8px 0 0" }}>제한 관리자: 열람{LITE_KEYS.filter(liteCan).length ? " + " + LITE_KEYS.filter(liteCan).map((k) => PERM_KO[k].replace("제한: ", "")).join(" · ") : "만"} 할 수 있습니다.</p>}
       {tab === "exams" && (
         <div style={{ marginTop: 14 }}>
@@ -4387,6 +4398,29 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
           <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>학생 분석 리포트는 서버의 Claude 예약 작업이 만듭니다. 서버의 study-helper\sync.json 에 있는 연결 코드를 등록하면 그 서버만 기록을 읽고 리포트를 올릴 수 있습니다.</p>
           <Field value={workerKey} onChange={setWorkerKey} placeholder="연결 코드" ariaLabel="연결 코드" onEnter={setWorker} />
           <div style={{ marginTop: 10 }}><Btn kind="soft" onClick={setWorker}>등록</Btn></div>
+        </Card>
+      )}
+      {tab === "worker" && (
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>서버가 꺼져 있을 때 Claude API 로 고급 생성</div>
+          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>켜 두면, 서버(PC)가 정해 둔 시간 넘게 연결되지 않을 때 대기 중인 "AI 문제 생성(고급)"을 Claude API 가 대신 만듭니다(출제 → 다른 모델이 눈감고 풀기 → 답이 다르면 심판). 몇 분~수십 분 걸리고 API 요금이 듭니다. 사진으로 만들기·오답노트는 지금처럼 서버만 처리합니다. 꺼도 이미 API 가 맡은 작업은 끝까지 처리합니다.</p>
+          {!genApi ? <p style={{ color: C.sub, margin: 0 }}>불러오는 중…</p> : <>
+            {!genApi.hasKey && <p style={{ fontSize: 14, color: C.bad, margin: "0 0 10px" }}>API 키가 아직 등록되지 않았습니다. 키를 등록해야 켤 수 있습니다.</p>}
+            <CheckRow on={genApi.cfg.on} onToggle={() => genApi.hasKey && saveGenApi({ on: !genApi.cfg.on })}><span style={{ fontSize: 15, fontWeight: 700 }}>Claude API 사용</span></CheckRow>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
+              <label style={{ fontSize: 13, color: C.sub }}>하루 최대 작업 수
+                <select value={genApi.cfg.daily} onChange={(e) => saveGenApi({ daily: Number(e.target.value) })} style={{ ...sel, width: "100%", marginTop: 4 }}>{[1, 3, 5, 10, 20, 50].concat([1, 3, 5, 10, 20, 50].includes(genApi.cfg.daily) ? [] : [genApi.cfg.daily]).map((n) => <option key={n} value={n}>{n}건</option>)}</select>
+              </label>
+              <label style={{ fontSize: 13, color: C.sub }}>서버가 안 보이면 넘길 시간
+                <select value={genApi.cfg.waitMin} onChange={(e) => saveGenApi({ waitMin: Number(e.target.value) })} style={{ ...sel, width: "100%", marginTop: 4 }}>{[1, 3, 5, 10, 30].concat([1, 3, 5, 10, 30].includes(genApi.cfg.waitMin) ? [] : [genApi.cfg.waitMin]).map((n) => <option key={n} value={n}>{n}분</option>)}</select>
+              </label>
+            </div>
+            <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, margin: "10px 0 0" }}>
+              서버 마지막 연결: {genApi.pcSeenAt ? fmtDateTime(genApi.pcSeenAt) : "기록 없음"} · 오늘 API 작업 {genApi.today}/{genApi.cfg.daily}건 · 대기 {genApi.queued}건 · API 처리 중 {genApi.running}건
+              {genApi.err && <><br />마지막 오류({fmtDateTime(genApi.err.at)}): {genApi.err.msg}</>}
+            </p>
+            <div style={{ marginTop: 10 }}><Btn kind="ghost" onClick={loadGenApi}>새로 고침</Btn></div>
+          </>}
         </Card>
       )}
 
