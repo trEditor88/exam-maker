@@ -3268,6 +3268,20 @@ function ManualResultModal({ run, onClose, onDone }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [rows, setRows] = useState(() => run.questions.map((q) => ({ q, ok: true, m: (q.type || "mc") === "mc" ? [...(q.answers || [])] : [], t: "" })));
+  const [self, setSelf] = useState(false);    // 로그인한 계정이 출제자·관리자라 비밀번호 없이 채점자
+  const [why, setWhy] = useState(null);       // 비밀번호가 필요할 때: { via: "assign"|"share", ownerName, dueAt }
+  const [probing, setProbing] = useState(true);
+  /* 창을 열면 아이디 없이 먼저 물어본다 → 출제자·관리자면 바로 입력 화면, 아니면 배정/공유 여부를 보여 주고 채점자 확인 */
+  useEffect(() => {
+    let alive = true;
+    remote().graderCheck({ code: run.code }).then((r) => {
+      if (!alive) return;
+      setProbing(false);
+      if (r.ok) { setSelf(true); setGrader(r.grader); }
+      else if (r.error === "need_grader") setWhy({ via: r.via, ownerName: r.ownerName || "", dueAt: r.dueAt || 0 });
+    }).catch(() => alive && setProbing(false));
+    return () => { alive = false; };
+  }, [run.code]);
   const check = async () => {
     if (!gid.trim() || !gpw) return setErr("아이디와 비밀번호를 넣어 주세요.");
     setBusy(true); setErr("");
@@ -3280,8 +3294,9 @@ function ManualResultModal({ run, onClose, onDone }) {
     setBusy(true); setErr("");
     const toOrig = (q, arr) => arr.map((i) => (q.perm && q.perm[i] != null ? q.perm[i] : i)).sort((a, b) => a - b);
     const detail = rows.map((r) => ({ q: r.q.id, m: toOrig(r.q, r.m), ok: r.ok, ...((r.q.type || "mc") !== "mc" ? { t: r.t.slice(0, 500) } : {}) }));
-    const r = await remote().resultManual({ code: run.code, graderId: gid.trim(), graderPw: gpw, entry: { v: 2, detail } });
+    const r = await remote().resultManual(self ? { code: run.code, entry: { v: 2, detail } } : { code: run.code, graderId: gid.trim(), graderPw: gpw, entry: { v: 2, detail } });
     setBusy(false);
+    if (r.error === "need_grader") { setSelf(false); setGrader(null); setWhy(null); return setErr("이 계정은 이제 이 시험지의 채점자가 아니에요. 출제자나 관리자 계정으로 확인해 주세요."); }
     if (!r.ok) return setErr(errMsg(r));
     setGpw("");
     onDone(r);
@@ -3289,10 +3304,16 @@ function ManualResultModal({ run, onClose, onDone }) {
   const okCount = rows.filter((r) => r.ok).length;
   const setRow = (i, patch) => setRows(rows.map((x, k) => (k === i ? { ...x, ...patch } : x)));
   return (
-    <Modal title={grader ? `결과 직접 입력 · 채점 ${grader.name}` : "결과 직접 입력 · 계정 확인"} onClose={onClose} wide={!!grader} closeOnBackdrop={false}>
-      {!grader ? (
+    <Modal title={grader ? `결과 직접 입력 · 채점 ${grader.name}${self ? " (내 계정)" : ""}` : "결과 직접 입력 · 계정 확인"} onClose={onClose} wide={!!grader} closeOnBackdrop={false}>
+      {probing ? <p style={{ fontSize: 14, color: C.sub, margin: 0 }}>확인하는 중…</p> : !grader ? (
         <>
-          <p style={{ fontSize: 14, color: C.inkMid, margin: "0 0 12px", lineHeight: 1.55 }}>이 시험지를 만든 계정이나 관리자 계정으로 확인하면, 종이로 푼 결과 등을 문항별로 직접 입력해 응시 기록으로 남길 수 있습니다. 기록은 지금 로그인한 계정의 결과로 저장됩니다.</p>
+          {why && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "0 0 10px" }}>
+              <Badge tone={why.via === "assign" ? "accent" : "neutral"}>{why.via === "assign" ? "배정받은 시험" : "공유받은 시험"}</Badge>
+              <span style={{ fontSize: 13.5, color: C.inkMid }}>{why.via === "assign" ? `${why.ownerName || "출제자"} 선생님이 배정한 시험지예요${why.dueAt ? ` · ${fmtDateTime(why.dueAt)} 마감` : ""}.` : `${why.ownerName || "출제자"}님이 만든 시험지를 공유 코드로 연 거예요.`}</span>
+            </div>
+          )}
+          <p style={{ fontSize: 14, color: C.inkMid, margin: "0 0 12px", lineHeight: 1.55 }}>{why ? "내가 만든 시험지가 아니라서, 이 시험지를 만든 계정이나 관리자 계정으로 확인해야" : "이 시험지를 만든 계정이나 관리자 계정으로 확인하면"} 종이로 푼 결과 등을 문항별로 직접 입력할 수 있습니다. 기록은 지금 로그인한 계정의 결과로 저장됩니다.</p>
           <div style={{ display: "grid", gap: 8 }}>
             <Field value={gid} onChange={setGid} placeholder="채점자 아이디" ariaLabel="채점자 아이디" autoFocus />
             <Field value={gpw} onChange={setGpw} placeholder="비밀번호" type="password" ariaLabel="채점자 비밀번호" onEnter={check} />
