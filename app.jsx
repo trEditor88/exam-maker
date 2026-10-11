@@ -168,6 +168,17 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
 .pq-in{width:100%;box-sizing:border-box;font:inherit;color:inherit;background:#fff;border:1.5px solid #0066CC;border-radius:6px;padding:2px 6px;resize:none;overflow:hidden;outline:none;display:block;}
 .pq-opts{display:grid;gap:4px 14px;margin:0 0 4px 2px;} .pq-opts.two{grid-template-columns:1fr 1fr;} .pq-o{display:flex;gap:6px;min-width:0;} .pq-ot{flex:1;min-width:0;} .pq-m{color:var(--pac);font-weight:700;}
 .pq-o.ans .pq-m{text-decoration:underline 2px;text-underline-offset:3px;}
+/* 풀기 화면 문제지: 보기를 눌러 고른다(편집기 문제지와 같은 모양) */
+.pq-pick{display:flex;gap:6px;align-items:flex-start;width:100%;box-sizing:border-box;text-align:left;font:inherit;color:inherit;background:none;border:1.5px solid transparent;border-radius:8px;padding:6px 8px;margin:0 -8px;cursor:pointer;min-height:40px;line-height:1.5;}
+.pq-pick:hover{background:#F2F7FD;} .pq-pick:focus-visible{outline:2px solid #0066CC;outline-offset:1px;}
+.pq-pick[aria-pressed="true"]{border-color:var(--pac);background:var(--pacs);box-shadow:inset 0 0 0 1px var(--pac);}
+.pq-pick .pq-m{flex:0 0 auto;} .pq-pick[aria-pressed="true"] .pq-m{color:#fff;background:#1D1D1F;border-radius:999px;padding:0 5px;}
+.pq-pick[aria-pressed="true"]::after{content:"✓";margin-left:auto;padding-left:6px;color:#1D1D1F;font-weight:800;}
+@media (max-width:639px){.em-pq.take .pq-opts{gap:8px 10px;} .pq-pick{min-height:44px;}}
+.em-pq.take{cursor:default;} .em-pq.take:hover{border-color:transparent;} .em-pq.take.done .pq-n{color:var(--pac);}
+.pq-ans{width:100%;box-sizing:border-box;font:inherit;font-size:16px;color:#1D1D1F;background:#fff;border:none;border-bottom:1.5px solid #1D1D1F;padding:4px 2px;outline:none;}
+.pq-ans::placeholder{color:#6E6E73;opacity:1;} .em-paper{color-scheme:light;}
+.pq-ans:focus{border-bottom-color:#0066CC;background:#F2F7FD;} .pq-ans:focus-visible{outline:2px solid #0066CC;outline-offset:1px;} textarea.pq-ans{border:1px solid #C7C7CC;border-radius:6px;padding:6px 8px;min-height:96px;resize:vertical;}
 .pq-pas{border:1px solid #D5D5DA;border-radius:6px;padding:8px 10px;margin:0 0 8px;font-size:14px;white-space:pre-wrap;background:#FAFAFA;}
 .pq-fig{position:relative;display:block;width:100%;max-width:420px;margin:2px 0 8px;} .pq-fig.on{outline:2px dashed #80B3E6;outline-offset:3px;border-radius:4px;}
 .pq-trash{position:absolute;top:-12px;right:-12px;width:32px;height:32px;border-radius:999px;border:none;background:#C0392B;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 2px 6px rgba(0,0,0,.2);} .pq-trash svg{width:18px;height:18px;}
@@ -3389,9 +3400,14 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
   const unanswered = run.questions.length - answered;
 
   const submit = () => (unanswered > 0 ? setConfirm(true) : onSubmit());
+  /* 보기 방식: 문제지(편집 화면의 문제지와 같은 종이 모양, 기본) / 크게 보기(문항마다 큰 카드). 이 브라우저에 기억 */
+  const [view, setViewRaw] = useState(() => { try { return localStorage.getItem(LS_PREFIX + "takeView") || "paper"; } catch (e) { return "paper"; } });
+  const setView = (v) => { setViewRaw(v); try { localStorage.setItem(LS_PREFIX + "takeView", v); } catch (e) {} };
+  const level = LEVELS.indexOf(run.level) >= 0 ? run.level : "기본";
+  const kindLabel = useMemo(() => { try { return quizKindLabel(printableItems(run)); } catch (e) { return ""; } }, [run]);
 
   return (
-    <Shell back="나가기" backTo={onExit} toast={toast}>
+    <Shell back="나가기" backTo={onExit} toast={toast} wide={view === "paper"}>
       <h2 style={{ fontSize: 25, fontWeight: 800, margin: "0 0 6px" }}>{run.title}</h2>
       {run.desc && <p style={{ fontSize: 15, color: C.inkMid, lineHeight: 1.6, margin: "0 0 10px", whiteSpace: "pre-wrap" }}>{run.desc}</p>}
       <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 14px" }}>
@@ -3400,6 +3416,7 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
         {loggedIn && onManualDone && !run.partial && !run.preview && <> · <TextBtn onClick={() => setManual(true)} style={{ padding: "10px 0", margin: "-10px 0", minHeight: 0, fontSize: 14 }}>결과 직접 입력</TextBtn></>}
       </p>
       {manual && <ManualResultModal run={run} onClose={() => setManual(false)} onDone={(r) => { setManual(false); onManualDone(r); }} />}
+      <div role="group" aria-label="보기 방식" style={{ margin: "0 0 4px" }}><Seg value={view} onChange={setView} items={[["paper", "문제지"], ["card", "크게 보기"]]} /></div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, color: C.sub, marginBottom: 6 }}>
@@ -3418,6 +3435,46 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
         <Field value={name} onChange={(v) => setName(v)} placeholder="이름 (선택) — 출제자에게 결과가 전달됩니다" maxLength={20} style={{ marginBottom: 14, fontSize: 15 }} />
       )}
 
+      {view === "paper" ? (
+        <div className="em-paper" style={{ "--pac": LEVEL_COLOR[level], "--pacs": LEVEL_SOFT[level] }}>
+          <div className="pp-hd">
+            <div className="pp-tag"><span>{run.subject || "시험지"}</span><span>{level}</span></div>
+            <div className="pp-ttl">{run.title}</div>
+            {kindLabel ? <div className="pp-kind">{kindLabel}</div> : <span />}
+          </div>
+          {run.desc && <div className="pp-box">{run.desc}</div>}
+          <div className="pp-cols">
+            {run.questions.map((q, qi) => {
+              const mine = picked[q.id] || [], type = q.type || "mc";
+              const opts = type === "mc" ? q.options || [] : [];
+              const showPas = !!q.passage && (qi === 0 || run.questions[qi - 1].passage !== q.passage);
+              const done = type === "mc" ? mine.length > 0 : !!((typed || {})[q.id] || "").trim();
+              return (
+                <div key={q.id} className={"em-pq take" + (done ? " done" : "")}>
+                  {showPas && <div className="pq-pas"><M t={q.passage} /></div>}
+                  <div className="pq-h" style={{ paddingRight: 0 }}>
+                    <span className="pq-n">Q{qi + 1}.</span>
+                    <span className="pq-t"><M t={q.text} />{type === "short" ? <span className="pq-sub"> (주관식)</span> : type === "essay" ? <span className="pq-sub"> (서술형)</span> : (q.answers || []).length > 1 ? <span className="pq-sub"> (정답 여러 개)</span> : null}</span>
+                    {q.src && <span className="pq-src">원본 {q.src}</span>}
+                  </div>
+                  {q.svg && <div className="pq-fig"><Figure svg={q.svg} style={{ margin: 0 }} /></div>}
+                  {type === "mc" && (
+                    <div className={"pq-opts " + (opts.every((o) => String(o).length <= 14) ? "two" : "one")} role="group" aria-label={`${qi + 1}번 보기`}>
+                      {opts.map((o, oi) => (
+                        <button key={oi} type="button" className="pq-pick" aria-pressed={mine.includes(oi)} onClick={() => togglePick(q.id, oi)}>
+                          <span className="pq-m">{mark(oi)}</span><span className="pq-ot"><M t={o} /></span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {type === "short" && <input className="pq-ans" value={(typed || {})[q.id] || ""} onChange={(e) => setTyped((t) => ({ ...(t || {}), [q.id]: e.target.value }))} maxLength={200} placeholder="답:" aria-label={`${qi + 1}번 답`} />}
+                  {type === "essay" && <textarea className="pq-ans" value={(typed || {})[q.id] || ""} onChange={(e) => setTyped((t) => ({ ...(t || {}), [q.id]: e.target.value }))} maxLength={2000} placeholder="답을 문장으로 적어 주세요" aria-label={`${qi + 1}번 답`} />}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
       <div style={{ display: "grid", gap: 12 }}>
         {run.questions.map((q, qi) => {
           const mine = picked[q.id] || [];
@@ -3449,6 +3506,7 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
           );
         })}
       </div>
+      )}
       <p style={{ fontSize: 14, color: unanswered ? C.bad : C.good, textAlign: "center", margin: "20px 0 10px" }}>
         {unanswered ? `아직 답을 고르지 않은 문제가 ${unanswered}개 있습니다.` : "모든 문제에 답했습니다."}
       </p>
