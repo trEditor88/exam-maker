@@ -1271,15 +1271,15 @@ function AppMark({ size = 28, bare }) {
   );
 }
 /* 사진 고르기: 브라우저 기본 파일 버튼(영어) 대신 한국어 버튼 + 고른 장수 */
-function FilePick({ onFiles, count, inputRef, label = "사진 고르기" }) {
+function FilePick({ onFiles, count, inputRef, label = "사진 고르기", accept = "image/*", countText, disabled }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-      <label className="em-filepick">
-        <input ref={inputRef} type="file" accept="image/*" multiple onChange={(e) => { onFiles(Array.from(e.target.files || [])); e.target.value = ""; }} aria-label={label} />
+      <label className="em-filepick" style={disabled ? { opacity: 0.55, cursor: "default" } : undefined}>
+        <input ref={inputRef} type="file" accept={accept} multiple disabled={disabled} onChange={(e) => { onFiles(Array.from(e.target.files || [])); e.target.value = ""; }} aria-label={label} />
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
         {label}
       </label>
-      <span style={{ fontSize: 13.5, color: C.sub }}>{count ? `${count}장 골랐어요` : "아직 고른 사진이 없어요"}</span>
+      <span aria-live="polite" style={{ fontSize: 13.5, color: C.sub }}>{countText !== undefined ? countText : count ? `${count}장 골랐어요` : "아직 고른 사진이 없어요"}</span>
     </div>
   );
 }
@@ -2227,6 +2227,89 @@ function useObjectUrls(files) {
   useEffect(() => () => urls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) {} }), [urls]);
   return urls;
 }
+/* ── 자료 파일 → 글자·쪽 사진 (AI 문제 만들기) ─────────
+   PDF: 글자층 + 쪽마다 JPEG(고급 방식이 사진으로 읽음) / 워드(docx)·한글(hwpx)·파워포인트(pptx): 압축 안 XML 의 글자 / txt·md·csv: 그대로.
+   옛 이진 형식(hwp·doc·ppt)은 브라우저에서 못 읽어 PDF 로 저장해 달라고 안내. 라이브러리(pdf.js·JSZip)는 그 파일을 고를 때만 불러온다 */
+const LIB_PDF = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const LIB_PDF_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const LIB_ZIP = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+const libLoading = {};
+function loadLib(src, globalName) {
+  if (window[globalName]) return Promise.resolve(window[globalName]);
+  if (!libLoading[src]) libLoading[src] = new Promise((res, rej) => {
+    const el = document.createElement("script");
+    el.src = src; el.async = true; el.crossOrigin = "anonymous";
+    el.onload = () => (window[globalName] ? res(window[globalName]) : rej(new Error("lib")));
+    el.onerror = () => { delete libLoading[src]; rej(new Error("lib")); };   // 다음에 다시 시도할 수 있게
+    document.head.appendChild(el);
+  });
+  return libLoading[src];
+}
+const fileExt = (f) => (/\.([a-z0-9]+)$/i.exec(f.name || "") || [, ""])[1].toLowerCase();
+const MAT_ACCEPT = "image/*,.pdf,.docx,.pptx,.hwpx,.txt,.md,.csv,.hwp,.doc,.ppt";
+const PDF_MAX_PAGES = 80, MAT_FILE_MAX = 40 * 1024 * 1024;   // 휴대폰에서 탭이 죽지 않게 파일 크기·쪽 수 상한
+/* XML 문서에서 단락(pTag)마다 글자(tTag)를 이어 붙인다 — 네임스페이스 접두사가 붙은 이름 그대로 찾는다 */
+function xmlParagraphs(xml, pTag, tTag) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  return Array.from(doc.getElementsByTagName(pTag)).map((p) => Array.from(p.getElementsByTagName(tTag)).map((t) => t.textContent).join("")).filter((x) => x.trim()).join("\n");
+}
+async function zipTexts(file, re, pTag, tTag) {
+  const JSZip = await loadLib(LIB_ZIP, "JSZip");
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const names = Object.keys(zip.files).filter((n) => re.test(n)).sort((a, b) => (parseInt((/(\d+)\.xml$/.exec(a) || [, 0])[1], 10) - parseInt((/(\d+)\.xml$/.exec(b) || [, 0])[1], 10)));
+  const parts = [];
+  for (const n of names) parts.push(xmlParagraphs(await zip.file(n).async("string"), pTag, tTag));
+  return parts.filter(Boolean).join("\n\n");
+}
+/* PDF: 글자는 전체 쪽(최대 80쪽), 쪽 사진은 maxImages 장까지(긴 변 1600px) */
+async function readPdf(file, maxImages) {
+  const lib = await loadLib(LIB_PDF, "pdfjsLib");
+  lib.GlobalWorkerOptions.workerSrc = LIB_PDF_WORKER;
+  const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  try {
+    const n = Math.min(doc.numPages, PDF_MAX_PAGES), texts = [], images = [];
+    for (let i = 1; i <= n; i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      texts.push(tc.items.map((it) => it.str + (it.hasEOL ? "\n" : "")).join(""));
+      if (images.length < maxImages) {
+        const v1 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.min(3, 1600 / Math.max(v1.width, v1.height)) });
+        const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.85));
+        c.width = c.height = 0;   // 휴대폰 메모리: 쪽마다 캔버스를 바로 비운다
+        if (blob) images.push(new File([blob], `${file.name.replace(/\.pdf$/i, "")}-${i}쪽.jpg`, { type: "image/jpeg" }));
+      }
+      page.cleanup();
+    }
+    return { text: texts.join("\n").replace(/[ \t]+\n/g, "\n").trim(), images, pages: doc.numPages };
+  } finally {
+    doc.destroy();
+  }
+}
+/* 파일 하나 → { text, images, info, warn } */
+async function readMaterialFile(file, maxImages) {
+  const ext = fileExt(file), type = file.type || "";
+  if (type.startsWith("image/")) return { text: "", images: [file], info: "사진" };
+  if (file.size > MAT_FILE_MAX) return { text: "", images: [], info: "너무 큼", warn: `파일이 40MB를 넘어요. 필요한 쪽만 나눠서 올려 주세요.` };
+  const empty = "읽을 글자가 없어요(그림만 있거나 암호가 걸린 파일일 수 있어요).";
+  if (ext === "pdf" || type === "application/pdf") {
+    const r = await readPdf(file, maxImages);
+    const info = `${r.pages}쪽 · 글자 ${r.text.length.toLocaleString()}자${r.images.length ? ` · 쪽 사진 ${r.images.length}장` : ""}`;
+    const warn = [r.text.length < 20 ? "글자가 없는 스캔 PDF예요. 기본 방식은 글자만 읽으니 고급 방식(쪽 사진)을 쓰세요." : "", r.pages > PDF_MAX_PAGES ? `앞 ${PDF_MAX_PAGES}쪽까지만 읽었어요.` : ""].filter(Boolean).join(" ");
+    return { text: r.text, images: r.images, info, warn };
+  }
+  const zipped = { docx: [/^word\/document\.xml$/, "w:p", "w:t", "워드"], pptx: [/^ppt\/slides\/slide\d+\.xml$/, "a:p", "a:t", "파워포인트"], hwpx: [/^Contents\/section\d+\.xml$/, "hp:p", "hp:t", "한글(hwpx)"] }[ext];
+  if (zipped) {
+    const text = await zipTexts(file, zipped[0], zipped[1], zipped[2]);
+    return { text, images: [], info: `${zipped[3]} · 글자 ${text.length.toLocaleString()}자`, warn: text ? "" : empty };
+  }
+  if (["txt", "md", "csv"].includes(ext) || type.startsWith("text/")) { const text = (await file.text()).trim(); return { text, images: [], info: `텍스트 · 글자 ${text.length.toLocaleString()}자`, warn: text ? "" : empty }; }
+  if (["hwp", "doc", "ppt"].includes(ext)) return { text: "", images: [], info: "읽을 수 없음", warn: `옛 ${ext.toUpperCase()} 형식은 브라우저에서 못 읽어요. 그 프로그램에서 'PDF로 저장'(한글은 hwpx 도 가능)한 뒤 올려 주세요.` };
+  return { text: "", images: [], info: "읽을 수 없음", warn: "지원하지 않는 형식이에요(사진·PDF·docx·pptx·hwpx·txt)." };
+}
 /* 서버가 준 HTML(리포트·오답노트)을 새 창에 쓸 때 스크립트 실행을 막는 CSP 를 앞에 붙인다(같은 origin 이라 토큰 접근 차단) */
 function openHtmlWindow(html, flash) {
   const w = window.open("", "_blank");
@@ -2247,7 +2330,49 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
   const modeTouched = useRef(false);
   const setMode = (v) => { modeTouched.current = true; setModeRaw(v); };
   useEffect(() => { if (genAvail && !modeTouched.current) setModeRaw("fast"); }, [genAvail]);   // ping 이 늦게 와도 사용자가 고르기 전이면 기본(빠른) 방식으로
-  const [photos, setPhotos] = useState([]);   // 고급: 사진으로 만들기
+  const [photos, setPhotos] = useState([]);   // 고급: 사진으로 만들기(사진 + PDF 쪽 사진)
+  const [files, setFiles] = useState([]);     // 올린 자료 파일 목록 { name, info, warn }
+  const [reading, setReading] = useState("");  // 파일 읽는 중 표시
+  const MAT_MAX = 20000;
+  /* 자료 파일 넣기: 글자는 '자료'에 이어 붙이고(이름 머리표), 사진·PDF 쪽은 사진 목록으로.
+     읽는 동안 사용자가 고친 '자료'를 덮어쓰지 않도록 함수형으로 덧붙이고, 파일마다 넣은 글자·사진을 기억해 빼기 버튼이 함께 지운다 */
+  const addFiles = async (fs) => {
+    let room = lim.photos - photos.length, cut = false, estLen = material.length;   // estLen: 한도 넘김 알림용 어림값(실제 자르기는 setMaterial 안에서)
+    for (let i = 0; i < fs.length; i++) {
+      const f = fs[i];
+      setReading(`파일 읽는 중 ${i + 1}/${fs.length} · ${f.name}`);
+      let r;
+      try { r = await readMaterialFile(f, Math.max(0, room)); }
+      catch (e) {
+        const pw = e && /Password/i.test(e.name || "");
+        r = { text: "", images: [], info: "읽기 실패", warn: pw ? "암호가 걸린 PDF예요. 암호를 푼 뒤 올려 주세요." : "파일을 읽지 못했어요. 깨진 파일이거나 인터넷 연결 문제일 수 있어요. PDF로 바꿔 다시 올려 보세요." };
+      }
+      const imgs = r.images.slice(0, Math.max(0, room));
+      if (r.images.length > imgs.length) cut = true;
+      room -= imgs.length;
+      const block = r.text ? `【${f.name}】\n${r.text}` : "";
+      if (block) { estLen += block.length + 2; if (estLen > MAT_MAX) cut = true; setMaterial((m) => (m + (m ? "\n\n" : "") + block).slice(0, MAT_MAX)); }
+      if (imgs.length) setPhotos((p) => [...p, ...imgs]);
+      const id = uid();
+      setFiles((x) => [...x, { id, name: f.name, info: r.info, warn: r.warn || "", block, imgs, bad: !block && !imgs.length }]);
+    }
+    setReading("");
+    setErr(cut ? `한도를 넘는 부분은 뺐어요(사진·쪽 ${lim.photos}장, 자료 글자 ${MAT_MAX.toLocaleString()}자까지).` : "");
+  };
+  const removeFile = (f) => {
+    if (f.block) setMaterial((m) => m.replace("\n\n" + f.block, "").replace(f.block, "").trim());
+    if (f.imgs.length) setPhotos((p) => p.filter((x) => !f.imgs.includes(x)));
+    setFiles((x) => x.filter((y) => y.id !== f.id));
+  };
+  /* 범위를 비우고 파일만 올렸으면 파일 이름으로 범위를 채운다(서버는 범위가 꼭 있어야 함).
+     기본(Gemini) 방식은 글자만 읽으므로 뽑은 글자('자료')가 있어야만, 고급은 사진도 근거가 된다 */
+  const scopeOrFiles = () => {
+    if (scope.trim()) return scope.trim();
+    const ok = files.filter((f) => (f.block && material.includes(f.block)) || (mode === "pro" && f.imgs.some((x) => photos.includes(x))));
+    if (!ok.length) return "";
+    const base = ok[0].name.replace(/\.[^.]+$/, "");
+    return `${base}${ok.length > 1 ? ` 외 ${ok.length - 1}개` : ""} 자료의 내용`.slice(0, 200);
+  };
   const [explainLen, setExplainLen] = useState("normal");
   const [tbs, setTbs] = useState([]);          // 학교 교과서 목록
   const [tbSel, setTbSel] = useState("auto");   // auto | 번호 | none
@@ -2270,12 +2395,12 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
   const tbIdx = tbSel === "auto" ? sugIdx : tbSel === "none" ? -1 : Number(tbSel);
   const textbook = tbIdx >= 0 && tbs[tbIdx] ? tbLabel(tbs[tbIdx]) : "";
   const run = async () => {
-    if (busy || (!scope.trim() && !(mode === "pro" && photos.length))) return;
+    if (busy || reading || (!scopeOrFiles() && !(mode === "pro" && photos.length))) return;
     setBusy(true);
     setErr("");
     if (mode === "pro") {
       const type = photos.length ? "photo" : "gen";
-      const rq = await remote().jobCreate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, subject: subject || "", textbook, explainLen }, type, photos.length);
+      const rq = await remote().jobCreate({ scope: scopeOrFiles(), material: material.trim(), count, difficulty, kind, subject: subject || "", textbook, explainLen }, type, photos.length);
       if (!rq.ok) { setBusy(false); setErr(errMsg(rq)); return; }
       /* 사진 업로드가 중간에 실패하면 만들어 둔 작업을 취소해 uploading 상태로 남지 않게 한다(3개 한도 소진 방지) */
       const fail = (msg) => { setBusy(false); setProg(""); setErr(msg); remote().jobCancel(rq.job.id).catch(() => {}); };
@@ -2295,7 +2420,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
       onQueue && onQueue(rq.job);
       return;
     }
-    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count, difficulty, kind, textbook, explainLen, subject: subject || "" });
+    const r = await remote().generate({ scope: scopeOrFiles(), material: material.trim(), count, difficulty, kind, textbook, explainLen, subject: subject || "" });
     setBusy(false);
     if (!r.ok) {
       setErr(errMsg(r));
@@ -2314,7 +2439,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
     const need = result.want - result.questions.length;
     if (need <= 0) return;
     setBusy(true); setErr("");
-    const r = await remote().generate({ scope: scope.trim(), material: material.trim(), count: need, difficulty, kind, textbook, explainLen, subject: subject || "" });
+    const r = await remote().generate({ scope: scopeOrFiles(), material: material.trim(), count: need, difficulty, kind, textbook, explainLen, subject: subject || "" });
     setBusy(false);
     if (!r.ok) return setErr(errMsg(r));
     const qs = (r.questions || []).map((q) => normalizeQuestion(q, 0)).filter((q) => q.text && (q.type === "essay" ? true : q.type === "short" ? !!q.answerText : q.options && q.answers.length));
@@ -2334,16 +2459,27 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
           <Seg value={mode} onChange={setMode} items={[["fast", "기본 (바로 만들기)"], ["pro", "고급 (Claude · 10분 안에)"]]} />
           <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: "8px 0 12px" }}>
             {mode === "pro"
-              ? "서버의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(서버가 켜져 있을 때 보통 10분 안). 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
+              ? "서버의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(서버가 켜져 있을 때 보통 10분 안). 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
               : genAvail
-                ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요."
+                ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
                 : "기본 방식은 지금 쓸 수 없습니다(서버에 Gemini 설정 없음). 고급 방식을 골라 주세요."}
           </p>
-          <Field multiline rows={2} value={scope} onChange={setScope} placeholder={mode === "pro" ? "범위 또는 시험지 제목 (사진을 올리면 비워도 됩니다)" : "범위 (예: 중2 과학 광합성 단원, 영어 현재완료 시제)"} maxLength={500} autoFocus />
-          {mode === "pro" && server && (
+          <Field multiline rows={2} value={scope} onChange={setScope} placeholder={mode === "pro" ? "범위 또는 시험지 제목 (파일·사진을 올리면 비워도 됩니다)" : "범위 (예: 중2 과학 광합성 단원 — 파일을 올리면 비워도 됩니다)"} maxLength={500} autoFocus />
+          {label(`자료 파일·사진 (선택) — PDF·워드(docx)·한글(hwpx)·파워포인트(pptx)·텍스트·사진. 글자는 아래 '자료'에 들어가고, 사진과 PDF 쪽은 고급 방식에서 그림까지 읽습니다(최대 ${lim.photos}장)`)}
+          <FilePick label={reading ? "읽는 중…" : "파일·사진 고르기"} accept={MAT_ACCEPT} disabled={!!reading} countText={reading || (files.length ? `파일 ${files.length}개 · 사진·쪽 ${photos.length}장` : "아직 고른 파일이 없어요")} onFiles={(fs) => { if (!reading) addFiles(fs); }} />
+          {files.length > 0 && (
+            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0", display: "grid", gap: 4 }}>
+              {files.map((f) => (
+                <li key={f.id} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 13, lineHeight: 1.5, color: f.warn ? C.bad : C.inkMid }}>
+                  <span style={{ flex: 1, minWidth: 0 }}><b style={{ color: C.ink }}>{f.name}</b> · {f.info}{f.warn ? ` — ${f.warn}` : ""}</span>
+                  <TextBtn tone="sub" onClick={() => removeFile(f)} disabled={!!reading} ariaLabel={`${f.name} 빼기`} style={{ fontSize: 12.5, padding: "0 4px", minHeight: 0 }}>빼기</TextBtn>
+                </li>
+              ))}
+            </ul>
+          )}
+          {mode === "fast" && photos.length > 0 && <p style={{ fontSize: 12.5, color: C.warn, margin: "6px 0 0", lineHeight: 1.5 }}>사진·PDF 쪽 그림은 고급 방식에서만 읽어요. 기본 방식은 뽑아낸 글자('자료')만 씁니다.</p>}
+          {(mode === "pro" || photos.length > 0) && server && (
             <>
-              {label(`사진으로 만들기 (선택, 최대 ${lim.photos}장) — 교과서·프린트·시험지를 찍어 올리면 그 내용으로 문제를 냅니다`)}
-              <FilePick count={photos.length} onFiles={(fs) => { const all = [...photos, ...fs]; setErr(all.length > lim.photos ? `사진은 ${lim.photos}장까지 넣을 수 있어 앞의 ${lim.photos}장만 넣었습니다.` : ""); setPhotos(all.slice(0, lim.photos)); }} />
               {photos.length > 0 && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                   {photos.map((f, i) => (
@@ -2356,7 +2492,8 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
               )}
             </>
           )}
-          <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다" maxLength={20000} style={{ marginTop: 10, fontSize: 14 }} />
+          <Field multiline rows={4} value={material} onChange={setMaterial} placeholder="자료 붙여넣기 (선택) — 교과서 본문이나 수업 자료를 넣으면 그 내용에서만 출제합니다. 올린 파일의 글자도 여기에 들어가요" maxLength={MAT_MAX} style={{ marginTop: 10, fontSize: 14 }} />
+          {material.length > 0 && <div style={{ fontSize: 12, color: C.sub, textAlign: "right", marginTop: 2 }}>{material.length.toLocaleString()} / {MAT_MAX.toLocaleString()}자</div>}
           {label("문제 수")}
           <Seg value={custom ? "custom" : count} onChange={(v) => { if (v === "custom") { setCustom(true); setCountStr(String(count)); } else { setCustom(false); setCount(v); } }} items={[[10, "10개"], [25, "25개"], ["custom", "직접 입력"]]} />
           {custom && <input type="number" min="1" max={lim.count} placeholder={`1~${lim.count}`} value={countStr} onChange={(e) => { setCountStr(e.target.value); const n = parseInt(e.target.value, 10); if (n >= 1 && n <= lim.count) setCount(n); }} onBlur={() => setCountStr(String(count))} className="em-in" aria-label="문제 수" style={{ marginTop: 8, width: "100%", boxSizing: "border-box", fontFamily: FONT, fontSize: 15, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px" }} />}
@@ -2383,7 +2520,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
 
           {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
-            <Btn onClick={run} disabled={busy || (!scope.trim() && !(mode === "pro" && photos.length)) || (mode === "fast" && !genAvail) || (mode === "pro" && !server)}>{busy ? (mode === "pro" ? prog || "요청하는 중…" : "문제를 만드는 중… (최대 1분)") : mode === "pro" ? (photos.length ? `사진 ${photos.length}장으로 Claude에게 요청하기` : "Claude에게 요청하기") : "문제 만들기"}</Btn>
+            <Btn onClick={run} disabled={busy || !!reading || (!scopeOrFiles() && !(mode === "pro" && photos.length)) || (mode === "fast" && !genAvail) || (mode === "pro" && !server)}>{busy ? (mode === "pro" ? prog || "요청하는 중…" : "문제를 만드는 중… (최대 1분)") : reading ? "파일 읽는 중…" : mode === "pro" ? (photos.length ? `사진·쪽 ${photos.length}장으로 Claude에게 요청하기` : "Claude에게 요청하기") : "문제 만들기"}</Btn>
             <Btn kind={manual ? "soft" : "ghost"} onClick={onClose}>{manual ? "직접 문제 만들기" : "닫기"}</Btn>
           </div>
         </>
