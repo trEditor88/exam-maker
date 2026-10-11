@@ -1,3 +1,4 @@
+/* 자동 생성 파일 — 고치지 마세요. 원본은 exam-maker/src/*.jsx, 만들기: python tools/build_app.py */
 const { useState, useEffect, useRef, useMemo } = React;
 
 /* 서버 주소 (Google Apps Script 웹 앱 URL). 비어 있으면 이 기기 안에서만 동작합니다. */
