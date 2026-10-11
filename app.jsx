@@ -33,7 +33,7 @@ const C = {
 };
 /* Light 하우스 팔레트(설명서·리포트·오답노트와 같은 얼굴) */
 const THEME_LIGHT = { bg: "#FFFFFF", card: "#F5F5F7", field: "#FFFFFF", ink: "#1D1D1F", inkMid: "#3A3A3C", sub: "#6E6E73", line: "#E0E0E0", lineSoft: "#ECECEF", accent: "#0066CC", accentSoft: "#E8F1FB", good: "#15803D", goodSoft: "#E6F4EA", warn: "#9A6700", warnSoft: "#FFF4DD", bad: "#C0392B", badSoft: "#FBE9E7", shadow: "0 4px 20px rgba(0,0,0,.05)", dim: "rgba(29,29,31,.45)", onAccent: "#FFFFFF", warnLine: "#F3DFB0" };
-const THEME_DARK = { bg: "#0B0B0D", card: "#1C1C1E", field: "#2C2C2E", ink: "#F5F5F7", inkMid: "#D1D1D6", sub: "#98989D", line: "#3A3A3C", lineSoft: "#2C2C2E", accent: "#4A9EFF", accentSoft: "#17304B", good: "#4CC38A", goodSoft: "#143021", warn: "#E0A526", warnSoft: "#3A2E10", bad: "#FF6B5B", badSoft: "#3B1A17", shadow: "none", dim: "rgba(0,0,0,.6)", onAccent: "#0B0B0D", warnLine: "#5A4A1E" };   // 다크 primary 버튼: 흰 글자(2.9:1) 대신 어두운 글자(7:1)
+const THEME_DARK = { bg: "#000000", card: "#1C1C1E", field: "#2C2C2E", ink: "#F5F5F7", inkMid: "#D1D1D6", sub: "#A1A1A6", line: "#3A3A3C", lineSoft: "#2C2C2E", accent: "#4A9EFF", accentSoft: "#17304B", good: "#4CC38A", goodSoft: "#143021", warn: "#E0A526", warnSoft: "#3A2E10", bad: "#FF6B5B", badSoft: "#3B1A17", shadow: "none", dim: "rgba(0,0,0,.6)", onAccent: "#000000", warnLine: "#5A4A1E" };   // 다크 primary 버튼: 흰 글자(2.9:1) 대신 어두운 글자(7:1)
 
 const FONT =
   "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
@@ -152,23 +152,23 @@ body.em-has-nav .em-page{padding-bottom:104px !important;}
 .pp-pill{display:inline-block;border:1.5px solid var(--pac);color:var(--pac);font-weight:800;font-size:13.5px;border-radius:999px;padding:3px 16px;margin:0 0 10px;}
 .pp-cols{columns:2;column-gap:30px;column-rule:1px dashed #E5E5EA;} @media (max-width:760px){.pp-cols{columns:1;}}
 .em-pq{position:relative;break-inside:avoid;padding:10px 12px;margin:0 -12px 6px;border:2px solid transparent;border-radius:10px;cursor:pointer;}
-.em-pq:hover{border-color:#E3F1FC;} .em-pq.on{border-color:#8CCBF5;background:#F6FBFF;cursor:default;}
-.pq-grip{position:absolute;top:4px;right:4px;width:28px;height:32px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;border:none;border-radius:8px;background:none;color:#A1A1A6;display:flex;align-items:center;justify-content:center;cursor:grab;padding:0;touch-action:none;opacity:.55;} .pq-grip svg{width:18px;height:18px;} .em-pq:hover .pq-grip,.em-pq.on .pq-grip,.pq-grip:focus-visible{opacity:1;color:#1A8FE0;background:#E3F1FC;}
+.em-pq:hover{border-color:#E8F1FB;} .em-pq.on{border-color:#80B3E6;background:#F6FBFF;cursor:default;}
+.pq-grip{position:absolute;top:4px;right:4px;width:28px;height:32px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;border:none;border-radius:8px;background:none;color:#A1A1A6;display:flex;align-items:center;justify-content:center;cursor:grab;padding:0;touch-action:none;opacity:.55;} .pq-grip svg{width:18px;height:18px;} .em-pq:hover .pq-grip,.em-pq.on .pq-grip,.pq-grip:focus-visible{opacity:1;color:#0066CC;background:#E8F1FB;}
 .em-pq.on .pq-grip{right:40px;} .em-pq.on .pq-h{padding-right:70px;}
-[data-drop="before"]{box-shadow:0 -4px 0 0 #1A8FE0;} [data-drop="after"]{box-shadow:0 4px 0 0 #1A8FE0;} [data-dragging]{opacity:.35;}
-.em-grip{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;width:36px;height:36px;border:none;border-radius:8px;background:none;color:#A1A1A6;display:inline-flex;align-items:center;justify-content:center;cursor:grab;padding:0;touch-action:none;} .em-grip:hover,.em-grip:focus-visible{color:#1A8FE0;background:#E3F1FC;} .em-grip svg{width:18px;height:18px;}
-.pq-dots{position:absolute;top:4px;right:4px;width:32px;height:32px;border:none;border-radius:8px;background:#E3F1FC;color:#1A8FE0;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;} .pq-dots svg{width:20px;height:20px;}
+[data-drop="before"]{box-shadow:0 -4px 0 0 #0066CC;} [data-drop="after"]{box-shadow:0 4px 0 0 #0066CC;} [data-dragging]{opacity:.35;}
+.em-grip{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;width:36px;height:36px;border:none;border-radius:8px;background:none;color:#A1A1A6;display:inline-flex;align-items:center;justify-content:center;cursor:grab;padding:0;touch-action:none;} .em-grip:hover,.em-grip:focus-visible{color:#0066CC;background:#E8F1FB;} .em-grip svg{width:18px;height:18px;}
+.pq-dots{position:absolute;top:4px;right:4px;width:32px;height:32px;border:none;border-radius:8px;background:#E8F1FB;color:#0066CC;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;} .pq-dots svg{width:20px;height:20px;}
 .pq-menu{position:absolute;top:40px;right:4px;z-index:25;background:#fff;color:#1D1D1F;border:1px solid #D5D5DA;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:6px;min-width:180px;display:grid;}
 .pq-menu button{text-align:left;font:inherit;font-size:14.5px;padding:9px 12px;border:none;background:none;border-radius:8px;cursor:pointer;color:inherit;} .pq-menu button:hover{background:#F2F2F5;} .pq-menu button.danger{color:#C0392B;}
 .eb-types{top:46px;right:0;}
 .pq-h{display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;padding-right:32px;} .pq-n{font-weight:800;font-size:16px;white-space:nowrap;} .pq-t{font-weight:700;white-space:pre-wrap;flex:1;min-width:0;} .pq-sub{color:#6E6E73;font-weight:400;font-size:13px;}
 .pq-src{flex:0 0 auto;font-size:12px;font-weight:700;color:#6E6E73;border:1px solid #D5D5DA;border-radius:99px;padding:1px 8px;white-space:nowrap;}
-.em-pq.on .pq-ed{cursor:text;border-radius:4px;} .em-pq.on .pq-ed:hover,.pp-ttl .pq-ed:hover,.pp-box .pq-ed:hover{background:#E3F1FC;cursor:text;} .pq-ph{color:#A1A1A6;font-weight:400;}
-.pq-in{width:100%;box-sizing:border-box;font:inherit;color:inherit;background:#fff;border:1.5px solid #1A8FE0;border-radius:6px;padding:2px 6px;resize:none;overflow:hidden;outline:none;display:block;}
+.em-pq.on .pq-ed{cursor:text;border-radius:4px;} .em-pq.on .pq-ed:hover,.pp-ttl .pq-ed:hover,.pp-box .pq-ed:hover{background:#E8F1FB;cursor:text;} .pq-ph{color:#A1A1A6;font-weight:400;}
+.pq-in{width:100%;box-sizing:border-box;font:inherit;color:inherit;background:#fff;border:1.5px solid #0066CC;border-radius:6px;padding:2px 6px;resize:none;overflow:hidden;outline:none;display:block;}
 .pq-opts{display:grid;gap:4px 14px;margin:0 0 4px 2px;} .pq-opts.two{grid-template-columns:1fr 1fr;} .pq-o{display:flex;gap:6px;min-width:0;} .pq-ot{flex:1;min-width:0;} .pq-m{color:var(--pac);font-weight:700;}
 .pq-o.ans .pq-m{text-decoration:underline 2px;text-underline-offset:3px;}
 .pq-pas{border:1px solid #D5D5DA;border-radius:6px;padding:8px 10px;margin:0 0 8px;font-size:14px;white-space:pre-wrap;background:#FAFAFA;}
-.pq-fig{position:relative;display:block;width:100%;max-width:420px;margin:2px 0 8px;} .pq-fig.on{outline:2px dashed #8CCBF5;outline-offset:3px;border-radius:4px;}
+.pq-fig{position:relative;display:block;width:100%;max-width:420px;margin:2px 0 8px;} .pq-fig.on{outline:2px dashed #80B3E6;outline-offset:3px;border-radius:4px;}
 .pq-trash{position:absolute;top:-12px;right:-12px;width:32px;height:32px;border-radius:999px;border:none;background:#C0392B;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 2px 6px rgba(0,0,0,.2);} .pq-trash svg{width:18px;height:18px;}
 .pq-figph{border:1.5px dashed #C7C7CC;border-radius:8px;padding:16px;text-align:center;color:#8E8E93;font-size:13px;margin:2px 0 8px;}
 .pq-short{margin:4px 0;font-size:14px;} .pq-short i{display:inline-block;width:60%;border-bottom:1px solid #1D1D1F;vertical-align:-3px;} .pq-essay{border:1px solid #D5D5DA;border-radius:6px;height:80px;margin:4px 0;}
@@ -1219,8 +1219,8 @@ const SUBJ_ICON = {
   ai: <><rect x="20" y="28" width="60" height="46" rx="12" fill="none" stroke="#fff" strokeWidth="7" /><circle cx="38" cy="50" r="5" fill="#fff" /><circle cx="62" cy="50" r="5" fill="#fff" /><path d="M40 62c6 5 14 5 20 0" fill="none" stroke="#fff" strokeWidth="6" strokeLinecap="round" /><path d="M50 28V12M30 32 20 20M70 32l10-12" stroke="#fff" strokeWidth="6" strokeLinecap="round" /></>,
 };
 const SUBJ_GRAD = {
-  math: "linear-gradient(120deg,#4D9FFF,#0066CC)", eng: "linear-gradient(120deg,#34C759,#15803D)",
-  sci: "linear-gradient(120deg,#F5A623,#E67E22)", book: "linear-gradient(120deg,#9A9AA0,#5C5C60)", ai: "linear-gradient(120deg,#4D9FFF,#0066CC)",
+  math: "linear-gradient(120deg,#4A9EFF,#0066CC)", eng: "linear-gradient(120deg,#34C759,#15803D)",
+  sci: "linear-gradient(120deg,#F5A623,#E67E22)", book: "linear-gradient(120deg,#9A9AA0,#5C5C60)", ai: "linear-gradient(120deg,#4A9EFF,#0066CC)",
 };
 const SUBJ_LABEL = { math: "수학", eng: "영어", sci: "과학", book: "시험지", ai: "AI" };
 function subjKind(subject) {
@@ -1242,7 +1242,7 @@ function Avatar({ size = 40 }) {
   return (
     <span aria-hidden="true" style={{ width: size, height: size, flex: `0 0 ${size}px`, borderRadius: 999, overflow: "hidden", display: "block" }}>
       <svg viewBox="0 0 100 100" style={{ width: "100%", height: "100%", display: "block" }}>
-        <defs><linearGradient id="emAvG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#4D9FFF" /><stop offset="1" stopColor="#0066CC" /></linearGradient></defs>
+        <defs><linearGradient id="emAvG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#4A9EFF" /><stop offset="1" stopColor="#0066CC" /></linearGradient></defs>
         <circle cx="50" cy="50" r="50" fill="url(#emAvG)" />
         <circle cx="50" cy="38" r="16" fill="#fff" opacity=".92" />
         <path d="M20 84c5-17 16-25 30-25s25 8 30 25" fill="#fff" opacity=".92" />
@@ -1258,15 +1258,15 @@ function QrIcon({ size = 26, color }) {
     </svg>
   );
 }
-/* 앱 아이콘(겹친 시험지 + 체크). bare 면 파란 바탕 없이 그림만(파란 배너 위) */
+/* 앱 아이콘(겹친 시험지 + 체크) — tools\site_icons.py 의 icon.svg 와 같은 그림. bare 면 파란 바탕 없이 그림만(파란 배너 위) */
 function AppMark({ size = 28, bare }) {
   return (
-    <svg viewBox={bare ? "120 100 272 320" : "0 0 512 512"} aria-hidden="true" style={{ width: size, height: size, display: "block", flex: `0 0 ${size}px` }}>
-      {!bare && <rect width="512" height="512" rx="112" fill="#267DD4" />}
-      <rect x="196" y="118" width="176" height="236" rx="26" fill="#fff" opacity=".75" />
-      <rect x="140" y="154" width="196" height="248" rx="26" fill="#fff" />
-      <path d="M172 206h128M172 238h112M172 270h78" stroke="#5C9DE0" strokeWidth="14" strokeLinecap="round" />
-      <path d="M176 342l30 30 56-62" fill="none" stroke="#2FA866" strokeWidth="24" strokeLinecap="round" strokeLinejoin="round" />
+    <svg viewBox={bare ? "15 12 34 41" : "0 0 64 64"} aria-hidden="true" style={{ width: size, height: size, display: "block", flex: `0 0 ${size}px` }}>
+      {!bare && <rect width="64" height="64" rx="16" fill="#0066CC" />}
+      <rect x="24.5" y="14.5" width="22" height="29.5" rx="3.5" fill="#fff" opacity=".6" />
+      <rect x="17.5" y="19.5" width="24.5" height="31" rx="3.5" fill="#fff" />
+      <path d="M22 26h15.5M22 30.5h12M22 35h7.5" stroke="#0066CC" strokeWidth="2.4" strokeLinecap="round" />
+      <path d="M22.5 42.5l3.5 3.5 6.5-7" fill="none" stroke="#0066CC" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -1296,7 +1296,7 @@ function HomeHero({ d, user, onOpen, onAssign, onStudy, onCode }) {
   else { title = `안녕하세요, ${user.name} 👋`; sub = "오늘도 화이팅! 코드를 넣거나 새 시험지를 만들어 보세요."; go = onCode; }
   return (
     <button className="em-btn em-hero" onClick={go || undefined} disabled={!go} aria-label={`${title}. ${sub}`}
-      style={{ position: "relative", overflow: "hidden", width: "100%", textAlign: "left", border: "none", borderRadius: 20, padding: "18px 22px", margin: "0 0 18px", color: "#fff", background: "linear-gradient(120deg,#0066CC,#4D9FFF)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, cursor: go ? "pointer" : "default", fontFamily: FONT, boxShadow: "0 8px 24px rgba(0,102,204,.18)" }}>
+      style={{ position: "relative", overflow: "hidden", width: "100%", textAlign: "left", border: "none", borderRadius: 20, padding: "18px 22px", margin: "0 0 18px", color: "#fff", background: "linear-gradient(120deg,#0066CC,#4A9EFF)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, cursor: go ? "pointer" : "default", fontFamily: FONT, boxShadow: "0 8px 24px rgba(0,102,204,.18)" }}>
       <span aria-hidden="true" style={{ position: "absolute", width: 180, height: 180, borderRadius: 999, background: "rgba(255,255,255,.12)", right: -40, top: -70 }} />
       <span aria-hidden="true" style={{ position: "absolute", width: 90, height: 90, borderRadius: 999, background: "rgba(255,255,255,.10)", left: "38%", bottom: -50 }} />
       <span style={{ position: "relative", minWidth: 0 }}>
