@@ -782,7 +782,7 @@ function normalizeExam(x) {
     timeLimit: Math.max(0, Math.min(300, Math.floor(Number(src.timeLimit) || 0))),
     openAt: Number(src.openAt) || 0,
     closeAt: Number(src.closeAt) || 0,
-    code: asStr(src.code) || null,
+    code: /^[A-Z0-9]{5}$/i.test(asStr(src.code)) ? asStr(src.code).toUpperCase() : null, /* 가져온 JSON 의 code 가 인쇄 창 스크립트에 들어가므로 영숫자 5자가 아니면 버림 */
     ownerKey: asStr(src.ownerKey) || null,
     sharedHash: asStr(src.sharedHash) || null,
     sharedAt: Number(src.sharedAt) || null,
@@ -2104,7 +2104,7 @@ function buildPrintHtml(src, opts) {
   const items = printableItems(src);
   const level = LEVELS.indexOf(src.level) >= 0 ? src.level : "기본";
   const ac = LEVEL_COLOR[level], acSoft = LEVEL_SOFT[level];
-  const title = src.title || "시험지", subject = src.subject || "", desc = src.desc || "", code = src.code || "";
+  const title = src.title || "시험지", subject = src.subject || "", desc = src.desc || "", code = cleanCode(String(src.code || "")); /* 인쇄 창 스크립트·innerHTML 에 들어가므로 코드 글자만 */
   const head = `<header class="hd"><div class="tag"><span class="tag1">${esc(subject || "시험지")}</span><span class="tag2">${level}</span></div><div class="ttl">${esc(title)}</div><div class="logo">${quizKindLabel(items)}</div></header>`;
   let first = "";
   if (opts.nameLine) first += `<div class="name">이름 <span class="blank"></span> 날짜 <span class="blank"></span> 점수 <span class="blank sm"></span> / ${items.length}</div>`;
@@ -2362,8 +2362,12 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
       const imgs = r.images.slice(0, Math.max(0, room));
       if (r.images.length > imgs.length) cut = true;
       room -= imgs.length;
-      const block = r.text ? `【${f.name}】\n${r.text}` : "";
-      if (block) { estLen += block.length + 2; if (estLen > MAT_MAX) cut = true; setMaterial((m) => (m + (m ? "\n\n" : "") + block).slice(0, MAT_MAX)); }
+      let block = r.text ? `【${f.name}】\n${r.text}` : "";
+      if (block) {
+        const sep = estLen ? 2 : 0, avail = MAT_MAX - estLen - sep;   // 한도를 넘는 부분은 미리 잘라, 넣은 글자 = 기억하는 글자
+        if (block.length > avail) { cut = true; block = avail > 0 ? block.slice(0, avail) : ""; }
+        if (block) { estLen += block.length + sep; const add = block; setMaterial((m) => (m + (m ? "\n\n" : "") + add).slice(0, MAT_MAX)); }
+      }
       if (imgs.length) setPhotos((p) => [...p, ...imgs]);
       const id = uid();
       setFiles((x) => [...x, { id, name: f.name, info: r.info, warn: r.warn || "", block, imgs, bad: !block && !imgs.length }]);
@@ -4216,7 +4220,7 @@ function ResultEditModal({ item, onClose, onSaved, flash }) {
     const r = await remote().resultUpdate(rows ? { id: item.id, detail: rows } : { id: item.id, score: Math.max(0, Math.min(item.total, parseInt(score, 10) || 0)) });
     setBusy(false);
     if (!r.ok) return flash(errMsg(r));
-    onSaved({ ...item, score: r.score, detail: rows || item.detail });
+    onSaved({ ...item, score: r.score, total: r.total || item.total, detail: rows || item.detail });
     flash(`저장했습니다. ${r.score}/${r.total}`);
   };
   const okCount = rows ? rows.filter((d) => d.ok).length : null;
@@ -4292,16 +4296,20 @@ function TextbookAdmin({ flash }) {
   const [text, setText] = useState("");
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
-  const load = async () => { setBusy(true); const r = await remote().textbookGet(school.trim(), year); setBusy(false); if (!r.ok) return flash(errMsg(r)); setItems(r.items || []); };
+  const [loadedKey, setLoadedKey] = useState("");
+  const keyNow = () => school.trim() + "|" + year;
+  const load = async () => { const k = keyNow(); setBusy(true); const r = await remote().textbookGet(school.trim(), year); setBusy(false); if (!r.ok) { setItems(null); setLoadedKey(""); return flash(errMsg(r)); } setItems(r.items || []); setLoadedKey(k); };
+  const stale = () => { if (items === null || loadedKey !== keyNow()) { flash("학교·학년도를 바꿨거나 목록을 못 불러왔어요. 먼저 '불러오기'를 눌러 주세요."); return true; } return false; };
   useEffect(() => { load(); }, []);
   const parseLines = () => text.split(/\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const c = l.split(/\t| {2,}|\|/).map((x) => x.trim()).filter(Boolean); return c.length >= 2 ? { subject: c[0], publisher: c[1], author: c[2] || "", grade } : null; }).filter(Boolean);
   const add = async () => {
+    if (stale()) return;
     const add = parseLines(); if (!add.length) return flash("한 줄에 '과목 탭 출판사 탭 저자' 형식으로 붙여 넣어 주세요.");
     const merged = [...(items || []).filter((x) => !add.some((a) => a.subject === x.subject && a.grade === x.grade)), ...add];
     setBusy(true); const r = await remote().textbookSet({ school: school.trim(), year, items: merged }); setBusy(false);
     if (!r.ok) return flash(errMsg(r)); setText(""); flash(`${r.count}과목을 저장했습니다.`); load();
   };
-  const removeOne = async (i) => { const next = (items || []).filter((_, k) => k !== i); setBusy(true); const r = await remote().textbookSet({ school: school.trim(), year, items: next }); setBusy(false); if (!r.ok) return flash(errMsg(r)); load(); };
+  const removeOne = async (i) => { if (busy || stale()) return; const next = (items || []).filter((_, k) => k !== i); setBusy(true); const r = await remote().textbookSet({ school: school.trim(), year, items: next }); setBusy(false); if (!r.ok) return flash(errMsg(r)); load(); };
   const inStyle = { fontFamily: FONT, fontSize: 14.5, color: C.ink, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 10px", width: "100%", boxSizing: "border-box" };
   return (
     <div style={{ marginTop: 14 }}>
@@ -5225,7 +5233,7 @@ function ExamMaker() {
         const p = prev.find((x) => x.id === e.id);
         if (!p || p.updatedAt !== e.updatedAt || p.code !== e.code) { const r = await remote().examSave(e); if (!r.ok) { ok = false; flash(errMsg(r)); } }
       }
-      for (const p of prev) if (!list.some((x) => x.id === p.id)) remote().examDelete(p.id);
+      for (const p of prev) if (!list.some((x) => x.id === p.id)) { const r = await remote().examDelete(p.id); if (!r.ok) { ok = false; setExams((cur) => (cur.some((x) => x.id === p.id) ? cur : [...cur, p])); flash(`서버에서 '${p.title || "시험지"}'를 지우지 못해 목록에 되돌렸어요. 잠시 후 다시 시도해 주세요. (${errMsg(r)})`); } }
     } else if (!ok) flash("저장에 실패했어요. 잠시 후 다시 시도해 주세요.");
     return ok;
   };
@@ -5361,7 +5369,7 @@ function ExamMaker() {
 
   const removeExam = async (id) => {
     const e = exams.find((x) => x.id === id);
-    await persist(exams.filter((x) => x.id !== id));
+    if (!(await persist(exams.filter((x) => x.id !== id)))) return;   // 실패 알림을 '삭제했습니다'로 덮지 않게
     if (e && e.code) remote().deleteQuiz(e.code, e.ownerKey);
     flash("삭제했습니다.");
   };
@@ -5371,7 +5379,7 @@ function ExamMaker() {
     if (!e) return;
     const copy = normalizeExam({ ...JSON.parse(JSON.stringify(e)), id: uid(), title: `${e.title || "제목 없음"} (복사본)`, code: null, ownerKey: null, sharedHash: null, sharedAt: null, createdAt: Date.now(), updatedAt: Date.now() });
     copy.questions = copy.questions.map((q) => ({ ...q, id: uid() }));
-    await persist([copy, ...exams]);
+    if (!(await persist([copy, ...exams]))) return;
     flash("복제했습니다.");
   };
 
@@ -5380,13 +5388,13 @@ function ExamMaker() {
     if (!e) return;
     const copy = normalizeExam({ ...JSON.parse(JSON.stringify(e)), id: uid(), title: `${e.title || "제목 없음"} (복사본)`, code: null, ownerKey: null, ownerId: undefined, ownerName: undefined, sharedHash: null, sharedAt: null, createdAt: Date.now(), updatedAt: Date.now() });
     copy.questions = copy.questions.map((q) => ({ ...q, id: uid() }));
-    await persist([copy, ...exams]);
+    if (!(await persist([copy, ...exams]))) return;
     flash("내 시험지로 복제했습니다.");
   };
 
   const importExams = async (list) => {
     const dup = list.filter((e) => e.code && exams.some((x) => x.code === e.code)).length;   // 같은 공유 코드가 이미 있으면 어느 쪽을 다시 공유해도 같은 코드를 덮어쓴다
-    await persist([...list, ...exams]);
+    if (!(await persist([...list, ...exams]))) return;   // 실패면 창을 닫지 않고 실패 안내를 남김
     setImportOpen(false);
     flash(`시험지 ${list.length}개를 가져왔습니다.` + (dup ? ` 이미 있는 시험지와 공유 코드가 같은 것이 ${dup}개 있습니다(다시 공유하면 서로 덮어씁니다).` : ""));
   };
