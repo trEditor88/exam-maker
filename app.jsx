@@ -2126,9 +2126,10 @@ function buildPrintHtml(src, opts) {
     : `<div class="kx kx-txt"><div class="kh"><span class="badge">Q${q.no}</span><span class="av">${ansOf(q)}</span></div>${q.type === "essay" && q.answerText ? `<div class="ex">${esc(q.answerText)}</div>` : ""}${q.explain ? `<div class="ex"><span class="exl">해설</span>${esc(q.explain)}</div>` : ""}</div>`).join("");
   const css = `
 @page{size:A4;margin:0}
+/* 한 장 높이는 A4(297mm)보다 조금 작게: 아이폰 사파리는 margin:0 을 무시하고 여백·주소 줄을 넣어 297mm 면 매 장 바닥글이 다음 장으로 넘어가 빈 장이 생김 */
 :root{--ac:${ac};--acSoft:${acSoft};--ink:#1D1D1F;--sub:#6E6E73;--line:#D5D5DA}
 html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:11pt;line-height:1.55}
-.page{position:relative;width:210mm;height:297mm;box-sizing:border-box;padding:12mm 13mm 16mm;page-break-after:always;break-after:page;overflow:hidden}
+.page{position:relative;width:210mm;height:284mm;box-sizing:border-box;padding:12mm 13mm 16mm;page-break-after:always;break-after:page;overflow:hidden}
 .page:last-child{page-break-after:auto;break-after:auto}
 .hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;border:2px solid var(--ac);border-radius:14px;padding:5mm 6mm;margin:0 0 6mm}
 .tag{display:flex;flex-direction:column;gap:1mm;font-size:8.5pt;font-weight:800} .tag1{background:var(--acSoft);color:var(--ac);border-radius:6px;padding:1mm 3mm} .tag2{background:var(--ac);color:#fff;border-radius:6px;padding:1mm 3mm}
