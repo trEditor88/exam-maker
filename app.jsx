@@ -2358,7 +2358,8 @@ async function readMaterialFile(file, maxImages) {
   return { text: "", images: [], info: "읽을 수 없음", warn: "지원하지 않는 형식이에요(사진·PDF·docx·pptx·hwpx·txt)." };
 }
 /* 서버가 준 HTML(리포트·오답노트)을 새 창에 쓸 때 스크립트 실행을 막는 CSP 를 앞에 붙인다(같은 origin 이라 토큰 접근 차단) */
-function openHtmlWindow(html, flash) {
+/* print=true 면 열고 바로 인쇄 창(PDF 로 저장도 여기서). 새 창 안의 스크립트는 막혀 있어 이쪽에서 print() 를 부른다 */
+function openHtmlWindow(html, flash, print) {
   const w = window.open("", "_blank");
   if (!w) { flash && flash("팝업이 막혀 있습니다. 이 사이트의 팝업을 허용한 뒤 다시 눌러 주세요."); return; }
   const csp = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'">`;
@@ -2366,6 +2367,7 @@ function openHtmlWindow(html, flash) {
   const m = /<head[^>]*>/i.exec(h);
   w.document.write(m ? h.slice(0, m.index + m[0].length) + csp + h.slice(m.index + m[0].length) : csp + h);
   w.document.close();
+  if (print) setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 600);   // 글꼴·그림이 그려질 시간
 }
 
 /* ── AI 문제 생성 모달 ───────────────────────── */
@@ -3894,7 +3896,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
     return (
       <Shell back={detail.name} backTo={() => setNoteHtml(null)} toast={toast}>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <Btn kind="soft" onClick={() => openHtmlWindow(noteHtml, flash)}>새 창에서 열기(인쇄·PDF)</Btn>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: 1 }}><Btn onClick={() => openHtmlWindow(noteHtml, flash, true)} style={{ width: "auto", flex: "1 1 160px" }}>인쇄·PDF 저장</Btn><Btn kind="soft" onClick={() => openHtmlWindow(noteHtml, flash)} style={{ width: "auto", flex: "1 1 160px" }}>새 창에서 열기</Btn></div>
         </div>
         <iframe title="오답노트" srcDoc={noteHtml} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
@@ -5073,7 +5075,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
   if (detail && report !== null)
     return (
       <Shell back={detail.student.name} backTo={() => setReport(null)} toast={toast}>
-        <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => openHtmlWindow(report, flash)}>새 창에서 열기(인쇄·PDF)</Btn></div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}><Btn onClick={() => openHtmlWindow(report, flash, true)} style={{ width: "auto", flex: "1 1 160px" }}>인쇄·PDF 저장</Btn><Btn kind="soft" onClick={() => openHtmlWindow(report, flash)} style={{ width: "auto", flex: "1 1 160px" }}>새 창에서 열기</Btn></div>
         <iframe title="분석 리포트" srcDoc={report} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
     );
@@ -5146,7 +5148,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
   if (report !== null)
     return (
       <Shell back="분석 리포트" backTo={() => setReport(null)} toast={toast}>
-        <div style={{ marginBottom: 10 }}><Btn kind="soft" onClick={() => openHtmlWindow(report, flash)}>새 창에서 열기(인쇄·PDF)</Btn></div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}><Btn onClick={() => openHtmlWindow(report, flash, true)} style={{ width: "auto", flex: "1 1 160px" }}>인쇄·PDF 저장</Btn><Btn kind="soft" onClick={() => openHtmlWindow(report, flash)} style={{ width: "auto", flex: "1 1 160px" }}>새 창에서 열기</Btn></div>
         <iframe title="분석 리포트" srcDoc={report} sandbox="allow-popups" style={{ width: "100%", height: "78vh", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }} />
       </Shell>
     );
