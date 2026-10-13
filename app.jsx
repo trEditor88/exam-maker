@@ -738,7 +738,7 @@ function branchKey(q) {
   if (!q) return null;
   const m = /^(\d{1,3})\s*(?:\(\s*\d{1,2}\s*\)|[-–]\s*\d{1,2})$/.exec(String(q.src || "").trim());
   if (m) return "s:" + Number(m[1]);
-  if (String(q.passage || "").trim() && /^\s*\(\d{1,2}\)/.test(String(q.text || ""))) return "p:" + q.passage;
+  if (String(q.passage || "").trim() && /^\s*\(\d{1,2}\)(?=\s|$)/.test(String(q.text || ""))) return "p:" + q.passage;
   return null;
 }
 function qNums(qs) {
@@ -755,7 +755,7 @@ function qNums(qs) {
 }
 const qNumMap = (qs) => { const m = {}; const nums = qNums(qs); (qs || []).forEach((q, i) => { m[String(q.id)] = nums[i]; }); return m; };
 /* 3-1 처럼 보일 때 문제 글 앞의 "(1) "은 번호와 겹치므로 화면에서만 뺀다 */
-const branchText = (t, no) => (String(no).indexOf("-") > 0 ? String(t || "").replace(/^\s*\(\d{1,2}\)\s*/, "") : t);
+const branchText = (t, no) => (String(no).indexOf("-") > 0 ? String(t || "").replace(/^\s*\(\d{1,2}\)(?=\s|$)\s*/, "") : t);
 
 /* ── 데이터 정규화 ───────────────────────────── */
 const asStr = (v) => (typeof v === "string" ? v : "");
@@ -2162,6 +2162,7 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 .page{position:relative;width:210mm;height:284mm;box-sizing:border-box;padding:12mm 13mm 16mm;page-break-after:always;break-after:page;overflow:hidden}
 .page:last-child{page-break-after:auto;break-after:auto}
 .wk .page{height:262mm}
+.page.tall{height:auto;min-height:262mm;overflow:visible}
 .hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;border:2px solid var(--ac);border-radius:14px;padding:5mm 6mm;margin:0 0 6mm}
 .tag{display:flex;flex-direction:column;gap:1mm;font-size:8.5pt;font-weight:800} .tag1{background:var(--acSoft);color:var(--ac);border-radius:6px;padding:1mm 3mm} .tag2{background:var(--ac);color:#fff;border-radius:6px;padding:1mm 3mm}
 .ttl{text-align:center;font-size:15pt;font-weight:800;letter-spacing:-.01em} .logo{font-size:9pt;font-weight:800;color:var(--ac);border:1.5px solid var(--ac);border-radius:999px;padding:1mm 3mm;white-space:nowrap}
@@ -2188,7 +2189,7 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 @media print{.bar{display:none}}`;
   const script = `
 /* 사파리(아이폰·아이패드·맥)는 자기 여백·주소 줄을 넣고 종이가 Letter 일 때도 있어 쓸 수 있는 높이가 270mm 까지 줄어든다 → 한 장을 더 낮게 */
-if(/AppleWebKit/.test(navigator.userAgent)&&!/Chrome|Chromium|Edg|OPR|Android/.test(navigator.userAgent)) document.documentElement.className+=" wk";
+if(/AppleWebKit/.test(navigator.userAgent)&&!/Chrome|Chromium|Edg\\/|OPR|Android/.test(navigator.userAgent)) document.documentElement.className+=" wk";
 function paginate(){
   var hd=document.getElementById('hd').innerHTML, first=document.getElementById('first').innerHTML, keyFirst=document.getElementById('keyfirst').innerHTML, code=${JSON.stringify(code)}, noKey=${noKey ? "true" : "false"};
   var pagesEl=document.getElementById('pages');
@@ -2202,7 +2203,7 @@ function paginate(){
       var cols=page.querySelectorAll('.col'); var it=pool.shift(); cols[col].appendChild(it);
       if(fits(page)) continue;
       cols[col].removeChild(it); pool.unshift(it);
-      if(cols[col].children.length===0){ cols[col].appendChild(pool.shift()); }   /* 항목 하나가 단보다 커도 잘리지 않게 그대로 둔다 */
+      if(cols[col].children.length===0){ cols[col].appendChild(pool.shift()); if(!fits(page)){ page.className+=' tall'; page=null; continue; } }   /* 항목 하나가 단보다 크면 그 장만 길게 늘려(여러 쪽으로 이어짐) 잘리지 않게 하고, 늘어난 장에는 더 넣지 않는다 */
       if(col===0) col=1; else page=null;
     }
   }
@@ -3001,6 +3002,12 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   };
 
   const setQ = (qi, patch) => upd({ questions: draft.questions.map((q, k) => (k === qi ? { ...q, ...patch } : q)) });
+  const setQPassage = (qi, v) => {
+    const qs = draft.questions, old = qs[qi].passage || "";
+    let a = qi, b = qi;
+    if (old) { while (a > 0 && qs[a - 1].passage === old) a--; while (b < qs.length - 1 && qs[b + 1].passage === old) b++; }
+    upd({ questions: qs.map((q, k) => (k >= a && k <= b ? { ...q, passage: v } : q)) });
+  };
   const toggleAns = (qi, oi) => {
     const q = draft.questions[qi];
     const n = (q.options || draft.options).length;
@@ -3148,7 +3155,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
             </div>
             <div style={{ margin: "0 0 10px" }}><Seg value={q.type || "mc"} onChange={(v) => setQType(qi, v)} items={[["mc", "객관식"], ["short", "주관식"], ["essay", "서술형"]]} /></div>
             {(q.passage || pasOpen[q.id]) && (
-              <Field value={q.passage || ""} onChange={(v) => setQ(qi, { passage: v })} placeholder="지문 (같은 지문을 이어지는 문항에도 넣으면 화면·인쇄에서 한 번만 보입니다)" multiline rows={4} maxLength={4000} style={{ marginBottom: 8, fontSize: 14.5, background: C.lineSoft }} ariaLabel={`${qi + 1}번 지문`} />
+              <Field value={q.passage || ""} onChange={(v) => setQPassage(qi, v)} placeholder="지문 (같은 지문을 이어지는 문항에도 넣으면 화면·인쇄에서 한 번만 보입니다)" multiline rows={4} maxLength={4000} style={{ marginBottom: 8, fontSize: 14.5, background: C.lineSoft }} ariaLabel={`${qi + 1}번 지문`} />
             )}
             <Field value={q.text} onChange={(v) => setQ(qi, { text: v })} placeholder="문제를 입력하세요" multiline />
             {q.svg && !figOpen[q.id] && <Figure svg={q.svg} />}
@@ -4956,7 +4963,7 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
                 <CheckRow key={q.id} on={!!sel[q.id]} onToggle={() => setSel((m) => ({ ...m, [q.id]: !m[q.id] }))}>
                   <span style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
                     <b style={{ flex: "0 0 auto" }}>{vnums[qi]}번</b>
-                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{String(q.text || "").replace(/\s+/g, " ")}</span>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{String(branchText(q.text, vnums[qi]) || "").replace(/\s+/g, " ")}</span>
                     {d && <Badge tone={d.p ? "warn" : d.ok ? "good" : "bad"}>{d.p ? "채점 대기" : d.ok ? "맞음" : "틀림"}</Badge>}
                     {how === "shuffle" && shuffleUseless(q) && <Badge>그대로</Badge>}
                   </span>
