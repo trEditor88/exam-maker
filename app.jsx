@@ -360,8 +360,8 @@ const serverRemote = {
   graderCheck: (b) => apiPost({ action: "graderCheck", ...b }),
   resultManual: (b) => apiPost({ action: "resultManual", ...b }),
   activityList: (params) => apiGet({ action: "activityList", ...(params || {}) }),
-  reportGet: (studentId) => apiGet({ action: "reportGet", studentId }),
-  reportRequest: (studentId) => apiPost({ action: "reportRequest", studentId }),
+  reportGet: (studentId, subject) => apiGet({ action: "reportGet", studentId, ...(subject ? { subject } : {}) }),   // subject 가 있으면 과목별 리포트
+  reportRequest: (studentId, subject) => apiPost({ action: "reportRequest", ...(studentId ? { studentId } : {}), ...(subject ? { subject } : {}) }),
   workerKeySet: (key) => apiPost({ action: "workerKeySet", key }),
   genApiGet: () => apiPost({ action: "genApiGet" }),
   genApiSet: (cfg) => apiPost({ action: "genApiSet", ...cfg }),
@@ -5028,7 +5028,9 @@ function useSubjectFilter(detail) {
   const [subj, setSubjRaw] = useState(() => { try { return localStorage.getItem(LS_PREFIX + "repSubj") || "all"; } catch (e) { return "all"; } });
   const setSubj = (v) => { setSubjRaw(v); try { localStorage.setItem(LS_PREFIX + "repSubj", v); } catch (e) {} };
   const all = (detail && detail.items) || [];
-  const subOf = (it) => (((detail && detail.quizzes) || {})[it.code] || {}).subject || "기타";
+  /* 과목 이름 맞춤: 서버(repSubject·SUBJ_SQL)와 같은 규칙 — "|" 빼고 앞뒤 공백 빼고 20자, 비면 "기타" */
+  const subjKey = (v) => String(v || "").replace(/\|/g, "").trim().slice(0, 20).trim() || "기타";
+  const subOf = (it) => subjKey((((detail && detail.quizzes) || {})[it.code] || {}).subject);
   const counts = {}; all.forEach((it) => { const k = subOf(it); counts[k] = (counts[k] || 0) + 1; });
   const subs = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
   const cur = subj !== "all" && counts[subj] ? subj : "all";
@@ -5039,7 +5041,10 @@ function useSubjectFilter(detail) {
       <Seg value={cur} onChange={setSubj} items={[["all", `전체 ${all.length}`], ...subs.map((k) => [k, `${k} ${counts[k]}`])]} />
     </div>
   ) : null;
-  return { subj: cur, items, bar };
+  const sub = cur === "all" ? "" : cur;   // 과목별 리포트에 넘길 과목('' = 전체 리포트)
+  const srep = sub ? ((detail && detail.subjectReports) || []).find((x) => x.subject === sub) || null : null;
+  const repNote = sub ? (srep ? (srep.pending ? `${sub} 리포트를 만드는 중이에요(서버가 켜져 있으면 10분 안).${srep.ready ? " 지금은 이전 리포트가 열려요." : ""}` : srep.ready ? `${sub} 리포트 · ${fmtDate(srep.updatedAt)} 기준(그 뒤 기록은 '새로 만들기'를 눌러야 반영)` : `${sub} 기록이 없어 리포트를 만들지 못했어요.`) : `${sub} 리포트는 아직 없어요. '${sub} 리포트 만들기'를 누르면 이 과목 기록만으로 따로 만들어요.`) : "";
+  return { subj: cur, sub, srep, repNote, items, bar };
 }
 
 function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, onRemakeSave }) {
@@ -5060,9 +5065,9 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
   };
   const openReport = async () => {
     setBusy(true);
-    const r = await remote().reportGet(detail.student.id);
+    const r = await remote().reportGet(detail.student.id, sf.sub);
     setBusy(false);
-    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 만들어지지 않았습니다. 서버가 켜져 있으면 응시 후 10분 안에 만들어집니다." : errMsg(r));
+    if (!r.ok) return flash(r.error === "no_report" ? (sf.sub ? `아직 ${sf.sub} 리포트가 없습니다. '${sf.sub} 리포트 만들기'를 눌러 주세요.` : "아직 리포트가 만들어지지 않았습니다. 서버가 켜져 있으면 응시 후 10분 안에 만들어집니다.") : errMsg(r));
     setReport(r.html);
   };
   if (detail && report !== null)
@@ -5079,10 +5084,13 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
           <h2 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{detail.student.name} <span style={{ color: C.sub, fontSize: 14, fontWeight: 500 }}>{detail.student.id}</span></h2>
           <TextBtn tone="sub" onClick={() => open(detail.student)} disabled={busy} style={{ fontSize: 14 }}>새로고침</TextBtn>
         </div>
-        <div style={{ display: "grid", gap: 8, margin: "8px 0 14px" }}>
-          {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>리포트 열기</Btn>}
+        <div style={{ height: 8 }} />
+        {sf.bar}
+        <div style={{ display: "grid", gap: 8, margin: "0 0 14px" }}>
+          {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>{sf.sub ? `${sf.sub} 리포트 열기` : "리포트 열기"}</Btn>}
+          {detail.student.repOn && sf.repNote && <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5 }}>{sf.repNote}</div>}
           <div className="em-btn-grid">
-            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id); flash(r.ok ? "요청했습니다. 서버가 켜져 있으면 10분 안에 새 리포트가 만들어집니다." : errMsg(r)); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>리포트 새로 만들기</Btn>}
+            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id, sf.sub); flash(r.ok ? `요청했습니다. 서버가 켜져 있으면 10분 안에 ${sf.sub ? sf.sub + " " : "새 "}리포트가 만들어집니다.` : errMsg(r)); if (r.ok && sf.sub) open(detail.student); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>{sf.sub ? (sf.srep && sf.srep.ready ? `${sf.sub} 리포트 새로 만들기` : `${sf.sub} 리포트 만들기`) : "리포트 새로 만들기"}</Btn>}
             {onRemakeSave && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>오답 변형 문제</Btn>}
           </div>
         </div>
@@ -5095,7 +5103,6 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
             {detail.report.summary && detail.report.summary.notes > 0 && <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>오답노트 {detail.report.summary.notes}권 포함{detail.report.summary.noteWrong ? ` · 틀림 ${detail.report.summary.noteWrong}문항` : ""}</div>}
           </Card>
         )}
-        {sf.bar}
         <TrendChart items={sf.items} />
         <BreakdownChart items={sf.items} quizzes={detail.quizzes} />
         <ResultsTable items={sf.items} />
@@ -5130,12 +5137,12 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
   useEffect(() => { load(); }, []);
   const openReport = async () => {
     setBusy(true);
-    const r = await remote().reportGet(user.id);
+    const r = await remote().reportGet(user.id, sf.sub);
     setBusy(false);
-    if (!r.ok) return flash(r.error === "no_report" ? "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 서버가 켜져 있을 때 10분 안에 만들어집니다." : errMsg(r));
+    if (!r.ok) return flash(r.error === "no_report" ? (sf.sub ? `아직 ${sf.sub} 리포트가 없습니다. '${sf.sub} 리포트 만들기'를 눌러 주세요.` : "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 서버가 켜져 있을 때 10분 안에 만들어집니다.") : errMsg(r));
     setReport(r.html);
   };
-  const request = async () => { const r = await remote().reportRequest(); flash(r.ok ? "요청했습니다. 서버가 켜져 있으면 10분 안에 만들어집니다." : errMsg(r)); };
+  const request = async () => { const r = await remote().reportRequest("", sf.sub); if (r.ok && sf.sub) load(); flash(r.ok ? `요청했습니다. 서버가 켜져 있으면 10분 안에 ${sf.sub ? sf.sub + " 리포트가 " : ""}만들어집니다.` : errMsg(r)); };
   if (report !== null)
     return (
       <Shell back="분석 리포트" backTo={() => setReport(null)} toast={toast}>
@@ -5149,18 +5156,20 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
         <h2 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>분석 리포트</h2>
         <TextBtn tone="sub" onClick={load} disabled={busy} style={{ fontSize: 14 }}>새로고침</TextBtn>
       </div>
+      {detail && sf.bar}
       {remakeOpen && detail && <WrongRemakeModal items={sf.items} user={user} flash={flash} onClose={() => setRemakeOpen(false)} onPractice={onRemakePractice} onSave={onRemakeSave} />}
       {/* 주 버튼 하나(리포트 열기) + 작은 2열 버튼 */}
       <div style={{ display: "grid", gap: 8, margin: "0 0 14px" }}>
-        {repOn && <Btn onClick={openReport} disabled={busy}>리포트 열기</Btn>}
+        {repOn && <Btn onClick={openReport} disabled={busy}>{sf.sub ? `${sf.sub} 리포트 열기` : "리포트 열기"}</Btn>}
+        {repOn && sf.repNote && <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5 }}>{sf.repNote}</div>}
         <div className="em-btn-grid">
-          {repOn && <Btn kind="soft" onClick={request} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>리포트 새로 만들기</Btn>}
+          {repOn && <Btn kind="soft" onClick={request} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>{sf.sub ? (sf.srep && sf.srep.ready ? `${sf.sub} 리포트 새로 만들기` : `${sf.sub} 리포트 만들기`) : "리포트 새로 만들기"}</Btn>}
           {onRemakePractice && detail && sf.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>오답 변형 문제</Btn>}
           {onWrongBank && detail && sf.items.length > 0 && <Btn kind="soft" onClick={async () => { setBusy(true); try { await onWrongBank(sf.items); } finally { setBusy(false); } }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>틀린 문제 모아 풀기</Btn>}
         </div>
       </div>
       {!repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 아직 분석 리포트를 받을 수 없습니다. 관리자에게 문의하세요.</p>}
-      {detail && detail.report && (
+      {detail && detail.report && !sf.sub && (
         <Card style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
           {detail.report.summary && detail.report.summary.headline && <div style={{ fontSize: 15, marginTop: 4 }}>{detail.report.summary.headline}</div>}
@@ -5168,7 +5177,6 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
             {detail.report.summary && detail.report.summary.notes > 0 && <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>오답노트 {detail.report.summary.notes}권 포함{detail.report.summary.noteWrong ? ` · 틀림 ${detail.report.summary.noteWrong}문항` : ""}</div>}
         </Card>
       )}
-      {detail && sf.bar}
       {detail && sf.items.length > 0 && (() => {
         const agg = aggregateResults(sf.items, detail.quizzes);
         /* 리포트(Claude)의 취약 개념은 전체 기준이라 과목을 골랐을 때는 그 과목 기록의 태그만 쓴다 */
