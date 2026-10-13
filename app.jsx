@@ -732,6 +732,30 @@ const LEVEL_COLOR = { 기초: "#15803D", 기본: "#0066CC", 발전: "#D4A017", �
 const LEVEL_SOFT = { 기초: "#E6F4EA", 기본: "#E8F1FB", 발전: "#FBF3D6", 심화: "#FBE9E7" };
 const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫"];
 const mark = (i) => CIRCLED[i] || `(${i + 1})`;
+/* 문항 번호: 가지형(같은 원본 번호의 (1)(2)… — src "03 (1)"·"3-1", 또는 같은 지문 아래 "(1) …"로 시작하는 문제)이 이어지면
+   한 번호 아래 3-1, 3-2 로 묶어 뒤 번호가 밀리지 않게 한다. 저장된 문제는 그대로 두고 보여 주는 번호만 바꾼다 */
+function branchKey(q) {
+  if (!q) return null;
+  const m = /^(\d{1,3})\s*(?:\(\s*\d{1,2}\s*\)|[-–]\s*\d{1,2})$/.exec(String(q.src || "").trim());
+  if (m) return "s:" + Number(m[1]);
+  if (String(q.passage || "").trim() && /^\s*\(\d{1,2}\)/.test(String(q.text || ""))) return "p:" + q.passage;
+  return null;
+}
+function qNums(qs) {
+  const list = qs || [], keys = list.map(branchKey), out = [];
+  let n = 0;
+  for (let i = 0; i < list.length; ) {
+    let j = i + 1;
+    if (keys[i]) while (j < list.length && keys[j] === keys[i]) j++;
+    n++;
+    for (let k = i; k < j; k++) out.push(j - i > 1 ? `${n}-${k - i + 1}` : String(n));
+    i = j;
+  }
+  return out;
+}
+const qNumMap = (qs) => { const m = {}; const nums = qNums(qs); (qs || []).forEach((q, i) => { m[String(q.id)] = nums[i]; }); return m; };
+/* 3-1 처럼 보일 때 문제 글 앞의 "(1) "은 번호와 겹치므로 화면에서만 뺀다 */
+const branchText = (t, no) => (String(no).indexOf("-") > 0 ? String(t || "").replace(/^\s*\(\d{1,2}\)\s*/, "") : t);
 
 /* ── 데이터 정규화 ───────────────────────────── */
 const asStr = (v) => (typeof v === "string" ? v : "");
@@ -858,21 +882,25 @@ function problemsOf(draft) {
     if (k && seen.has(k)) out.push(`보기 “${k}”가 두 번 이상 있습니다.`);
     seen.add(k);
   });
+  const nos = qNums(draft.questions);
   draft.questions.forEach((q, i) => {
-    if (!q.text.trim()) { out.push(`${i + 1}번 문제의 내용이 비어 있습니다.`); return; }
-    if (q.type === "short") { if (!(q.answerText || "").trim()) out.push(`${i + 1}번(주관식)의 정답을 적어 주세요.`); return; }
+    if (!q.text.trim()) { out.push(`${nos[i]}번 문제의 내용이 비어 있습니다.`); return; }
+    if (q.type === "short") { if (!(q.answerText || "").trim()) out.push(`${nos[i]}번(주관식)의 정답을 적어 주세요.`); return; }
     if (q.type === "essay") return;
-    if (q.options && q.options.some((o) => !o.trim())) out.push(`${i + 1}번 문제의 보기 중 비어 있는 것이 있습니다.`);
-    if (q.answers.length === 0) out.push(`${i + 1}번 문제의 정답을 하나 이상 골라 주세요.`);
-    else if (q.answers.length > maxMulti((q.options || draft.options).length)) out.push(`${i + 1}번 문제의 정답이 너무 많습니다(보기의 절반까지).`);
+    if (q.options && q.options.some((o) => !o.trim())) out.push(`${nos[i]}번 문제의 보기 중 비어 있는 것이 있습니다.`);
+    if (q.answers.length === 0) out.push(`${nos[i]}번 문제의 정답을 하나 이상 골라 주세요.`);
+    else if (q.answers.length > maxMulti((q.options || draft.options).length)) out.push(`${nos[i]}번 문제의 정답이 너무 많습니다(보기의 절반까지).`);
   });
   return out;
 }
 
-/* 같은 지문(세트형)으로 이어지는 문항은 한 묶음으로 섞어 지문이 흩어져 여러 번 보이지 않게 한다 */
+/* 같은 지문(세트형)이나 같은 원본 번호의 가지형((1)(2)…)으로 이어지는 문항은 한 묶음으로 섞어 흩어지지 않게 한다 */
 function shuffleGroups(qs) {
   const groups = [];
-  qs.forEach((q) => { const g = groups[groups.length - 1]; if (q.passage && g && g[0].passage === q.passage) g.push(q); else groups.push([q]); });
+  qs.forEach((q) => {
+    const g = groups[groups.length - 1], last = g && g[g.length - 1], k = branchKey(q);
+    if (g && ((q.passage && g[0].passage === q.passage) || (k && k === branchKey(last)))) g.push(q); else groups.push([q]);
+  });
   return shuffled(groups).flat();
 }
 /* 응시 런타임 만들기: 문제마다 쓰는 보기를 확정하고(문제별 보기 또는 공용 보기),
@@ -1878,6 +1906,7 @@ function itemStats(exam, items) {
 function ItemAnalysis({ exam, items, reports }) {
   const rows = useMemo(() => itemStats(exam, items), [exam, items]);
   if (!rows.length) return null;
+  const nums = qNums((exam && exam.questions) || []);
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ fontSize: 15, fontWeight: 800, margin: "4px 0 4px" }}>문항 분석</div>
@@ -1891,7 +1920,7 @@ function ItemAnalysis({ exam, items, reports }) {
           const suspect = pct != null && r.n >= 4 && pct < 25 && ((r.disc != null && r.disc < 0) || (r.wrong && r.wrong.c > Math.round(r.rate * r.n)));
           return (
             <div key={r.q.id} style={{ display: "grid", gridTemplateColumns: "44px 1fr auto", gap: 10, alignItems: "center", padding: "8px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14 }}>
-              <span style={{ fontWeight: 800 }}>{r.qi + 1}번</span>
+              <span style={{ fontWeight: 800 }}>{nums[r.qi]}번</span>
               <div style={{ minWidth: 0 }}>
                 <div role="img" aria-label={pct == null ? "응답 없음" : `정답률 ${pct}%`} style={{ height: 8, borderRadius: 4, background: C.line, overflow: "hidden" }}>
                   <div style={{ width: `${pct || 0}%`, height: "100%", background: low ? C.bad : C.accent }} />
@@ -1919,7 +1948,7 @@ function ItemAnalysis({ exam, items, reports }) {
 function resultsCsv(exam, items) {
   const qs = (exam && exam.questions) || [];
   const cell = (v) => { const t = String(v == null ? "" : v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
-  const head = ["이름", "점수", "만점", "걸린 시간(초)", "제출 시각", ...qs.map((_, i) => `${i + 1}번`)];
+  const head = ["이름", "점수", "만점", "걸린 시간(초)", "제출 시각", ...qNums(qs).map((n) => `${n}번`)];
   const lines = items.map((r) => {
     const dm = detailMap(r);
     return [r.name || "", r.score, r.total, r.sec || "", fmtDateTime(r.at), ...qs.map((q) => { const x = dm.get(String(q.id)); return !x ? "" : x.p ? "대기" : x.ok ? "O" : "X"; })];
@@ -2084,7 +2113,8 @@ function SettingsModal({ onClose, flash }) {
 function printableItems(src) {
   const shared = src.options || [];
   const strip = (t) => String(t || "").replace(/\s*[\(（]\s*정답\s*\d+\s*개\s*[\)）]\s*$/, "");   // 본문 끝의 "(정답 N개)"는 지우고 양식이 한 번만 붙인다
-  return (src.questions || []).map((q, i, arr) => ({ no: i + 1, type: q.type || "mc", answerText: q.answerText || "", svg: sanitizeSvg(q.svg), passage: q.passage && (i === 0 || (arr[i - 1].passage || "") !== q.passage) ? q.passage : "", text: strip(q.text), options: (q.type && q.type !== "mc") ? [] : (Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared), answers: q.answers || [], explain: q.explain || "", src: q.src || "" }));
+  const nums = qNums(src.questions || []);
+  return (src.questions || []).map((q, i, arr) => ({ no: nums[i], type: q.type || "mc", answerText: q.answerText || "", svg: sanitizeSvg(q.svg), passage: q.passage && (i === 0 || (arr[i - 1].passage || "") !== q.passage) ? q.passage : "", text: strip(branchText(q.text, nums[i])), options: (q.type && q.type !== "mc") ? [] : (Array.isArray(q.options) && q.options.length >= 2 ? q.options : shared), answers: q.answers || [], explain: q.explain || "", src: q.src || "" }));
 }
 function quizKindLabel(items) {
   const mc = items.filter((q) => q.type === "mc");
@@ -2131,6 +2161,7 @@ function buildPrintHtml(src, opts) {
 html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:11pt;line-height:1.55}
 .page{position:relative;width:210mm;height:284mm;box-sizing:border-box;padding:12mm 13mm 16mm;page-break-after:always;break-after:page;overflow:hidden}
 .page:last-child{page-break-after:auto;break-after:auto}
+.wk .page{height:262mm}
 .hd{display:grid;grid-template-columns:auto 1fr auto;align-items:center;border:2px solid var(--ac);border-radius:14px;padding:5mm 6mm;margin:0 0 6mm}
 .tag{display:flex;flex-direction:column;gap:1mm;font-size:8.5pt;font-weight:800} .tag1{background:var(--acSoft);color:var(--ac);border-radius:6px;padding:1mm 3mm} .tag2{background:var(--ac);color:#fff;border-radius:6px;padding:1mm 3mm}
 .ttl{text-align:center;font-size:15pt;font-weight:800;letter-spacing:-.01em} .logo{font-size:9pt;font-weight:800;color:var(--ac);border:1.5px solid var(--ac);border-radius:999px;padding:1mm 3mm;white-space:nowrap}
@@ -2156,6 +2187,8 @@ html,body{margin:0;background:#fff;color:var(--ink);font-family:'Pretendard','Ap
 @media screen{body{background:#EEE;padding:14mm 0 10mm} .page{background:#fff;margin:0 auto 10mm;box-shadow:0 2px 12px rgba(0,0,0,.12)} .bar{position:fixed;top:0;left:0;right:0;background:#1D1D1F;color:#fff;font-size:13px;padding:8px 14px;text-align:center;z-index:9} .bar button{margin-left:10px;font:inherit;padding:4px 12px;border-radius:999px;border:none;background:${ac};color:#fff;cursor:pointer}}
 @media print{.bar{display:none}}`;
   const script = `
+/* 사파리(아이폰·아이패드·맥)는 자기 여백·주소 줄을 넣고 종이가 Letter 일 때도 있어 쓸 수 있는 높이가 270mm 까지 줄어든다 → 한 장을 더 낮게 */
+if(/AppleWebKit/.test(navigator.userAgent)&&!/Chrome|Chromium|Edg|OPR|Android/.test(navigator.userAgent)) document.documentElement.className+=" wk";
 function paginate(){
   var hd=document.getElementById('hd').innerHTML, first=document.getElementById('first').innerHTML, keyFirst=document.getElementById('keyfirst').innerHTML, code=${JSON.stringify(code)}, noKey=${noKey ? "true" : "false"};
   var pagesEl=document.getElementById('pages');
@@ -2561,7 +2594,7 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
                 <CheckRow key={q.id} on={on} onToggle={() => setSel((x) => ({ ...x, [q.id]: !x[q.id] }))} style={{ alignItems: "flex-start" }}>
                   <Check on={on} size={20} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{i + 1}. {q.text}</div>
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{qNums(result.questions)[i]}. {branchText(q.text, qNums(result.questions)[i])}</div>
                     <Figure svg={q.svg} style={{ maxWidth: 300 }} />
                     {(q.options || []).map((o, oi) => {
                       const ans = q.answers.includes(oi);
@@ -2750,6 +2783,7 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
   const [aiId, setAiId] = useState(null);
   const [figWant, setFigWant] = useState({});   // 자료형으로 만든 문항: 그림이 없으면 그림 자리 표시
   const qs = draft.questions;
+  const nums = qNums(qs);
   const level = LEVELS.indexOf(draft.level) >= 0 ? draft.level : "기본";
   const kindLabel = useMemo(() => quizKindLabel(printableItems(draft)), [draft]);
   /* id 로 고친다(AI 응답을 기다리는 동안 순서가 바뀌어도 맞는 문항에 들어가게) */
@@ -2854,8 +2888,8 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
             const showPas = ed("passage") || (!!q.passage && (i === 0 || qs[i - 1].passage !== q.passage));
             return (
               <div key={q.id} id={"pq-" + q.id} {...ds.item(q.id)} className={"em-pq" + (on ? " on" : "")} onClick={(e) => { e.stopPropagation(); if (!on) pick(q.id); else { setFigOn(false); setMenu(false); } }}>
-                {qs.length > 1 && <button type="button" className="pq-grip" {...ds.grip(q.id, `${i + 1}번 문항 끌어서 옮기기`)}><PpIco n="grip" /></button>}
-                {on && <button type="button" className="pq-dots" aria-label={`${i + 1}번 문항 메뉴`} aria-expanded={menu} onClick={(e) => { e.stopPropagation(); setEdit(null); setTypesOpen(false); setMenu((v) => !v); }}><PpIco n="dots" /></button>}
+                {qs.length > 1 && <button type="button" className="pq-grip" {...ds.grip(q.id, `${nums[i]}번 문항 끌어서 옮기기`)}><PpIco n="grip" /></button>}
+                {on && <button type="button" className="pq-dots" aria-label={`${nums[i]}번 문항 메뉴`} aria-expanded={menu} onClick={(e) => { e.stopPropagation(); setEdit(null); setTypesOpen(false); setMenu((v) => !v); }}><PpIco n="dots" /></button>}
                 {on && menu && <div className="pq-menu" role="menu" onClick={(e) => e.stopPropagation()}>
                   <button type="button" role="menuitem" onClick={() => toBranch(q.id)}>가지형 문제로 전환</button>
                   <button type="button" role="menuitem" onClick={() => { setMenu(false); dup(q.id); }}>복제</button>
@@ -2865,7 +2899,7 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
                 </div>}
                 {showPas && <div className="pq-pas"><PaperText value={q.passage} editing={ed("passage")} onStart={start("passage")} onChange={(v) => setPassage(q.id, v)} onDone={done} placeholder="지문" maxLength={4000} /></div>}
                 <div className="pq-h">
-                  <span className="pq-n">Q{i + 1}.</span>
+                  <span className="pq-n">Q{nums[i]}.</span>
                   <span className="pq-t"><PaperText value={q.text} editing={ed("text")} onStart={start("text")} onChange={(v) => patchQ(q.id, { text: v })} onDone={done} placeholder="문제를 입력하세요" />{!ed("text") && (type === "short" ? <span className="pq-sub"> (주관식)</span> : type === "essay" ? <span className="pq-sub"> (서술형)</span> : q.answers.length > 1 ? <span className="pq-sub"> (정답 {q.answers.length}개)</span> : null)}</span>
                   {q.src && <span className="pq-src">원본 {q.src}</span>}
                 </div>
@@ -3051,6 +3085,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
   };
 
   const back = () => (dirty ? setLeaveAsk(true) : onBack());
+  const formNums = qNums(draft.questions);
 
   return (
     <Shell back="홈으로" backTo={back} toast={toast} wide={view === "paper"}>
@@ -3104,7 +3139,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
           <div key={q.id} {...formDrag.item(q.id)} style={{ borderRadius: 18 }}>
           <Card style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>{draft.questions.length > 1 && <button type="button" className="em-grip" {...formDrag.grip(q.id, `${qi + 1}번 문항 끌어서 옮기기`)}><PpIco n="grip" /></button>}<span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span><SrcPill src={q.src} /></span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>{draft.questions.length > 1 && <button type="button" className="em-grip" {...formDrag.grip(q.id, `${formNums[qi]}번 문항 끌어서 옮기기`)}><PpIco n="grip" /></button>}<span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{formNums[qi]}번</span><SrcPill src={q.src} /></span>
               <div style={{ display: "flex", gap: 0 }}>
                 <TextBtn tone="sub" ariaLabel="위로" onClick={() => moveQ(qi, -1)} disabled={qi === 0} style={{ fontSize: 15 }}>▲</TextBtn>
                 <TextBtn tone="sub" ariaLabel="아래로" onClick={() => moveQ(qi, 1)} disabled={qi === draft.questions.length - 1} style={{ fontSize: 15 }}>▼</TextBtn>
@@ -3278,6 +3313,7 @@ function CodeScreen({ codeInput, setCodeInput, codeErr, busy, onLoad, onBack, to
    1) 채점자(출제자·관리자·제한 관리자) 아이디/비밀번호 확인 → 2) 모든 문항이 정답으로 체크된 상태에서 틀린 문항만 고쳐 기록.
    기록은 지금 응시 중인 계정의 결과로 남고, 활동 기록에는 채점자가 남는다. 비밀번호는 저장하지 않고 요청에만 쓴다. */
 function ManualResultModal({ run, onClose, onDone }) {
+  const mnums = qNums(run.questions);
   const [gid, setGid] = useState("");
   const [gpw, setGpw] = useState("");
   const [grader, setGrader] = useState(null);
@@ -3351,10 +3387,10 @@ function ManualResultModal({ run, onClose, onDone }) {
                 <div key={q.id} style={{ border: `1px solid ${r.ok ? C.good : C.line}`, background: r.ok ? C.goodSoft : C.card, borderRadius: 12, padding: "10px 12px" }}>
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                     <button className="em-btn" onClick={() => setRow(i, { ok: !r.ok })} aria-pressed={r.ok} title="정답/오답 바꾸기" style={{ flex: "0 0 auto", border: "none", background: "none", padding: 0, cursor: "pointer", minHeight: 32 }}><Badge tone={r.ok ? "good" : "bad"}>{r.ok ? "정답" : "오답"}</Badge></button>
-                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{i + 1}. {q.text}{textQ && <span style={{ color: C.sub, fontWeight: 400 }}> · {QTYPE_KO[q.type]}</span>}</div>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{mnums[i]}. {branchText(q.text, mnums[i])}{textQ && <span style={{ color: C.sub, fontWeight: 400 }}> · {QTYPE_KO[q.type]}</span>}</div>
                   </div>
                   {!textQ && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }} role="group" aria-label={`${i + 1}번 고른 보기`}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }} role="group" aria-label={`${mnums[i]}번 고른 보기`}>
                       {(q.options || []).map((o, oi) => {
                         const on = r.m.includes(oi), isAns = answers.includes(oi);
                         return (
@@ -3366,7 +3402,7 @@ function ManualResultModal({ run, onClose, onDone }) {
                       })}
                     </div>
                   )}
-                  {textQ && <Field value={r.t} onChange={(v) => setRow(i, { t: v })} placeholder={q.type === "short" ? "학생이 적은 답 (선택)" : "학생이 적은 서술 (선택)"} multiline={q.type === "essay"} rows={q.type === "essay" ? 3 : 1} maxLength={500} style={{ marginTop: 8, fontSize: 14 }} ariaLabel={`${i + 1}번 학생 답`} />}
+                  {textQ && <Field value={r.t} onChange={(v) => setRow(i, { t: v })} placeholder={q.type === "short" ? "학생이 적은 답 (선택)" : "학생이 적은 서술 (선택)"} multiline={q.type === "essay"} rows={q.type === "essay" ? 3 : 1} maxLength={500} style={{ marginTop: 8, fontSize: 14 }} ariaLabel={`${mnums[i]}번 학생 답`} />}
                   {textQ && q.type === "short" && <div style={{ fontSize: 12.5, color: C.sub, marginTop: 6 }}>정답 {String(q.answerText || "").split("|").join(" / ")}</div>}
                 </div>
               );
@@ -3388,6 +3424,7 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
   const [manual, setManual] = useState(false);   // 결과 직접 입력 창(채점자 계정 확인 → 문항별 정오)
   const loggedIn = useMemo(() => !!(authGet() && authGet().token), []);   // 렌더마다 localStorage 를 읽지 않게
   const multi = run.questions.some((q) => (q.answers || []).length > 1);
+  const nums = qNums(run.questions);
   /* 인쇄: 출제자 미리 보기·선생님·관리자는 정답·해설 포함, 학생 응시는 정답표·해설 없는 문제지만 */
   const printFull = !!run.preview || (user && user.role !== "student");
   /* 제한 시간: 0.5초마다 남은 시간을 계산하고 0이 되면 한 번만 자동 제출 */
@@ -3458,13 +3495,13 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
                 <div key={q.id} className={"em-pq take" + (done ? " done" : "")}>
                   {showPas && <div className="pq-pas"><M t={q.passage} /></div>}
                   <div className="pq-h" style={{ paddingRight: 0 }}>
-                    <span className="pq-n">Q{qi + 1}.</span>
-                    <span className="pq-t"><M t={q.text} />{type === "short" ? <span className="pq-sub"> (주관식)</span> : type === "essay" ? <span className="pq-sub"> (서술형)</span> : (q.answers || []).length > 1 ? <span className="pq-sub"> (정답 여러 개)</span> : null}</span>
+                    <span className="pq-n">Q{nums[qi]}.</span>
+                    <span className="pq-t"><M t={branchText(q.text, nums[qi])} />{type === "short" ? <span className="pq-sub"> (주관식)</span> : type === "essay" ? <span className="pq-sub"> (서술형)</span> : (q.answers || []).length > 1 ? <span className="pq-sub"> (정답 여러 개)</span> : null}</span>
                     {q.src && <span className="pq-src">원본 {q.src}</span>}
                   </div>
                   {q.svg && <div className="pq-fig"><Figure svg={q.svg} style={{ margin: 0 }} /></div>}
                   {type === "mc" && (
-                    <div className={"pq-opts " + (opts.every((o) => String(o).length <= 14) ? "two" : "one")} role="group" aria-label={`${qi + 1}번 보기`}>
+                    <div className={"pq-opts " + (opts.every((o) => String(o).length <= 14) ? "two" : "one")} role="group" aria-label={`${nums[qi]}번 보기`}>
                       {opts.map((o, oi) => (
                         <button key={oi} type="button" className="pq-pick" aria-pressed={mine.includes(oi)} onClick={() => togglePick(q.id, oi)}>
                           <span className="pq-m">{mark(oi)}</span><span className="pq-ot"><M t={o} /></span>
@@ -3472,8 +3509,8 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
                       ))}
                     </div>
                   )}
-                  {type === "short" && <input className="pq-ans" value={(typed || {})[q.id] || ""} onChange={(e) => setTyped((t) => ({ ...(t || {}), [q.id]: e.target.value }))} maxLength={200} placeholder="답:" aria-label={`${qi + 1}번 답`} />}
-                  {type === "essay" && <textarea className="pq-ans" value={(typed || {})[q.id] || ""} onChange={(e) => setTyped((t) => ({ ...(t || {}), [q.id]: e.target.value }))} maxLength={2000} placeholder="답을 문장으로 적어 주세요" aria-label={`${qi + 1}번 답`} />}
+                  {type === "short" && <input className="pq-ans" value={(typed || {})[q.id] || ""} onChange={(e) => setTyped((t) => ({ ...(t || {}), [q.id]: e.target.value }))} maxLength={200} placeholder="답:" aria-label={`${nums[qi]}번 답`} />}
+                  {type === "essay" && <textarea className="pq-ans" value={(typed || {})[q.id] || ""} onChange={(e) => setTyped((t) => ({ ...(t || {}), [q.id]: e.target.value }))} maxLength={2000} placeholder="답을 문장으로 적어 주세요" aria-label={`${nums[qi]}번 답`} />}
                 </div>
               );
             })}
@@ -3488,13 +3525,13 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
             <React.Fragment key={q.id}>
             {q.passage && (!prev || prev.passage !== q.passage) && <PassageBox text={q.passage} />}
             <Card style={{ padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span><SrcPill src={q.src} /></div>
-              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}><M t={q.text} />{q.type && q.type !== "mc" && <span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}> · {QTYPE_KO[q.type]}</span>}</p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{nums[qi]}번</span><SrcPill src={q.src} /></div>
+              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}><M t={branchText(q.text, nums[qi])} />{q.type && q.type !== "mc" && <span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}> · {QTYPE_KO[q.type]}</span>}</p>
               <Figure svg={q.svg} />
               {(q.type || "mc") !== "mc" && (
-                <Field value={(typed || {})[q.id] || ""} onChange={(v) => setTyped((t) => ({ ...(t || {}), [q.id]: v }))} placeholder={q.type === "essay" ? "답을 문장으로 적어 주세요" : "답을 적어 주세요"} multiline={q.type === "essay"} rows={q.type === "essay" ? 5 : 2} maxLength={q.type === "essay" ? 2000 : 200} ariaLabel={`${qi + 1}번 답`} />
+                <Field value={(typed || {})[q.id] || ""} onChange={(v) => setTyped((t) => ({ ...(t || {}), [q.id]: v }))} placeholder={q.type === "essay" ? "답을 문장으로 적어 주세요" : "답을 적어 주세요"} multiline={q.type === "essay"} rows={q.type === "essay" ? 5 : 2} maxLength={q.type === "essay" ? 2000 : 200} ariaLabel={`${nums[qi]}번 답`} />
               )}
-              {(q.type || "mc") === "mc" && <div style={{ display: "grid", gap: 7 }} role="group" aria-label={`${qi + 1}번 보기`}>
+              {(q.type || "mc") === "mc" && <div style={{ display: "grid", gap: 7 }} role="group" aria-label={`${nums[qi]}번 보기`}>
                 {q.options.map((o, oi) => {
                   const on = mine.includes(oi);
                   return (
@@ -3554,6 +3591,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
   const pendingN = result.rows.filter((r) => r.pending).length;   // 서술형: 선생님 채점 대기 — 오답도 점수 분모도 아니다
   const wrong = result.rows.filter((r) => !r.ok && !r.pending);
   const rows = showAll || wrong.length === 0 ? result.rows : wrong;
+  const rnums = qNums(result.rows.map((r) => r.q));
   const pct = result.total ? Math.round((result.score / result.total) * 100) : 0;
   const msg = !result.total ? "서술형만 있는 시험지입니다. 선생님이 채점하면 분석 리포트에서 볼 수 있어요." : pct === 100 ? "모두 맞혔습니다. 완벽해요!" : pct >= 80 ? "잘했어요. 조금만 더 다듬으면 만점입니다." : pct >= 50 ? "절반 이상 맞혔어요. 틀린 문제를 한 번 더 봐요." : "아직 익숙하지 않네요. 해설을 보고 다시 도전해요.";
   const saveFail = saveState && saveState !== "ok" && saveState !== "saving";
@@ -3610,12 +3648,12 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
             {q.passage && (!prevQ || prevQ.passage !== q.passage) && <PassageBox text={q.passage} />}
             <Card style={{ padding: 16, borderColor: ok ? C.line : C.badSoft }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{qi + 1}번</span>
+                <span style={{ fontSize: 14.5, fontWeight: 700, color: C.accent }}>{rnums[qi]}번</span>
                 <Badge tone={pending ? "warn" : ok ? "good" : "bad"}>{pending ? "채점 대기 (서술형)" : ok ? "정답" : "오답"}</Badge>
                 {textQ && <Badge>{QTYPE_KO[q.type]}</Badge>}
                 <SrcPill src={q.src} />
               </div>
-              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}><M t={q.text} /></p>
+              <p style={{ fontSize: 16.5, lineHeight: 1.55, margin: "0 0 14px", whiteSpace: "pre-wrap" }}><M t={branchText(q.text, rnums[qi])} /></p>
               <Figure svg={q.svg} />
               {textQ && (
                 <div style={{ display: "grid", gap: 8, marginBottom: 6 }}>
@@ -4228,6 +4266,7 @@ function ResultEditModal({ item, onClose, onSaved, flash }) {
   const pendingN = rows ? rows.filter((d) => d.p).length : 0;
   /* v:2 기록은 고른 보기가 원본 번호. 섞기 시험지의 옛 기록(v 없음)은 표시 순서 번호라 보기 번호가 어긋날 수 있다 */
   const legacyShuffle = !!(quiz && quiz.shuffle && Number(item.v) !== 2 && rows && rows.some((d) => d.m && d.m.length));
+  const numOf = qNumMap((quiz && quiz.questions) || []);
   return (
     <Modal title={`결과 수정 · ${item.name}`} onClose={onClose} wide>
       <p style={{ fontSize: 13.5, color: C.sub, margin: "0 0 10px", lineHeight: 1.5 }}>{item.title || item.code} · {fmtDateTime(item.at)} · 지금 {item.score}/{item.total}{pendingN ? ` · 채점 대기 ${pendingN}문항` : ""}</p>
@@ -4248,10 +4287,10 @@ function ResultEditModal({ item, onClose, onSaved, flash }) {
                 <div key={d.q + i} style={{ border: `1px solid ${d.ok ? C.good : C.line}`, background: d.ok ? C.goodSoft : C.card, borderRadius: 12, padding: "10px 12px" }}>
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                     <button className="em-btn" onClick={() => setRow({ ok: !d.ok, p: undefined })} aria-pressed={!!d.ok} title="정답/오답 바꾸기" style={{ flex: "0 0 auto", border: "none", background: "none", padding: 0, cursor: "pointer", minHeight: 32 }}><Badge tone={d.p ? "warn" : d.ok ? "good" : "bad"}>{d.p ? "채점 대기" : d.ok ? "정답" : "오답"}</Badge></button>
-                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{i + 1}. {q ? q.text : quiz === null ? "불러오는 중…" : "(시험지에서 문항을 찾지 못함)"}{textQ && <span style={{ color: C.sub, fontWeight: 400 }}> · {QTYPE_KO[q.type]}</span>}</div>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{numOf[String(d.q)] || i + 1}. {q ? branchText(q.text, numOf[String(d.q)] || "") : quiz === null ? "불러오는 중…" : "(시험지에서 문항을 찾지 못함)"}{textQ && <span style={{ color: C.sub, fontWeight: 400 }}> · {QTYPE_KO[q.type]}</span>}</div>
                   </div>
                   {opts.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }} role="group" aria-label={`${i + 1}번 고른 보기`}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }} role="group" aria-label={`${numOf[String(d.q)] || i + 1}번 고른 보기`}>
                       {opts.map((o, oi) => {
                         const on = (d.m || []).includes(oi), isAns = answers.includes(oi);
                         return (
@@ -4264,7 +4303,7 @@ function ResultEditModal({ item, onClose, onSaved, flash }) {
                     </div>
                   )}
                   {textQ && (
-                    <Field value={d.t || ""} onChange={(v) => setRow({ t: v })} placeholder={q.type === "short" ? "학생이 적은 답" : "학생이 적은 서술"} multiline={q.type === "essay"} rows={q.type === "essay" ? 3 : 1} maxLength={500} style={{ marginTop: 8, fontSize: 14 }} ariaLabel={`${i + 1}번 학생 답`} />
+                    <Field value={d.t || ""} onChange={(v) => setRow({ t: v })} placeholder={q.type === "short" ? "학생이 적은 답" : "학생이 적은 서술"} multiline={q.type === "essay"} rows={q.type === "essay" ? 3 : 1} maxLength={500} style={{ marginTop: 8, fontSize: 14 }} ariaLabel={`${numOf[String(d.q)] || i + 1}번 학생 답`} />
                   )}
                   <div style={{ fontSize: 12.5, color: C.sub, marginTop: 6 }}>
                     {textQ ? (q.type === "short" ? `정답 ${String(q.answerText || "").split("|").join(" / ")}` : "서술형 · 정답/오답 배지를 눌러 채점") : `고른 답 ${d.m && d.m.length ? d.m.map((k) => mark(k)).join("") : "없음"}${answers.length ? ` · 정답 ${answers.map((k) => mark(k)).join("")}` : ""} · 배지를 누르면 정오를 직접 바꿉니다`}
@@ -4857,6 +4896,7 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
     setPick(it); setSrc(ex); setSel(s0);
   };
   const chosen = src ? src.questions.filter((q) => sel[q.id]) : [];
+  const vnums = src ? qNums(src.questions) : [];
   const build = async () => {
     /* 공용 보기를 쓰는 옛 시험지도 문항마다 보기를 갖게 한 뒤 바꾼다 */
     const base = chosen.map((q) => ({ ...q, options: Array.isArray(q.options) && q.options.length >= 2 ? q.options : src.options }));
@@ -4876,7 +4916,7 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
       else if (got < base.length) flash(`${base.length - got}문항은 원래 문항(객관식은 보기 섞기)으로 넣었습니다${vfail ? ` — 그중 ${vfail}문항은 AI 정답 검증에서 걸러짐` : ""}.`);
     }
     const title = `${src.title || pick.title || "시험지"} · 오답 변형`.slice(0, 80);
-    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항${how === "ai" ? "을 살짝 바꾼 변형 문제" : ", 보기 순서만 섞음"}`, options: [], questions: out.map((q) => ({ ...q, id: uid(), src: q.src || String(src.questions.findIndex((x) => x.id === q.id) + 1) })) });
+    return normalizeExam({ id: uid(), title, subject: src.subject || "", level: src.level, desc: `${pick.title || src.title || ""}에서 고른 ${out.length}문항${how === "ai" ? "을 살짝 바꾼 변형 문제" : ", 보기 순서만 섞음"}`, options: [], questions: out.map((q) => ({ ...q, id: uid(), src: q.src || vnums[src.questions.findIndex((x) => x.id === q.id)] || "" })) });
   };
   const go = async (then) => {
     if (!chosen.length) return flash("문항을 하나 이상 골라 주세요.");
@@ -4915,7 +4955,7 @@ function WrongRemakeModal({ items, studentId, user, onClose, onPractice, onSave,
               return (
                 <CheckRow key={q.id} on={!!sel[q.id]} onToggle={() => setSel((m) => ({ ...m, [q.id]: !m[q.id] }))}>
                   <span style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
-                    <b style={{ flex: "0 0 auto" }}>{qi + 1}번</b>
+                    <b style={{ flex: "0 0 auto" }}>{vnums[qi]}번</b>
                     <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{String(q.text || "").replace(/\s+/g, " ")}</span>
                     {d && <Badge tone={d.p ? "warn" : d.ok ? "good" : "bad"}>{d.p ? "채점 대기" : d.ok ? "맞음" : "틀림"}</Badge>}
                     {how === "shuffle" && shuffleUseless(q) && <Badge>그대로</Badge>}
