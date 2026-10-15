@@ -907,6 +907,21 @@ function shuffleGroups(qs) {
    셔플이 켜져 있으면 보기·문제 순서를 섞은 뒤 정답 위치를 재계산합니다. */
 const SCREENS = ["home", "list", "editor", "code", "take", "result", "study", "myresults", "students", "admin"];
 const INITIAL_HASH = typeof location !== "undefined" ? location.hash : "";   // 첫 화면 효과가 주소를 #/home 으로 바꾸기 전에 기억
+/* 스캐너(같은 주소 treditor88.github.io/scanner)가 '시험지로 보내기'로 남긴 사진·글자를 한 번만 꺼낸다(IndexedDB 'heo-handoff').
+   30분 넘은 것은 버린다. 꺼내면 지운다 */
+async function scanHandoffTake(userId) {   // userId: 지금 로그인한 계정. 스캐너에서 보낸 계정과 다르면 버린다
+  try {
+    const db = await new Promise((res, rej) => { const r = indexedDB.open("heo-handoff", 1); r.onupgradeneeded = () => r.result.createObjectStore("items"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const v = await new Promise((res, rej) => { const t = db.transaction("items", "readwrite"), st = t.objectStore("items"), g = st.get("scan2exam"); g.onsuccess = () => { st.delete("scan2exam"); res(g.result); }; g.onerror = () => rej(g.error); });
+    db.close();
+    if (!v || !(Date.now() - Number(v.at) < 30 * 60000) || !Array.isArray(v.files)) return null;
+    if (!v.uid || String(v.uid) !== String(userId || "")) return null;
+    const files = v.files.filter((f) => f && f.blob instanceof Blob && /^image\//.test(f.blob.type)).slice(0, 30)
+      .map((f, i) => new File([f.blob], String(f.name || `스캔_${i + 1}.jpg`).replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, "_").slice(0, 80), { type: f.blob.type }));
+    const text = typeof v.text === "string" ? v.text.slice(0, 20000) : "";
+    return files.length || text ? { files, text } : null;
+  } catch (e) { return null; }
+}
 const RESTORE_SCREENS = ["list", "study", "myresults", "code"];   // 새로고침해도 그대로 여는 화면(따로 불러올 상태가 없는 것)
 const TAKE_KEEP_MS = 24 * 3600 * 1000;
 /* 이어 풀기 저장본이 같은 시험지 모양일 때만 되살린다(문항 id·보기 수) */
@@ -2371,7 +2386,7 @@ function openHtmlWindow(html, flash, print) {
 }
 
 /* ── AI 문제 생성 모달 ───────────────────────── */
-function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, manual }) {
+function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject, onQueue, manual }) {
   const me = (authGet() || {}).user;
   const lim = genLimitsOf(me);   // 기본 사진 10장·문제 50개, 확장 생성 권한이면 30장·100개
   const server = remote().kind === "server";
@@ -2412,6 +2427,14 @@ function GenerateModal({ onClose, onAdd, initScope, genAvail, subject, onQueue, 
     setReading("");
     setErr(cut ? `한도를 넘는 부분은 뺐어요(사진·쪽 ${lim.photos}장, 자료 글자 ${MAT_MAX.toLocaleString()}자까지).` : "");
   };
+  /* 스캐너에서 보낸 사진·글자: 처음 열 때 한 번 파일 칸에 넣는다. 글자 없이 사진만이면 사진을 읽는 고급 방식으로 */
+  useEffect(() => {
+    if (!initFiles) return;
+    const fs = [...(initFiles.files || [])];
+    if (initFiles.text) fs.push(new File([initFiles.text], "스캐너에서_뽑은_글자.txt", { type: "text/plain" }));
+    if (!initFiles.text && fs.length && server) setMode("pro");
+    if (fs.length) addFiles(fs);
+  }, []);
   const removeFile = (f) => {
     if (f.block) setMaterial((m) => m.replace("\n\n" + f.block, "").replace(f.block, "").trim());
     if (f.imgs.length) setPhotos((p) => p.filter((x) => !f.imgs.includes(x)));
@@ -2968,7 +2991,8 @@ function PaperEditor({ draft, setDraft, flash, aiOk, hist }) {
   );
 }
 
-function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast, genInit, genAuto, onGenInitUsed, onPrint }) {
+function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, onExport, flash, toast, genInit, genAuto, genFiles, onGenInitUsed, onPrint }) {
+  const [genFilesInit] = useState(genFiles || null);   // 스캐너에서 보낸 것(부모가 곧 지우므로 처음 값을 잡아 둠)
   const [shareCode, setShareCode] = useState(null);
   const [showProblems, setShowProblems] = useState(false);
   const [leaveAsk, setLeaveAsk] = useState(false);
@@ -3308,7 +3332,7 @@ function EditorScreen({ draft, setDraft, dirty, busy, onSave, onShare, onBack, o
         <button className="em-btn" aria-label="맨 위로" title="맨 위로" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14.5 L12 9.5 L17 14.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
         <button className="em-btn" aria-label="맨 아래로" title="맨 아래로" onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9.5 L12 14.5 L17 9.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg></button>
       </div>
-      {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} genAvail={genAvail} subject={draft.subject} manual={manualMode} onQueue={() => { setGenOpen(false); flash("Claude에게 요청했습니다. 완료되면 알림이 뜨고 내 시험지에 새 시험지로 추가됩니다."); }} />}
+      {genOpen && <GenerateModal onClose={() => setGenOpen(false)} onAdd={addGenerated} initScope={genInit || ""} initFiles={genFilesInit} genAvail={genAvail} subject={draft.subject} manual={manualMode} onQueue={() => { setGenOpen(false); flash("Claude에게 요청했습니다. 완료되면 알림이 뜨고 내 시험지에 새 시험지로 추가됩니다."); }} />}
     </Shell>
   );
 }
@@ -5247,7 +5271,9 @@ function ExamMaker() {
   const [acctOpen, setAcctOpen] = useState(false);
   const [genInit, setGenInit] = useState(null);   // 추천 학습 → 편집 화면을 열며 AI 생성 창에 넣을 범위
   const [printSrc, setPrintSrc] = useState(null); // 인쇄·PDF 모달에 넘길 시험지
-  const [genAuto, setGenAuto] = useState(false);   // 새 시험지는 AI 생성 창을 먼저 연다(직접 만들기 버튼으로 닫음)
+  const [genAuto, setGenAuto] = useState(false);
+  const [genFiles, setGenFiles] = useState(null);   // 스캐너에서 보낸 사진·글자 → AI 생성 창 파일 칸에
+  const handoffDone = useRef(false);   // 새 시험지는 AI 생성 창을 먼저 연다(직접 만들기 버튼으로 닫음)
   const examsRef = useRef([]);
   useEffect(() => { examsRef.current = exams; }, [exams]);
   const migrateAsked = useRef(false);
@@ -5398,6 +5424,16 @@ function ExamMaker() {
     setScreen("editor");
   };
   const newExam = () => { setGenAuto(true); openEditor(normalizeExam({ id: uid(), options: DEFAULT_OPTS() }), true); };
+  /* 스캐너 '시험지로 보내기': 로그인된 뒤 한 번, 보낸 것이 있으면 새 시험지 + AI 생성 창을 열고 파일 칸에 넣는다 */
+  useEffect(() => {
+    if (!ready || !user || handoffDone.current) return;
+    handoffDone.current = true;
+    (async () => {
+      const h = await scanHandoffTake(user.id); if (!h) return;
+      setGenFiles(h); newExam();
+      flash(`스캐너에서 보낸 ${h.files.length ? `사진 ${h.files.length}장` : '글자'}을 'AI로 문제 만들기'에 넣었어요.`);
+    })();
+  }, [ready, user]);
   /* 추천 학습: 약점 태그를 범위로 AI 생성 창을 바로 연다 */
   /* 오답 은행: 최근 시험지(최대 10개)의 마지막 응시에서 틀린 문항만 모아 한 번에 다시 푼다(기록에는 안 남음) */
   const wrongBank = async (items) => {
@@ -5830,7 +5866,8 @@ function ExamMaker() {
           toast={toast}
           genInit={genInit}
           genAuto={genAuto}
-          onGenInitUsed={() => { setGenInit(null); setGenAuto(false); }}
+          genFiles={genFiles}
+          onGenInitUsed={() => { setGenInit(null); setGenAuto(false); setGenFiles(null); }}
         />
         {overlays}
       </>
