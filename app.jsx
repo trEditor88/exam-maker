@@ -335,7 +335,7 @@ const serverRemote = {
   shNote: (ws) => apiGet({ action: "sh_note", ws }),
   shUpload: (params) => apiPost({ action: "sh_upload", ...params }),
   shConfirm: (params) => apiPost({ action: "sh_confirm", ...params }),
-  shSubject: (worksheet, subject) => apiPost({ action: "sh_subject", worksheet, subject }),
+  shSubject: (worksheet, subject, scope) => apiPost({ action: "sh_subject", worksheet, ...(subject !== undefined ? { subject } : {}), ...(scope ? { scope } : {}) }),
   ping: () => apiGet({ action: "ping" }),
   setup: (b) => apiPost({ action: "setup", ...b }),
   login: (b) => apiPost({ action: "login", ...b }),
@@ -603,9 +603,10 @@ function assignStatus(a) {
 }
 const assignDeadline = (a) => a.dueAt || a.closeAt || 0;
 /* 기록을 과목·태그별로 집계 (quizzes: 서버가 준 code → {subject, tags:{문항id:[태그]}})
-   notes: 사진 오답노트(서버 shStatNote) — 맞은 수 = 문항 수 − 틀린 수, 태그 = 문항의 단원. 리포트(파이썬 report_stats)와 같은 계산 */
+   notes: 사진 오답노트(서버 shStatNote). 시험지 전체를 찍은 것(full)만 정답률·평균에 넣고(맞은 수 = 문항 수 − 틀린 수),
+   틀린 문제만 찍은 것은 정답률을 왜곡하니 '오답노트에서 틀린 단원'(noteTopics)으로만 센다. 리포트(파이썬 report_stats)와 같은 계산 */
 function aggregateResults(items, quizzes, notes) {
-  const bySub = {}, byTag = {};
+  const bySub = {}, byTag = {}, topics = {};
   const addTag = (tag, ok) => { const g = (byTag[tag] = byTag[tag] || { c: 0, t: 0 }); g.t++; if (ok) g.c++; };
   (items || []).forEach((it) => {
     const q = (quizzes || {})[it.code] || {};
@@ -615,12 +616,16 @@ function aggregateResults(items, quizzes, notes) {
     if (Array.isArray(it.detail) && q.tags) it.detail.forEach((d) => (q.tags[d.q] || []).forEach((tag) => addTag(tag, d.ok)));
   });
   (notes || []).forEach((n) => {
+    if (!n.full) { (n.items || []).forEach((x) => { if (x.t && !x.ok) topics[x.t] = (topics[x.t] || 0) + 1; }); return; }
     const s = (bySub[n.subject || "(과목 없음)"] = bySub[n.subject || "(과목 없음)"] || { c: 0, t: 0, n: 0 });
     s.c += n.total - n.wrong; s.t += n.total; s.n++;
     (n.items || []).forEach((x) => { if (x.t) addTag(x.t, x.ok); });
   });
   const pct = (v) => (v.t ? Math.round((v.c / v.t) * 100) : 0);
+  const all = Object.values(bySub).reduce((a, v) => ({ c: a.c + v.c, t: a.t + v.t }), { c: 0, t: 0 });
   return {
+    overall: all.t ? { pct: pct(all), n: all.t } : null,   // 평균 정답률 = 맞은 문항 합 ÷ 문항 합(홈·기록 표·리포트 모두 이 값)
+    noteTopics: Object.entries(topics).map(([k, n]) => ({ k, n })).sort((a, b) => b.n - a.n),
     subs: Object.entries(bySub).map(([k, v]) => ({ k, pct: pct(v), n: v.t, runs: v.n })).sort((a, b) => a.pct - b.pct),
     tags: Object.entries(byTag).filter(([, v]) => v.t >= 2).map(([k, v]) => ({ k, pct: pct(v), n: v.t })).sort((a, b) => a.pct - b.pct),
   };
@@ -1403,7 +1408,8 @@ function useHomeData(user, mode) {
       const [res, sh, asg] = await Promise.all([remote().studentResults(user.id), shOn ? remote().shList() : Promise.resolve(null), remote().assignList()]);
       if (!alive) return;
       const items = res.ok ? res.items : [];
-      const avg = items.length ? Math.round((items.reduce((s, r) => s + (r.total ? r.score / r.total : 0), 0) / items.length) * 100) : null;
+      const ov = res.ok ? aggregateResults(items, res.quizzes, res.notes).overall : null;   // 과목별 정답률과 같은 계산(사이트 기록 + 시험지 전체 오답노트)
+      const avg = ov ? ov.pct : null;
       const ws = sh && sh.ok ? sh.worksheets : null;
       const mine = asg && asg.ok ? asg.mine : [];
       homeCache = {
@@ -1497,7 +1503,7 @@ function TrendChart({ items, notes }) {
   const start = monday(new Date());
   for (let i = 7; i >= 0; i--) { const s = new Date(start); s.setDate(s.getDate() - i * 7); weeks.push({ s: s.getTime(), e: s.getTime() + 7 * 86400000, c: 0, t: 0, n: 0 }); }
   (items || []).forEach((it) => { const w = weeks.find((x) => it.at >= x.s && it.at < x.e); if (w && it.total) { w.c += it.score; w.t += it.total; w.n++; } });
-  (notes || []).forEach((n) => { const w = weeks.find((x) => n.at >= x.s && n.at < x.e); if (w && n.total) { w.c += n.total - n.wrong; w.t += n.total; w.n++; } });   // 사진 오답노트는 올린 주에
+  (notes || []).forEach((n) => { if (!n.full) return; const w = weeks.find((x) => n.at >= x.s && n.at < x.e); if (w && n.total) { w.c += n.total - n.wrong; w.t += n.total; w.n++; } });   // 시험지 전체 오답노트만, 올린 주에
   if (!weeks.some((w) => w.n)) return null;
   const W = 320, H = 120, bw = W / 8, gap = 14;
   const desc = weeks.filter((w) => w.n).map((w) => `${new Date(w.s).getMonth() + 1}/${new Date(w.s).getDate()}주 ${Math.round((w.c / w.t) * 100)}%`).join(", ");
@@ -1528,7 +1534,7 @@ function TrendChart({ items, notes }) {
 /* ── 과목별 정답률 · 취약 태그 ─────────────────── */
 function BreakdownChart({ items, quizzes, notes }) {
   const agg = aggregateResults(items, quizzes, notes);
-  if (!agg.subs.length) return null;
+  if (!agg.subs.length && !agg.noteTopics.length) return null;
   const Bar = ({ label, pct, n }) => (
     <div style={{ marginBottom: 9 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, gap: 8 }}>
@@ -1541,7 +1547,7 @@ function BreakdownChart({ items, quizzes, notes }) {
   const onlyNone = agg.subs.length === 1 && agg.subs[0].k === "(과목 없음)";
   return (
     <Card style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 8 }}>과목별 정답률</div>
+      {agg.subs.length > 0 && <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 8 }}>과목별 정답률</div>}
       {agg.subs.map((s) => <Bar key={s.k} label={s.k} pct={s.pct} n={s.n} />)}
       {agg.tags.length > 0 && (
         <>
@@ -1549,8 +1555,14 @@ function BreakdownChart({ items, quizzes, notes }) {
           {agg.tags.slice(0, 6).map((s) => <Bar key={s.k} label={s.k} pct={s.pct} n={s.n} />)}
         </>
       )}
-      {(onlyNone || !agg.tags.length) && <p style={{ fontSize: 12.5, color: C.sub, margin: "6px 0 0", lineHeight: 1.5 }}>시험지에 과목과 문항 태그를 적어 두면 과목·태그별로 나눠 보여 줍니다.</p>}
-      {(notes || []).length > 0 && <p style={{ fontSize: 12, color: C.sub, margin: "8px 0 0", lineHeight: 1.5 }}>사이트에서 푼 기록 + 사진 오답노트 {notes.length}권 포함 · 오답노트는 맞은 수 = 문항 수 − 틀린 수로 계산</p>}
+      {agg.subs.length > 0 && (onlyNone || !agg.tags.length) && <p style={{ fontSize: 12.5, color: C.sub, margin: "6px 0 0", lineHeight: 1.5 }}>시험지에 과목과 문항 태그를 적어 두면 과목·태그별로 나눠 보여 줍니다.</p>}
+      {agg.noteTopics.length > 0 && (
+        <>
+          <div style={{ fontSize: 14.5, fontWeight: 700, margin: "14px 0 8px" }}>오답노트에서 틀린 단원 <span style={{ fontSize: 12.5, color: C.sub, fontWeight: 400 }}>틀린 문제만 찍은 노트</span></div>
+          {agg.noteTopics.slice(0, 6).map((t) => <div key={t.k} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "3px 0" }}><span>{t.k}</span><span style={{ color: C.bad, fontWeight: 700 }}>{t.n}문항</span></div>)}
+        </>
+      )}
+      {(notes || []).length > 0 && <p style={{ fontSize: 12, color: C.sub, margin: "8px 0 0", lineHeight: 1.5 }}>정답률 = 사이트에서 푼 기록{(notes || []).some((n) => n.full) ? " + 시험지 전체를 찍은 오답노트(맞은 수 = 문항 수 − 틀린 수)" : ""} · 틀린 문제만 찍은 오답노트는 정답률에 넣지 않고 '틀린 단원'에만 셉니다</p>}
     </Card>
   );
 }
@@ -2582,7 +2594,7 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
           <Seg value={mode} onChange={setMode} items={[["fast", "기본 (바로 만들기)"], ["pro", "고급 (Claude · 10분 안에)"]]} />
           <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: "8px 0 12px" }}>
             {mode === "pro"
-              ? "서버의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(서버가 켜져 있을 때 보통 10분 안). 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
+              ? "서버의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(보통 10분 안). 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
               : genAvail
                 ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
                 : "기본 방식은 지금 쓸 수 없습니다(서버에 Gemini 설정 없음). 고급 방식을 골라 주세요."}
@@ -3841,6 +3853,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
   const [busy, setBusy] = useState(false);
   const [wsName, setWsName] = useState("");
   const [wsSubj, setWsSubj] = useState(null);   // null = 이름에서 추정한 과목을 기본값으로(직접 고치면 그 값)
+  const [wsScope, setWsScope] = useState("wrong");   // 틀린 문제만(기본) / 시험지 전체. 이미 있는 문제지에 사진을 더하면 서버가 범위를 바꾸지 않음
   const [files, setFiles] = useState([]);
   const fileUrls = useObjectUrls(files);
   const [progress, setProgress] = useState("");
@@ -3870,12 +3883,12 @@ function StudyScreen({ onBack, flash, toast, user }) {
     for (const f of files) {
       setProgress(`${done + 1}/${files.length} 올리는 중…`);
       const data = await shrinkImage(f, 2200).catch(() => fileToBase64(f));   // 긴 변 2200px JPEG 로 줄여 전송(서버 한도·워커 읽기 부담)
-      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: "image/jpeg", data, subject: (wsSubj === null ? guessSubject(name) : wsSubj).trim() });
+      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: "image/jpeg", data, subject: (wsSubj === null ? guessSubject(name) : wsSubj).trim(), scope: wsScope });
       if (!res.ok) { setBusy(false); setProgress(""); return flash(errMsg(res, { too_big: "사진이 너무 큽니다(9MB 이하)." })); }
       done++;
     }
     setBusy(false); setProgress("");
-    setFiles([]); setWsName(""); setWsSubj(null); if (fileRef.current) fileRef.current.value = "";
+    setFiles([]); setWsName(""); setWsSubj(null); setWsScope("wrong"); if (fileRef.current) fileRef.current.value = "";
     flash(`사진 ${done}장을 올렸습니다. 보통 10분 안에 처리됩니다.`);
     load();
   };
@@ -3921,7 +3934,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
               <span style={{ fontSize: 16, fontWeight: 700, color: C.ink }}>{w.name}</span>{statusBadge(w.status)}{w.pending > 0 && <Badge tone="warn">확인 질문 {w.pending}</Badge>}
             </div>
             <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>
-              {w.subject ? `${w.subject} · ` : ""}{w.site ? "사이트 결과" : `사진 ${w.photos}장`}{w.summary && w.summary.questions != null ? ` · ${w.summary.questions}문항 · 틀림 ${w.summary.wrong || 0} · 의심 ${w.summary.suspect || 0}` : ""}{w.hasNote ? " · 오답노트 있음" : ""}
+              {w.subject ? `${w.subject} · ` : ""}{w.site ? "사이트 결과" : `${w.scope === "full" ? "시험지 전체" : "틀린 문제만"} · 사진 ${w.photos}장`}{w.summary && w.summary.questions != null ? ` · ${w.summary.questions}문항 · 틀림 ${w.summary.wrong || 0} · 의심 ${w.summary.suspect || 0}` : ""}{w.hasNote ? " · 오답노트 있음" : ""}
             </div>
           </button>
         );
@@ -3964,7 +3977,8 @@ function StudyScreen({ onBack, flash, toast, user }) {
         </aside>
         <div style={{ minWidth: 0 }}>
         <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 6px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>{detail.name} {statusBadge(detail.status)}</h2>
-        <div style={{ fontSize: 14, color: C.sub, margin: "0 0 10px" }}>과목: <b style={{ color: C.inkMid }}>{detail.subject || "정하지 않음"}</b> · <TextBtn onClick={async () => { const v = window.prompt("이 문제지의 과목(분석 리포트의 과목별 정답률에 쓰여요)", detail.subject || guessSubject(detail.name)); if (v === null) return; const res = await r.shSubject(detail.name, v.trim()); if (!res.ok) return flash(errMsg(res)); flash("과목을 바꿨습니다."); openDetail(detail.name); load(); }} style={{ fontSize: 14, padding: 0, minHeight: 0 }}>바꾸기</TextBtn></div>
+        <div style={{ fontSize: 14, color: C.sub, margin: "0 0 10px" }}>과목: <b style={{ color: C.inkMid }}>{detail.subject || "정하지 않음"}</b> · <TextBtn onClick={async () => { const v = window.prompt("이 문제지의 과목(분석 리포트의 과목별 정답률에 쓰여요)", detail.subject || guessSubject(detail.name)); if (v === null) return; const res = await r.shSubject(detail.name, v.trim()); if (!res.ok) return flash(errMsg(res)); flash("과목을 바꿨습니다."); openDetail(detail.name); load(); }} style={{ fontSize: 14, padding: 0, minHeight: 0 }}>바꾸기</TextBtn>
+          {!detail.site && <> · 범위: <b style={{ color: C.inkMid }}>{detail.scope === "full" ? "시험지 전체" : "틀린 문제만"}</b> · <TextBtn onClick={async () => { const to = detail.scope === "full" ? "wrong" : "full"; const res = await r.shSubject(detail.name, undefined, to); if (!res.ok) return flash(errMsg(res)); flash(to === "full" ? "시험지 전체로 바꿨습니다(정답률에 들어가요)." : "틀린 문제만으로 바꿨습니다(정답률에서 빠져요)."); openDetail(detail.name); load(); }} style={{ fontSize: 14, padding: 0, minHeight: 0 }}>{detail.scope === "full" ? "틀린 문제만으로" : "시험지 전체로"}</TextBtn></>}</div>
         {detail.summary && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, margin: "10px 0 14px" }}>
             {[["문항", detail.summary.questions], ["틀림", detail.summary.wrong], ["오류 의심", detail.summary.suspect], ["확인 필요", detail.summary.confirm]].map(([t, v]) => (
@@ -4026,6 +4040,9 @@ function StudyScreen({ onBack, flash, toast, user }) {
         <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>과목 (분석 리포트의 과목별 정답률에 쓰여요)</div>
         <Field value={wsSubj === null ? guessSubject(wsName) : wsSubj} onChange={setWsSubj} placeholder="예: 통합과학" ariaLabel="과목" maxLength={20} list="sh-subjects" />
         <datalist id="sh-subjects">{SH_SUBJECTS.map((s) => <option key={s} value={s} />)}</datalist>
+        <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>찍은 범위</div>
+        <Seg value={wsScope} onChange={setWsScope} items={[["wrong", "틀린 문제만"], ["full", "시험지 전체"]]} />
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 6, lineHeight: 1.5 }}>{wsScope === "full" ? "맞은 문제까지 다 찍었으면: 정답률·평균·주간 그래프에도 들어가요." : "틀린 문제만 찍었으면: 정답률에는 넣지 않고 약한 단원을 찾는 데만 써요."}</div>
         <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>사진 (여러 장, 페이지 순서대로)</div>
         <FilePick inputRef={fileRef} count={files.length} onFiles={setFiles} />
         {files.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{files.map((f, i) => <img key={i} src={fileUrls[i]} alt={f.name} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}` }} />)}</div>}
@@ -4206,7 +4223,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
     if (remote().kind !== "server") return flash("저장했습니다.");
     const r = await remote().schoolLookup({ school: v.school, year: v.year, grade: v.grade });
     if (!r.ok) return flash(errMsg(r));
-    setSchMsg(r.found ? `교과서 ${r.items.length}과목 있음` : "교과서 목록을 찾는 중 — 찾으면 알림이 옵니다 (서버가 켜져 있을 때)");
+    setSchMsg(r.found ? `교과서 ${r.items.length}과목 있음` : "교과서 목록을 찾는 중 — 찾으면 알림이 옵니다");
     flash(r.found ? `저장했습니다. 교과서 ${r.items.length}과목이 등록되어 있습니다.` : "저장했습니다. 이 학교의 교과서 목록을 찾아 두겠습니다.");
   };
   const [subjBusy, setSubjBusy] = useState(false);
@@ -4848,12 +4865,14 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
 }
 
 /* 결과 표 + 리포트 (선생·관리자가 학생을 볼 때, 학생이 자기 기록을 볼 때 공용) */
-function ResultsTable({ items, onNote }) {
+function ResultsTable({ items, onNote, overall }) {
   if (!items.length) return <p style={{ color: C.sub, fontSize: 14.5 }}>아직 응시 기록이 없습니다.</p>;
-  const avg = Math.round((items.reduce((s, r) => s + r.score / r.total, 0) / items.length) * 100);
+  /* 평균 정답률 = 맞은 문항 합 ÷ 문항 합(과목별 정답률·홈과 같은 계산). overall 을 받으면 시험지 전체 오답노트까지 넣은 값 */
+  const sc = items.reduce((a, r) => ({ c: a.c + r.score, t: a.t + r.total }), { c: 0, t: 0 });
+  const avg = overall ? overall.pct : sc.t ? Math.round((sc.c / sc.t) * 100) : 0;
   return (
     <>
-      <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 8px" }}>{items.length}회 응시 · 평균 {avg}점</p>
+      <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 8px" }}>{items.length}회 응시 · 평균 정답률 {avg}%</p>
       {/* 휴대폰: 한 줄 카드(점수가 잘리지 않게) */}
       <div className="em-rt-cards">
         {items.map((it) => {
@@ -5101,7 +5120,7 @@ function useSubjectFilter(detail) {
   ) : null;
   const sub = cur === "all" ? "" : cur;   // 과목별 리포트에 넘길 과목('' = 전체 리포트)
   const srep = sub ? ((detail && detail.subjectReports) || []).find((x) => x.subject === sub) || null : null;
-  const repNote = sub ? (srep ? (srep.pending ? `${sub} 리포트를 만드는 중이에요(서버가 켜져 있으면 10분 안).${srep.ready ? " 지금은 이전 리포트가 열려요." : ""}` : srep.ready ? `${sub} 리포트 · ${fmtDate(srep.updatedAt)} 기준(그 뒤 기록은 '새로 만들기'를 눌러야 반영)` : `${sub} 기록이 없어 리포트를 만들지 못했어요.`) : `${sub} 리포트는 아직 없어요. '${sub} 리포트 만들기'를 누르면 이 과목 기록만으로 따로 만들어요.`) : "";
+  const repNote = sub ? (srep ? (srep.pending ? `${sub} 리포트를 만드는 중이에요(보통 10분 안).${srep.ready ? " 지금은 이전 리포트가 열려요." : ""}` : srep.ready ? `${sub} 리포트 · ${fmtDate(srep.updatedAt)} 기준(그 뒤 기록은 '새로 만들기'를 눌러야 반영)` : `${sub} 기록이 없어 리포트를 만들지 못했어요.`) : `${sub} 리포트는 아직 없어요. '${sub} 리포트 만들기'를 누르면 이 과목 기록만으로 따로 만들어요.`) : "";
   return { subj: cur, sub, srep, repNote, items, notes, bar };
 }
 
@@ -5125,7 +5144,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
     setBusy(true);
     const r = await remote().reportGet(detail.student.id, sf.sub);
     setBusy(false);
-    if (!r.ok) return flash(r.error === "no_report" ? (sf.sub ? `아직 ${sf.sub} 리포트가 없습니다. '${sf.sub} 리포트 만들기'를 눌러 주세요.` : "아직 리포트가 만들어지지 않았습니다. 서버가 켜져 있으면 응시 후 10분 안에 만들어집니다.") : errMsg(r));
+    if (!r.ok) return flash(r.error === "no_report" ? (sf.sub ? `아직 ${sf.sub} 리포트가 없습니다. '${sf.sub} 리포트 만들기'를 눌러 주세요.` : "아직 리포트가 만들어지지 않았습니다. 보통 응시 후 10분 안에 만들어집니다.") : errMsg(r));
     setReport(r.html);
   };
   if (detail && report !== null)
@@ -5148,7 +5167,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
           {detail.student.repOn && <Btn onClick={openReport} disabled={busy}>{sf.sub ? `${sf.sub} 리포트 열기` : "리포트 열기"}</Btn>}
           {detail.student.repOn && sf.repNote && <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5 }}>{sf.repNote}</div>}
           <div className="em-btn-grid">
-            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id, sf.sub); flash(r.ok ? `요청했습니다. 서버가 켜져 있으면 10분 안에 ${sf.sub ? sf.sub + " " : "새 "}리포트가 만들어집니다.` : errMsg(r)); if (r.ok && sf.sub) open(detail.student); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>{sf.sub ? (sf.srep && sf.srep.ready ? `${sf.sub} 리포트 새로 만들기` : `${sf.sub} 리포트 만들기`) : "리포트 새로 만들기"}</Btn>}
+            {detail.student.repOn && <Btn kind="soft" onClick={async () => { const r = await remote().reportRequest(detail.student.id, sf.sub); flash(r.ok ? `요청했습니다. 보통 10분 안에 ${sf.sub ? sf.sub + " " : "새 "}리포트가 만들어집니다.` : errMsg(r)); if (r.ok && sf.sub) open(detail.student); }} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>{sf.sub ? (sf.srep && sf.srep.ready ? `${sf.sub} 리포트 새로 만들기` : `${sf.sub} 리포트 만들기`) : "리포트 새로 만들기"}</Btn>}
             {onRemakeSave && detail.items.length > 0 && <Btn kind="soft" onClick={() => setRemakeOpen(true)} disabled={busy} style={{ fontSize: 14.5, padding: "11px 10px" }}>오답 변형 문제</Btn>}
           </div>
         </div>
@@ -5163,7 +5182,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
         )}
         <TrendChart items={sf.items} notes={sf.notes} />
         <BreakdownChart items={sf.items} quizzes={detail.quizzes} notes={sf.notes} />
-        <ResultsTable items={sf.items} />
+        <ResultsTable items={sf.items} overall={aggregateResults(sf.items, detail.quizzes, sf.notes).overall} />
         {remakeOpen && <WrongRemakeModal items={sf.items} studentId={detail.student.id} user={user} flash={flash} onClose={() => setRemakeOpen(false)} onPractice={onRemakePractice} onSave={onRemakeSave} />}
       </Shell>
     );
@@ -5197,10 +5216,10 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
     setBusy(true);
     const r = await remote().reportGet(user.id, sf.sub);
     setBusy(false);
-    if (!r.ok) return flash(r.error === "no_report" ? (sf.sub ? `아직 ${sf.sub} 리포트가 없습니다. '${sf.sub} 리포트 만들기'를 눌러 주세요.` : "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 서버가 켜져 있을 때 10분 안에 만들어집니다.") : errMsg(r));
+    if (!r.ok) return flash(r.error === "no_report" ? (sf.sub ? `아직 ${sf.sub} 리포트가 없습니다. '${sf.sub} 리포트 만들기'를 눌러 주세요.` : "아직 리포트가 없습니다. '리포트 새로 만들기'를 누르면 보통 10분 안에 만들어집니다.") : errMsg(r));
     setReport(r.html);
   };
-  const request = async () => { const r = await remote().reportRequest("", sf.sub); if (r.ok && sf.sub) load(); flash(r.ok ? `요청했습니다. 서버가 켜져 있으면 10분 안에 ${sf.sub ? sf.sub + " 리포트가 " : ""}만들어집니다.` : errMsg(r)); };
+  const request = async () => { const r = await remote().reportRequest("", sf.sub); if (r.ok && sf.sub) load(); flash(r.ok ? `요청했습니다. 보통 10분 안에 ${sf.sub ? sf.sub + " 리포트가 " : ""}만들어집니다.` : errMsg(r)); };
   if (report !== null)
     return (
       <Shell back="분석 리포트" backTo={() => setReport(null)} toast={toast}>
@@ -5239,7 +5258,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
         const agg = aggregateResults(sf.items, detail.quizzes, sf.notes);
         /* 리포트(Claude)의 취약 개념은 전체 기준이라 과목을 골랐을 때는 그 과목 기록의 태그만 쓴다 */
         const repWeak = sf.subj === "all" && detail.report && detail.report.summary && Array.isArray(detail.report.summary.weak) ? detail.report.summary.weak : [];
-        const weak = [...new Set([...repWeak, ...agg.tags.filter((t) => t.pct < 60).map((t) => t.k)])].slice(0, 6);
+        const weak = [...new Set([...repWeak, ...agg.tags.filter((t) => t.pct < 60).map((t) => t.k), ...agg.noteTopics.filter((t) => t.n >= 2).map((t) => t.k)])].slice(0, 6);
         const subj = sf.subj !== "all" && sf.subj !== "기타" ? sf.subj : agg.subs.length && agg.subs[0].k !== "(과목 없음)" ? agg.subs[0].k : "";
         return (
           <>
@@ -5258,7 +5277,7 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
           </>
         );
       })()}
-      {detail === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={sf.items} onNote={onMakeNote} />}
+      {detail === null ? <p style={{ color: C.sub }}>불러오는 중…</p> : <ResultsTable items={sf.items} onNote={onMakeNote} overall={aggregateResults(sf.items, detail.quizzes, sf.notes).overall} />}
     </Shell>
   );
 }
