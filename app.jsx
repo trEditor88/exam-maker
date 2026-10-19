@@ -335,6 +335,7 @@ const serverRemote = {
   shNote: (ws) => apiGet({ action: "sh_note", ws }),
   shUpload: (params) => apiPost({ action: "sh_upload", ...params }),
   shConfirm: (params) => apiPost({ action: "sh_confirm", ...params }),
+  shSubject: (worksheet, subject) => apiPost({ action: "sh_subject", worksheet, subject }),
   ping: () => apiGet({ action: "ping" }),
   setup: (b) => apiPost({ action: "setup", ...b }),
   login: (b) => apiPost({ action: "login", ...b }),
@@ -421,6 +422,7 @@ const localBase = {
   async shNote() { return { ok: false, error: "sh_local" }; },
   async shUpload() { return { ok: false, error: "sh_local" }; },
   async shConfirm() { return { ok: false, error: "sh_local" }; },
+  async shSubject() { return { ok: false, error: "sh_local" }; },
   // 로컬(서버 없음) 모드: 로그인 없이 관리자로 동작 — 개발·오프라인용
   async ping() { return { ok: true, gen: false, setup: false }; },
   async setup() { return { ok: false, error: "sh_local" }; },
@@ -579,6 +581,8 @@ const fmtSec = (s) => {
   const m = Math.floor(s / 60);
   return m ? `${m}분 ${s % 60}초` : `${s}초`;
 };
+/* 기록의 풀이 시간 칸: 종이로 풀고 답만 입력한 기록은 시간 대신 '종이 풀이'(풀이 시간 통계에서 뺀다) */
+const fmtRunTime = (r) => (r && r.paper ? "종이 풀이" : fmtSec((r && r.sec) || 0));
 
 const fmtClock = (s) => { s = Math.max(0, Math.floor(s)); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, "0")}`; };
 /* datetime-local ↔ ms (기기 시간대 기준) */
@@ -598,15 +602,22 @@ function assignStatus(a) {
   return { t: "열림", tone: "accent", open: true };
 }
 const assignDeadline = (a) => a.dueAt || a.closeAt || 0;
-/* 기록을 과목·태그별로 집계 (quizzes: 서버가 준 code → {subject, tags:{문항id:[태그]}}) */
-function aggregateResults(items, quizzes) {
+/* 기록을 과목·태그별로 집계 (quizzes: 서버가 준 code → {subject, tags:{문항id:[태그]}})
+   notes: 사진 오답노트(서버 shStatNote) — 맞은 수 = 문항 수 − 틀린 수, 태그 = 문항의 단원. 리포트(파이썬 report_stats)와 같은 계산 */
+function aggregateResults(items, quizzes, notes) {
   const bySub = {}, byTag = {};
+  const addTag = (tag, ok) => { const g = (byTag[tag] = byTag[tag] || { c: 0, t: 0 }); g.t++; if (ok) g.c++; };
   (items || []).forEach((it) => {
     const q = (quizzes || {})[it.code] || {};
-    const sub = q.subject || "(과목 없음)";
+    const sub = String(q.subject || "").trim() || "(과목 없음)";
     const s = (bySub[sub] = bySub[sub] || { c: 0, t: 0, n: 0 });
     s.c += it.score; s.t += it.total; s.n++;
-    if (Array.isArray(it.detail) && q.tags) it.detail.forEach((d) => (q.tags[d.q] || []).forEach((tag) => { const g = (byTag[tag] = byTag[tag] || { c: 0, t: 0 }); g.t++; if (d.ok) g.c++; }));
+    if (Array.isArray(it.detail) && q.tags) it.detail.forEach((d) => (q.tags[d.q] || []).forEach((tag) => addTag(tag, d.ok)));
+  });
+  (notes || []).forEach((n) => {
+    const s = (bySub[n.subject || "(과목 없음)"] = bySub[n.subject || "(과목 없음)"] || { c: 0, t: 0, n: 0 });
+    s.c += n.total - n.wrong; s.t += n.total; s.n++;
+    (n.items || []).forEach((x) => { if (x.t) addTag(x.t, x.ok); });
   });
   const pct = (v) => (v.t ? Math.round((v.c / v.t) * 100) : 0);
   return {
@@ -1028,7 +1039,7 @@ function TextBtn({ children, onClick, disabled, style, ariaLabel, tone = "accent
   );
 }
 
-function Field({ value, onChange, placeholder, multiline, style, maxLength, onEnter, ariaLabel, rows = 2, autoFocus, type = "text" }) {
+function Field({ value, onChange, placeholder, multiline, style, maxLength, onEnter, ariaLabel, rows = 2, autoFocus, type = "text", list }) {
   const s = {
     width: "100%",
     boxSizing: "border-box",
@@ -1050,6 +1061,7 @@ function Field({ value, onChange, placeholder, multiline, style, maxLength, onEn
     placeholder,
     maxLength,
     autoFocus,
+    ...(list ? { list } : {}),   // <datalist> 추천 값
     "aria-label": ariaLabel || placeholder,
     onChange: (e) => onChange(e.target.value),
     style: s,
@@ -1479,12 +1491,13 @@ function NavBar({ screen, role, go, onAccount, user, badge }) {
 }
 
 /* ── 주간 정답률 차트 (인라인 SVG, 최근 8주) ─────── */
-function TrendChart({ items }) {
+function TrendChart({ items, notes }) {
   const monday = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
   const weeks = [];
   const start = monday(new Date());
   for (let i = 7; i >= 0; i--) { const s = new Date(start); s.setDate(s.getDate() - i * 7); weeks.push({ s: s.getTime(), e: s.getTime() + 7 * 86400000, c: 0, t: 0, n: 0 }); }
   (items || []).forEach((it) => { const w = weeks.find((x) => it.at >= x.s && it.at < x.e); if (w && it.total) { w.c += it.score; w.t += it.total; w.n++; } });
+  (notes || []).forEach((n) => { const w = weeks.find((x) => n.at >= x.s && n.at < x.e); if (w && n.total) { w.c += n.total - n.wrong; w.t += n.total; w.n++; } });   // 사진 오답노트는 올린 주에
   if (!weeks.some((w) => w.n)) return null;
   const W = 320, H = 120, bw = W / 8, gap = 14;
   const desc = weeks.filter((w) => w.n).map((w) => `${new Date(w.s).getMonth() + 1}/${new Date(w.s).getDate()}주 ${Math.round((w.c / w.t) * 100)}%`).join(", ");
@@ -1513,8 +1526,8 @@ function TrendChart({ items }) {
 }
 
 /* ── 과목별 정답률 · 취약 태그 ─────────────────── */
-function BreakdownChart({ items, quizzes }) {
-  const agg = aggregateResults(items, quizzes);
+function BreakdownChart({ items, quizzes, notes }) {
+  const agg = aggregateResults(items, quizzes, notes);
   if (!agg.subs.length) return null;
   const Bar = ({ label, pct, n }) => (
     <div style={{ marginBottom: 9 }}>
@@ -1537,6 +1550,7 @@ function BreakdownChart({ items, quizzes }) {
         </>
       )}
       {(onlyNone || !agg.tags.length) && <p style={{ fontSize: 12.5, color: C.sub, margin: "6px 0 0", lineHeight: 1.5 }}>시험지에 과목과 문항 태그를 적어 두면 과목·태그별로 나눠 보여 줍니다.</p>}
+      {(notes || []).length > 0 && <p style={{ fontSize: 12, color: C.sub, margin: "8px 0 0", lineHeight: 1.5 }}>사이트에서 푼 기록 + 사진 오답노트 {notes.length}권 포함 · 오답노트는 맞은 수 = 문항 수 − 틀린 수로 계산</p>}
     </Card>
   );
 }
@@ -1966,7 +1980,7 @@ function resultsCsv(exam, items) {
   const head = ["이름", "점수", "만점", "걸린 시간(초)", "제출 시각", ...qNums(qs).map((n) => `${n}번`)];
   const lines = items.map((r) => {
     const dm = detailMap(r);
-    return [r.name || "", r.score, r.total, r.sec || "", fmtDateTime(r.at), ...qs.map((q) => { const x = dm.get(String(q.id)); return !x ? "" : x.p ? "대기" : x.ok ? "O" : "X"; })];
+    return [r.name || "", r.score, r.total, r.paper ? "종이 풀이" : r.sec || "", fmtDateTime(r.at), ...qs.map((q) => { const x = dm.get(String(q.id)); return !x ? "" : x.p ? "대기" : x.ok ? "O" : "X"; })];
   });
   return "\uFEFF" + [head, ...lines].map((row) => row.map(cell).join(",")).join("\r\n");
 }
@@ -2026,7 +2040,7 @@ function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
                 <span style={{ color: C.inkMid, fontWeight: 700 }}>
                   {r.score}/{r.total}
                 </span>
-                <span style={{ color: C.sub, fontSize: 13 }}>{r.sec != null ? fmtSec(r.sec) : ""}</span>
+                <span style={{ color: C.sub, fontSize: 13 }}>{r.sec != null || r.paper ? fmtRunTime(r) : ""}</span>
                 <span style={{ color: C.sub, fontSize: 13 }}>{fmtDateTime(r.at)}</span>
               </div>
             ))}
@@ -3487,7 +3501,7 @@ function ManualResultModal({ run, onClose, onDone }) {
   );
 }
 
-function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, onSubmit, onExit, toast, onPrint, user, onManualDone }) {
+function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, onSubmit, onExit, toast, onPrint, user, onManualDone, onPaper }) {
   const [confirm, setConfirm] = useState(false);
   const [manual, setManual] = useState(false);   // 결과 직접 입력 창(채점자 계정 확인 → 문항별 정오)
   const loggedIn = useMemo(() => !!(authGet() && authGet().token), []);   // 렌더마다 localStorage 를 읽지 않게
@@ -3526,6 +3540,13 @@ function TakeScreen({ run, picked, togglePick, typed, setTyped, name, setName, o
         {loggedIn && onManualDone && !run.partial && !run.preview && <> · <TextBtn onClick={() => setManual(true)} style={{ padding: "10px 0", margin: "-10px 0", minHeight: 0, fontSize: 14 }}>결과 직접 입력</TextBtn></>}
       </p>
       {manual && <ManualResultModal run={run} onClose={() => setManual(false)} onDone={(r) => { setManual(false); onManualDone(r); }} />}
+      {/* 풀이 방식: 종이로 풀고 답만 입력하면 점수는 그대로, 풀이 시간 통계에서만 빠진다. 제한 시간이 있는 시험은 화면 풀이만(시간 우회 방지) */}
+      {onPaper && !run.partial && !run.preview && !run.timeLimit && (
+        <div role="group" aria-label="풀이 방식" style={{ margin: "0 0 8px" }}>
+          <Seg value={run.paper ? "paper" : "screen"} onChange={(v) => onPaper(v === "paper")} items={[["screen", "화면으로 풀기"], ["paper", "종이로 풀고 답 입력"]]} />
+          {run.paper && <p style={{ fontSize: 13.5, color: C.sub, margin: "6px 0 0", lineHeight: 1.5 }}>문제지를 인쇄해 풀고, 고른 답을 아래에 입력해 제출하세요. 점수는 그대로 기록되고, 풀이 시간 통계에서는 빠집니다.{onPrint && <> <TextBtn onClick={() => onPrint({ title: run.title, desc: run.desc, subject: run.subject, code: run.code, level: run.level, options: run.options, questions: run.questions }, !printFull)} style={{ padding: 0, minHeight: 0, fontSize: 13.5 }}>문제지 인쇄</TextBtn></>}</p>}
+        </div>
+      )}
       <div role="group" aria-label="보기 방식" style={{ margin: "0 0 4px" }}><Seg value={view} onChange={setView} items={[["paper", "문제지"], ["card", "크게 보기"]]} /></div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 10, background: C.bg, padding: "8px 0 12px" }}>
@@ -3666,7 +3687,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
   const tone = !result.total ? C.sub : pct >= 80 ? C.good : pct >= 50 ? C.accent : C.warn;   // 점수 구간 색
 
   const copyResult = async () => {
-    const text = `[${run.title}] ${result.score}/${result.total} (${pct}점)${pendingN ? ` · 채점 대기 ${pendingN}문항` : ""} · ${fmtSec(result.sec)}${run.partial ? " · 틀린 문제만" : ""}`;
+    const text = `[${run.title}] ${result.score}/${result.total} (${pct}점)${pendingN ? ` · 채점 대기 ${pendingN}문항` : ""} · ${result.paper ? "종이 풀이" : fmtSec(result.sec)}${run.partial ? " · 틀린 문제만" : ""}`;
     flash((await copyText(text)) ? "결과를 복사했습니다." : "복사가 안 돼요.");
   };
 
@@ -3690,7 +3711,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
           <span style={{ color: C.sub, fontSize: 26, fontWeight: 700 }}> / {result.total}</span>
         </div>
         <div style={{ fontSize: 15.5, color: C.sub, marginTop: 8 }}>
-          {pct}점 · 틀린 문제 {wrong.length}개{pendingN ? ` · 채점 대기 ${pendingN}문항` : ""} · {fmtSec(result.sec)}
+          {pct}점 · 틀린 문제 {wrong.length}개{pendingN ? ` · 채점 대기 ${pendingN}문항` : ""} · {result.paper ? "종이 풀이" : fmtSec(result.sec)}
         </div>
         <div style={{ marginTop: 12 }}>
           <ProgressBar value={result.score} max={result.total} />
@@ -3798,7 +3819,7 @@ function ResultScreen({ run, result, onRetryWrong, onRetryAll, onHome, flash, to
 /* ── 화면: 오답노트(학습 도우미) ─────────────────
    사진을 서버(드라이브)에 올리면 PC 의 워커(Claude 예약 작업)가 가져가 분석하고 결과를 다시 올린다.
    연결 코드는 PC 의 study-helper\sync.json 에 있는 값. 이 브라우저에 저장된다. */
-const SH_STATUS = { uploaded: ["대기 중", "neutral"], extracting: ["처리 중", "accent"], in_progress: ["처리 중", "accent"], needs_confirm: ["확인 필요", "warn"], done: ["완료", "good"] };
+const SH_STATUS = { uploaded: ["대기 중", "neutral"], extracting: ["처리 중", "accent"], in_progress: ["처리 중", "accent"], needs_confirm: ["확인 필요", "warn"], done: ["완료", "good"], error: ["오류", "bad"] };
 /* 사진을 긴 변 1600px JPEG(base64)로 줄인다 — 업로드 크기·워커 읽기 부담을 줄임 */
 async function shrinkImage(file, max = 1600) {
   let bmp = null;
@@ -3809,6 +3830,9 @@ async function shrinkImage(file, max = 1600) {
   c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
   return c.toDataURL("image/jpeg", 0.85).split(",")[1] || "";
 }
+/* 오답노트 과목: 이름 앞부분(첫 '_'·공백 앞)이 아는 과목이면 그 과목을 기본값으로(고칠 수 있음) */
+const SH_SUBJECTS = ["국어", "수학", "영어", "한국사", "통합사회", "통합과학", "과학탐구실험", "물리학", "화학", "생명과학", "지구과학", "사회", "과학", "역사", "도덕", "기술가정", "정보"];
+const guessSubject = (name) => { const h = String(name || "").trim().split(/[_\s]/)[0].replace(/[0-9Ⅰ-Ⅻ]+$/, ""); return h && SH_SUBJECTS.some((s) => h.startsWith(s)) ? h.slice(0, 20) : ""; };
 const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(file); });
 
 function StudyScreen({ onBack, flash, toast, user }) {
@@ -3816,6 +3840,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
   const [list, setList] = useState(null);
   const [busy, setBusy] = useState(false);
   const [wsName, setWsName] = useState("");
+  const [wsSubj, setWsSubj] = useState(null);   // null = 이름에서 추정한 과목을 기본값으로(직접 고치면 그 값)
   const [files, setFiles] = useState([]);
   const fileUrls = useObjectUrls(files);
   const [progress, setProgress] = useState("");
@@ -3845,13 +3870,13 @@ function StudyScreen({ onBack, flash, toast, user }) {
     for (const f of files) {
       setProgress(`${done + 1}/${files.length} 올리는 중…`);
       const data = await shrinkImage(f, 2200).catch(() => fileToBase64(f));   // 긴 변 2200px JPEG 로 줄여 전송(서버 한도·워커 읽기 부담)
-      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: "image/jpeg", data });
+      const res = await r.shUpload({ worksheet: name, filename: f.name, mime: "image/jpeg", data, subject: (wsSubj === null ? guessSubject(name) : wsSubj).trim() });
       if (!res.ok) { setBusy(false); setProgress(""); return flash(errMsg(res, { too_big: "사진이 너무 큽니다(9MB 이하)." })); }
       done++;
     }
     setBusy(false); setProgress("");
-    setFiles([]); setWsName(""); if (fileRef.current) fileRef.current.value = "";
-    flash(`사진 ${done}장을 올렸습니다. PC가 켜져 있으면 10분 안에 처리됩니다.`);
+    setFiles([]); setWsName(""); setWsSubj(null); if (fileRef.current) fileRef.current.value = "";
+    flash(`사진 ${done}장을 올렸습니다. 보통 10분 안에 처리됩니다.`);
     load();
   };
 
@@ -3896,7 +3921,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
               <span style={{ fontSize: 16, fontWeight: 700, color: C.ink }}>{w.name}</span>{statusBadge(w.status)}{w.pending > 0 && <Badge tone="warn">확인 질문 {w.pending}</Badge>}
             </div>
             <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>
-              사진 {w.photos}장{w.summary ? ` · ${w.summary.questions}문항 · 틀림 ${w.summary.wrong} · 의심 ${w.summary.suspect}` : ""}{w.hasNote ? " · 오답노트 있음" : ""}
+              {w.subject ? `${w.subject} · ` : ""}{w.site ? "사이트 결과" : `사진 ${w.photos}장`}{w.summary && w.summary.questions != null ? ` · ${w.summary.questions}문항 · 틀림 ${w.summary.wrong || 0} · 의심 ${w.summary.suspect || 0}` : ""}{w.hasNote ? " · 오답노트 있음" : ""}
             </div>
           </button>
         );
@@ -3939,6 +3964,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
         </aside>
         <div style={{ minWidth: 0 }}>
         <h2 style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 6px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>{detail.name} {statusBadge(detail.status)}</h2>
+        <div style={{ fontSize: 14, color: C.sub, margin: "0 0 10px" }}>과목: <b style={{ color: C.inkMid }}>{detail.subject || "정하지 않음"}</b> · <TextBtn onClick={async () => { const v = window.prompt("이 문제지의 과목(분석 리포트의 과목별 정답률에 쓰여요)", detail.subject || guessSubject(detail.name)); if (v === null) return; const res = await r.shSubject(detail.name, v.trim()); if (!res.ok) return flash(errMsg(res)); flash("과목을 바꿨습니다."); openDetail(detail.name); load(); }} style={{ fontSize: 14, padding: 0, minHeight: 0 }}>바꾸기</TextBtn></div>
         {detail.summary && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, margin: "10px 0 14px" }}>
             {[["문항", detail.summary.questions], ["틀림", detail.summary.wrong], ["오류 의심", detail.summary.suspect], ["확인 필요", detail.summary.confirm]].map(([t, v]) => (
@@ -3993,10 +4019,13 @@ function StudyScreen({ onBack, flash, toast, user }) {
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 8px" }}>오답노트</h2>
-      <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>사진을 올리면 PC가 켜져 있을 때 10분 안에 정답·해설·오답노트가 만들어집니다.</p>
+      <p style={{ fontSize: 14.5, color: C.sub, lineHeight: 1.6, margin: "0 0 14px" }}>사진을 올리면 보통 10분 안에 정답·해설·오답노트가 만들어집니다.</p>
       <Card style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 14, color: C.sub, marginBottom: 6 }}>문제지 이름 (예: 통합과학_2학기_2차)</div>
         <Field value={wsName} onChange={setWsName} placeholder="과목_학기_회차" ariaLabel="문제지 이름" />
+        <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>과목 (분석 리포트의 과목별 정답률에 쓰여요)</div>
+        <Field value={wsSubj === null ? guessSubject(wsName) : wsSubj} onChange={setWsSubj} placeholder="예: 통합과학" ariaLabel="과목" maxLength={20} list="sh-subjects" />
+        <datalist id="sh-subjects">{SH_SUBJECTS.map((s) => <option key={s} value={s} />)}</datalist>
         <div style={{ fontSize: 14, color: C.sub, margin: "12px 0 6px" }}>사진 (여러 장, 페이지 순서대로)</div>
         <FilePick inputRef={fileRef} count={files.length} onFiles={setFiles} />
         {files.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{files.map((f, i) => <img key={i} src={fileUrls[i]} alt={f.name} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}` }} />)}</div>}
@@ -4834,7 +4863,7 @@ function ResultsTable({ items, onNote }) {
             <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 10, background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "10px 14px" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title || it.code}</div>
-                <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>{fmtDate(it.at)} · {fmtSec(it.sec)}{wait ? ` · 채점 대기 ${wait}` : ""}{canNote && <> · <TextBtn onClick={() => onNote(it.id)} style={{ fontSize: 12.5, padding: 0, minHeight: 0 }}>오답노트</TextBtn></>}</div>
+                <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2 }}>{fmtDate(it.at)} · {fmtRunTime(it)}{wait ? ` · 채점 대기 ${wait}` : ""}{canNote && <> · <TextBtn onClick={() => onNote(it.id)} style={{ fontSize: 12.5, padding: 0, minHeight: 0 }}>오답노트</TextBtn></>}</div>
               </div>
               <div style={{ fontSize: 18, fontWeight: 800, color: it.score === it.total ? C.good : C.ink, flex: "0 0 auto" }}>{it.score}<span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}>/{it.total}</span></div>
             </div>
@@ -4845,7 +4874,7 @@ function ResultsTable({ items, onNote }) {
         <div className="em-tbl-wrap"><table className="em-tbl" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead><tr>{["때", "시험지", "점수", "시간"].concat(onNote ? [""] : []).map((h, i) => <th key={i} style={{ textAlign: "left", padding: "6px 8px", color: C.sub, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}</tr></thead>
           <tbody>{items.map((it) => (
-            <tr key={it.id}><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(it.at)}</td><td className="em-wrap" style={{ padding: "6px 8px" }}>{it.title || it.code}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontWeight: 700, color: it.score === it.total ? C.good : C.ink }}>{it.score}/{it.total}{Array.isArray(it.detail) && it.detail.some((d) => d.p) ? <span style={{ fontWeight: 500, color: C.warn, fontSize: 12.5 }}> · 대기 {it.detail.filter((d) => d.p).length}</span> : null}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtSec(it.sec)}</td>
+            <tr key={it.id}><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(it.at)}</td><td className="em-wrap" style={{ padding: "6px 8px" }}>{it.title || it.code}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontWeight: 700, color: it.score === it.total ? C.good : C.ink }}>{it.score}/{it.total}{Array.isArray(it.detail) && it.detail.some((d) => d.p) ? <span style={{ fontWeight: 500, color: C.warn, fontSize: 12.5 }}> · 대기 {it.detail.filter((d) => d.p).length}</span> : null}</td><td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtRunTime(it)}</td>
               {onNote && <td style={{ padding: "4px 6px", whiteSpace: "nowrap" }}>{Array.isArray(it.detail) && it.detail.some((d) => !d.ok && !d.p) && <TextBtn onClick={() => onNote(it.id)} style={{ fontSize: 13 }}>오답노트</TextBtn>}</td>}
             </tr>
           ))}</tbody>
@@ -5057,20 +5086,23 @@ function useSubjectFilter(detail) {
   /* 과목 이름 맞춤: 서버(repSubject·SUBJ_SQL)와 같은 규칙 — "|" 빼고 앞뒤 공백 빼고 20자, 비면 "기타" */
   const subjKey = (v) => String(v || "").replace(/\|/g, "").trim().slice(0, 20).trim() || "기타";
   const subOf = (it) => subjKey((((detail && detail.quizzes) || {})[it.code] || {}).subject);
+  const allNotes = (detail && detail.notes) || [];   // 사진 오답노트(같은 통계에 포함)
   const counts = {}; all.forEach((it) => { const k = subOf(it); counts[k] = (counts[k] || 0) + 1; });
+  allNotes.forEach((n) => { const k = subjKey(n.subject); counts[k] = (counts[k] || 0) + 1; });
   const subs = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
   const cur = subj !== "all" && counts[subj] ? subj : "all";
   const items = cur === "all" ? all : all.filter((it) => subOf(it) === cur);
+  const notes = cur === "all" ? allNotes : allNotes.filter((n) => subjKey(n.subject) === cur);
   const bar = subs.length >= 2 ? (
     <div style={{ margin: "0 0 14px" }}>
       <div style={{ fontSize: 13.5, color: C.sub, margin: "0 0 6px" }}>과목별 보기</div>
-      <Seg value={cur} onChange={setSubj} items={[["all", `전체 ${all.length}`], ...subs.map((k) => [k, `${k} ${counts[k]}`])]} />
+      <Seg value={cur} onChange={setSubj} items={[["all", `전체 ${all.length + allNotes.length}`], ...subs.map((k) => [k, `${k} ${counts[k]}`])]} />
     </div>
   ) : null;
   const sub = cur === "all" ? "" : cur;   // 과목별 리포트에 넘길 과목('' = 전체 리포트)
   const srep = sub ? ((detail && detail.subjectReports) || []).find((x) => x.subject === sub) || null : null;
   const repNote = sub ? (srep ? (srep.pending ? `${sub} 리포트를 만드는 중이에요(서버가 켜져 있으면 10분 안).${srep.ready ? " 지금은 이전 리포트가 열려요." : ""}` : srep.ready ? `${sub} 리포트 · ${fmtDate(srep.updatedAt)} 기준(그 뒤 기록은 '새로 만들기'를 눌러야 반영)` : `${sub} 기록이 없어 리포트를 만들지 못했어요.`) : `${sub} 리포트는 아직 없어요. '${sub} 리포트 만들기'를 누르면 이 과목 기록만으로 따로 만들어요.`) : "";
-  return { subj: cur, sub, srep, repNote, items, bar };
+  return { subj: cur, sub, srep, repNote, items, notes, bar };
 }
 
 function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, onRemakeSave }) {
@@ -5121,7 +5153,7 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
           </div>
         </div>
         {!detail.student.repOn && <p style={{ fontSize: 14, color: C.sub, margin: "0 0 14px", lineHeight: 1.5 }}>이 계정은 분석 리포트 허용이 꺼져 있습니다. 관리자 화면의 계정 수정에서 켤 수 있습니다.</p>}
-        {detail.report && (
+        {detail.report && !sf.sub && (
           <Card style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 13.5, color: C.sub }}>리포트 요약 · {fmtDate(detail.report.updatedAt)} 기준 {detail.report.basis}회</div>
             {detail.report.summary && detail.report.summary.headline && <div style={{ fontSize: 15, marginTop: 4 }}>{detail.report.summary.headline}</div>}
@@ -5129,8 +5161,8 @@ function StudentsScreen({ user, onBack, toast, flash, exams, onRemakePractice, o
             {detail.report.summary && detail.report.summary.notes > 0 && <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>오답노트 {detail.report.summary.notes}권 포함{detail.report.summary.noteWrong ? ` · 틀림 ${detail.report.summary.noteWrong}문항` : ""}</div>}
           </Card>
         )}
-        <TrendChart items={sf.items} />
-        <BreakdownChart items={sf.items} quizzes={detail.quizzes} />
+        <TrendChart items={sf.items} notes={sf.notes} />
+        <BreakdownChart items={sf.items} quizzes={detail.quizzes} notes={sf.notes} />
         <ResultsTable items={sf.items} />
         {remakeOpen && <WrongRemakeModal items={sf.items} studentId={detail.student.id} user={user} flash={flash} onClose={() => setRemakeOpen(false)} onPractice={onRemakePractice} onSave={onRemakeSave} />}
       </Shell>
@@ -5203,8 +5235,8 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
             {detail.report.summary && detail.report.summary.notes > 0 && <div style={{ fontSize: 13.5, color: C.sub, marginTop: 4 }}>오답노트 {detail.report.summary.notes}권 포함{detail.report.summary.noteWrong ? ` · 틀림 ${detail.report.summary.noteWrong}문항` : ""}</div>}
         </Card>
       )}
-      {detail && sf.items.length > 0 && (() => {
-        const agg = aggregateResults(sf.items, detail.quizzes);
+      {detail && (sf.items.length > 0 || sf.notes.length > 0) && (() => {
+        const agg = aggregateResults(sf.items, detail.quizzes, sf.notes);
         /* 리포트(Claude)의 취약 개념은 전체 기준이라 과목을 골랐을 때는 그 과목 기록의 태그만 쓴다 */
         const repWeak = sf.subj === "all" && detail.report && detail.report.summary && Array.isArray(detail.report.summary.weak) ? detail.report.summary.weak : [];
         const weak = [...new Set([...repWeak, ...agg.tags.filter((t) => t.pct < 60).map((t) => t.k)])].slice(0, 6);
@@ -5221,8 +5253,8 @@ function MyResultsScreen({ user, onBack, toast, flash, onPractice, onMakeNote, o
                 </div>
               </Card>
             )}
-            <TrendChart items={sf.items} />
-            <BreakdownChart items={sf.items} quizzes={detail.quizzes} />
+            <TrendChart items={sf.items} notes={sf.notes} />
+            <BreakdownChart items={sf.items} quizzes={detail.quizzes} notes={sf.notes} />
           </>
         );
       })()}
@@ -5261,7 +5293,7 @@ function ExamMaker() {
   const canNote = () => remote().kind === "server" && !!user && (user.role === "admin" || !!user.shOn);
   const makeNote = async (rid) => {
     const r = await remote().jobCreate({ resultId: rid }, "note");
-    flash(r.ok ? "오답노트를 요청했습니다. 서버가 켜져 있으면 10분 안에 만들어지고 알림이 뜹니다." : errMsg(r));
+    flash(r.ok ? "오답노트를 요청했습니다. 보통 10분 안에 만들어지고 알림이 뜹니다." : errMsg(r));
     return r.ok;
   };
 
@@ -5579,6 +5611,7 @@ function ExamMaker() {
     if (!r.preview) { try { saved = JSON.parse((await store.get(takeKey(code))) || "null"); } catch (e) {} }
     if (saved && (!(saved.at > 0) || Date.now() - saved.at > TAKE_KEEP_MS || saved.sig !== takeSig(src))) { store.del(takeKey(code)); saved = null; }
     const run0 = buildRun(src, code, null, saved);
+    run0.paper = !!(saved && saved.paper) && !run0.timeLimit;   // 종이 풀이로 고른 채 나갔다 와도 유지
     run0.owner = asStr(r.owner);
     run0.preview = !!r.preview;
     setRun(run0);
@@ -5594,7 +5627,7 @@ function ExamMaker() {
   useEffect(() => {
     if (screen !== "take" || !run || run.partial || run.preview) return;
     const perm = {}; run.questions.forEach((q) => { if (q.perm) perm[q.id] = q.perm; });
-    const t = setTimeout(() => { if (!submittingRef.current) store.set(takeKey(run.code), JSON.stringify({ at: run.startedAt, sig: takeSig(run.src), sp: run.sharedPerm, perm, order: run.questions.map((q) => q.id), picked, typed })); }, 300);
+    const t = setTimeout(() => { if (!submittingRef.current) store.set(takeKey(run.code), JSON.stringify({ at: run.startedAt, sig: takeSig(run.src), sp: run.sharedPerm, perm, order: run.questions.map((q) => q.id), picked, typed, paper: !!run.paper })); }, 300);
     return () => clearTimeout(t);
   }, [screen, run, picked, typed]);
   /* 답을 하나라도 고른 채 탭을 닫거나 새로고침하면 브라우저 경고(답은 저장돼 있지만 실수 방지) */
@@ -5660,7 +5693,8 @@ function ExamMaker() {
     const total = rows.length - pendingN;   // 채점 대기(서술형)는 분모에서 뺀다
     const sec = (Date.now() - run.startedAt) / 1000;
     if (!run.partial && !run.preview) store.del(takeKey(run.code));
-    setResult({ rows, score, total, pending: pendingN, sec });
+    const paper = !!run.paper && !run.timeLimit;
+    setResult({ rows, score, total, pending: pendingN, sec, paper });
     setResultId(null);
     setSaveState(null);
     pendingRef.current = null;
@@ -5676,7 +5710,7 @@ function ExamMaker() {
     if (trimmed) store.set("name", trimmed);
     /* 출제자에게 결과 전달. 고른 보기(m)는 섞기 전 원본 번호로 되돌려 보내고 v:2 로 표시한다 */
     const toOrig = (q, arr) => arr.map((i) => (q.perm && q.perm[i] != null ? q.perm[i] : i)).sort((a, b) => a - b);
-    const entry = { v: 2, name: trimmed, score, total, pending: pendingN, sec: Math.round(sec), detail: rows.map((r) => ({ q: r.q.id, m: toOrig(r.q, r.mine), ok: r.ok, ...(r.typed !== undefined ? { t: r.typed.slice(0, 500) } : {}), ...(r.pending ? { p: true } : {}) })) };
+    const entry = { v: 2, name: trimmed, score, total, pending: pendingN, sec: Math.round(sec), ...(paper ? { paper: 1 } : {}), detail: rows.map((r) => ({ q: r.q.id, m: toOrig(r.q, r.mine), ok: r.ok, ...(r.typed !== undefined ? { t: r.typed.slice(0, 500) } : {}), ...(r.pending ? { p: true } : {}) })) };
     const id = Date.now();
     entry.cid = String(id);
     await sendResult({ code: run.code, entry, id });
@@ -5877,7 +5911,7 @@ function ExamMaker() {
     return <>{<CodeScreen codeInput={codeInput} setCodeInput={setCodeInput} codeErr={codeErr} busy={busy} onLoad={() => loadByCode()} onBack={goHome} toast={toast} user={user} onOpenCode={(code) => { setCodeInput(code); setCodeErr(""); loadByCode(code); }} />}{chrome}</>;
 
   if (screen === "take" && run)
-    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={() => { if (!run.partial && !run.preview && (Object.keys(picked).length || Object.values(typed || {}).some(Boolean))) flash("푼 답은 이 기기에 저장돼 같은 코드로 다시 열면 이어서 풉니다."); goHome(); }} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} onManualDone={(r) => { flash(`결과를 기록했습니다. ${r.score}/${r.total}`); setScreen("myresults"); }} />}{chrome}</>;
+    return <>{<TakeScreen run={run} picked={picked} togglePick={togglePick} typed={typed} setTyped={setTyped} name={name} setName={setName} onSubmit={submit} onExit={() => { if (!run.partial && !run.preview && (Object.keys(picked).length || Object.values(typed || {}).some(Boolean))) flash("푼 답은 이 기기에 저장돼 같은 코드로 다시 열면 이어서 풉니다."); goHome(); }} toast={toast} onPrint={(d, noKey) => setPrintSrc({ ...d, noKey: !!noKey })} user={user} onManualDone={(r) => { flash(`결과를 기록했습니다. ${r.score}/${r.total}`); setScreen("myresults"); }} onPaper={(v) => setRun((x) => ({ ...x, paper: !!v }))} />}{chrome}</>;
 
   if (screen === "result" && result && run)
     return <>{<ResultScreen run={run} result={result} onRetryWrong={retryWrong} onRetryAll={retryAll} onHome={goHome} flash={flash} toast={toast} loggedIn={remote().kind === "server" && !!user} onMyResults={() => setScreen("myresults")} onStudy={() => setScreen("study")} resultId={resultId} canNote={canNote()} onMakeNote={makeNote} saveState={run.partial || run.preview ? null : saveState} onResend={() => sendResult(pendingRef.current)} />}{chrome}</>;
