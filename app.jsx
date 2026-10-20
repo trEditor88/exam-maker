@@ -4795,7 +4795,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
               </label>
             </div>
             <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, margin: "10px 0 0" }}>
-              서버 마지막 연결: {genApi.pcSeenAt ? fmtDateTime(genApi.pcSeenAt) : "기록 없음"} · 오늘 API 작업 {genApi.today}/{genApi.cfg.daily}건 · 대기 {genApi.queued}건 · API 처리 중 {genApi.running}건
+              서버 마지막 연결: {genApi.pcSeenAt ? fmtDateTime(genApi.pcSeenAt) : "기록 없음"} · 오늘 API 작업 {genApi.today}/{genApi.cfg.daily}건 · 대기 {genApi.queued}건{genApi.skipped ? ` (API 오류로 PC 몫 ${genApi.skipped}건 따로)` : ""} · API 처리 중 {genApi.running}건
               {genApi.err && <><br />마지막 오류({fmtDateTime(genApi.err.at)}): {genApi.err.msg}</>}
             </p>
             <div style={{ marginTop: 10 }}><Btn kind="ghost" onClick={loadGenApi}>새로 고침</Btn></div>
