@@ -345,6 +345,7 @@ const serverRemote = {
   examListAll: () => apiGet({ action: "examList", all: "1" }),
   logout: () => apiPost({ action: "logout" }),
   me: () => apiGet({ action: "me" }),
+  aiUsage: () => apiPost({ action: "aiUsage" }),   // 오늘 AI 사용량(기능별 사용/한도·다시 채워지는 시각)
   changePw: (b) => apiPost({ action: "changePw", ...b }),
   userList: () => apiGet({ action: "userList" }),
   userCreate: (b) => apiPost({ action: "userCreate", ...b }),
@@ -461,6 +462,8 @@ const localBase = {
 /* 서버 없는(로컬) 모드: serverRemote 에만 있는 메서드를 불러도 크래시 대신 offline 오류를 돌려준다 */
 const localRemote = new Proxy(localBase, { get: (t, k) => (k in t ? t[k] : async () => ({ ok: false, error: "offline" })) });
 const remote = () => (syncUrl() ? serverRemote : localRemote);
+/* 계정별 하루 AI 한도를 다 썼을 때(2026-10-22 계획서 문구 그대로). 서버 lib/ailimit.js AI_LIMIT_MSG 와 같은 글 */
+const AI_LIMIT_TEXT = "오늘 AI 횟수를 다 썼어요. 내일 0시(한국 시각)에 다시 채워져요. 더 필요하면 관리자에게 말해 주세요.";
 const ERR = {
   network: "서버에 연결할 수 없습니다. 인터넷 연결을 확인해 주세요.",
   not_found: "그 코드로 등록된 시험지가 없습니다. 코드를 다시 확인해 주세요.",
@@ -475,13 +478,15 @@ const ERR = {
   bad_id_chars: "아이디는 한글·영문·숫자·밑줄(_)만 쓸 수 있습니다(2~30자).",
   weak_pw: "비밀번호는 4자 이상으로 정해 주세요.",
   ip_limit: "이 기기(네트워크)에서는 오늘 더 가입할 수 없습니다. 내일 다시 시도하거나 관리자에게 문의하세요.",
-  gen_user_limit: "오늘 이 계정의 AI 문제 생성 횟수를 모두 썼습니다. 내일 다시 이용해 주세요.",
+  gen_user_limit: AI_LIMIT_TEXT,
+  ai_daily_limit: AI_LIMIT_TEXT,
+  ai_full: "오늘 전체 AI 사용량이 다 찼어요. 내일 다시 시도해 주세요.",
   bad_origin: "허용되지 않은 주소에서 연 페이지입니다. 사이트 주소로 다시 열어 주세요.",
   length_required: "요청 형식이 올바르지 않습니다. 새로고침한 뒤 다시 시도해 주세요.",
   gen_disabled: "AI 생성 기능이 꺼져 있습니다. 관리자에게 문의하세요.",
   gen_not_configured: "서버에 AI 생성 설정(API 키·비밀번호)이 없습니다. 관리자에게 문의하세요.",
   gen_limit: "오늘 AI 생성 한도를 모두 썼습니다. 내일 다시 시도해 주세요.",
-  gen_quota: "Gemini 무료 한도(분당·하루)를 넘었습니다. 잠시 뒤나 내일 다시 시도해 주세요.",
+  gen_quota: "AI 사용이 잠시 몰렸습니다(무료 한도). 1분 뒤 다시 해 보고, 계속되면 내일 다시 시도해 주세요.",
   refused: "이 범위로는 문제를 만들 수 없었습니다. 범위를 바꿔 보세요.",
   truncated: "결과가 너무 길어 잘렸습니다. 문제 수를 줄여 주세요.",
   gen_local: "서버가 연결되어 있어야 AI 생성을 쓸 수 있습니다.",
@@ -1579,7 +1584,9 @@ function AssignModal({ exam, onClose, flash }) {
   const [purgeDays, setPurgeDays] = useState(30);   // 마감 뒤 이 날짜가 지나면 시험지를 휴지통으로(기본 30일)
   const load = async () => {
     const [u, a] = await Promise.all([remote().userList(), remote().assignList(exam.code)]);
-    if (u.ok) setStudents(u.users.filter((x) => x.role === "student" && x.active !== false)); else { setStudents([]); flash(errMsg(u)); }
+    // 관리자(배정 권한이 있는 제한 관리자 포함)는 선생님 계정에도 배정할 수 있다(2026-10-22). 선생님 기록은 학생 통계에서 따로 보임
+    const me0 = (authGet() || {}).user || null, staffOk = !!me0 && (me0.role === "admin" || (isLite(me0) && (me0.perms || {}).liteAssign));
+    if (u.ok) setStudents(u.users.filter((x) => (x.role === "student" || (staffOk && x.role === "teacher")) && x.active !== false).sort((a, b) => (a.role === "teacher") - (b.role === "teacher"))); else { setStudents([]); flash(errMsg(u)); }
     const rows = a.ok ? a.forCode || [] : [];
     setCur(rows);
     if (rows.length) { setDueAt(rows[0].dueAt || 0); setMemo(rows[0].memo || ""); setPurgeDays(rows[0].purgeDays != null ? rows[0].purgeDays : 30); setRemindAt(Math.max(0, ...rows.map((x) => x.remindAt || 0))); }
@@ -1641,7 +1648,7 @@ function AssignModal({ exam, onClose, flash }) {
           {remindAt > 0 && <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 6 }}>마지막 알림 {fmtDateTime(remindAt)}</div>}
           {cur.map((x) => (
             <div key={x.studentId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: `1px solid ${C.line}`, fontSize: 14 }}>
-              <span style={{ flex: 1, minWidth: 0 }}>{x.name} <span style={{ color: C.sub, fontSize: 12.5 }}>{x.studentId}</span>{x.done && x.doneAt && <span style={{ display: "block", color: C.sub, fontSize: 12 }}>{fmtDateTime(x.doneAt)} 제출{x.dueAt && x.doneAt > x.dueAt ? " · 늦음" : ""}</span>}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>{x.name} <span style={{ color: C.sub, fontSize: 12.5 }}>{x.studentId}</span>{x.staff && <> <Badge tone="neutral">{x.staff === "admin" ? "관리자" : "선생님"}</Badge></>}{x.done && x.doneAt && <span style={{ display: "block", color: C.sub, fontSize: 12 }}>{fmtDateTime(x.doneAt)} 제출{x.dueAt && x.doneAt > x.dueAt ? " · 늦음" : ""}</span>}</span>
               <Badge tone={x.done ? "good" : x.dueAt && now > x.dueAt ? "bad" : "neutral"}>{x.done ? `완료 ${x.score}/${x.total}` : x.dueAt && now > x.dueAt ? "기한 지남" : "아직"}</Badge>
               <TextBtn tone="sub" onClick={() => removeOne(x.studentId)} style={{ fontSize: 13 }}>해제</TextBtn>
             </div>
@@ -1649,7 +1656,7 @@ function AssignModal({ exam, onClose, flash }) {
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 14, fontWeight: 700 }}>학생 고르기</span>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>{(students || []).some((s) => s.role === "teacher") ? "학생·선생님 고르기" : "학생 고르기"}</span>
         {rest.length > 1 && <TextBtn onClick={() => setSel(Object.fromEntries(rest.map((s) => [s.id, true])))} style={{ fontSize: 13 }}>모두 선택</TextBtn>}
       </div>
       {students === null && <p style={{ color: C.sub, fontSize: 14 }}>불러오는 중…</p>}
@@ -1657,11 +1664,11 @@ function AssignModal({ exam, onClose, flash }) {
       <div style={{ display: "grid", gap: 6, maxHeight: "34vh", overflowY: "auto" }}>
         {rest.map((s) => (
           <CheckRow key={s.id} on={!!sel[s.id]} onToggle={() => setSel({ ...sel, [s.id]: !sel[s.id] })} padding="9px 11px">
-            <Check on={!!sel[s.id]} size={20} /><span style={{ fontSize: 14.5 }}>{s.name}</span><span style={{ color: C.sub, fontSize: 12.5 }}>{s.id}</span>
+            <Check on={!!sel[s.id]} size={20} /><span style={{ fontSize: 14.5 }}>{s.name}</span><span style={{ color: C.sub, fontSize: 12.5 }}>{s.id}</span>{s.role === "teacher" && <Badge tone="neutral">선생님</Badge>}
           </CheckRow>
         ))}
       </div>
-      {rest.length > 0 && <div style={{ marginTop: 12 }}><Btn onClick={add} disabled={busy}>선택한 학생에게 배정</Btn></div>}
+      {rest.length > 0 && <div style={{ marginTop: 12 }}><Btn onClick={add} disabled={busy}>{rest.some((s) => s.role === "teacher") ? "선택한 사람에게 배정" : "선택한 학생에게 배정"}</Btn></div>}
     </Modal>
   );
 }
@@ -2028,7 +2035,9 @@ function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
     flash("응시 기록을 비웠습니다.");
   };
 
-  const avg = items && items.length ? Math.round((items.reduce((s, r) => s + r.score / r.total, 0) / items.length) * 100) : 0;
+  /* 선생님·관리자가 푼 기록(staff)은 평균·문항 분석에서 빼고 목록에만 표시(2026-10-22: 선생님에게도 배정) */
+  const stu = (items || []).filter((r) => !r.staff), staffN = (items || []).length - stu.length;
+  const avg = stu.length ? Math.round((stu.reduce((s, r) => s + r.score / r.total, 0) / stu.length) * 100) : 0;
 
   return (
     <Modal title={`응시 기록 · ${code}`} onClose={onClose} wide>
@@ -2041,14 +2050,14 @@ function ResultsModal({ code, ownerKey, onClose, flash, exam }) {
       ) : (
         <>
           <p style={{ fontSize: 14.5, color: C.sub, margin: "0 0 12px" }}>
-            {items.length}명 응시 · 평균 {avg}점
+            {stu.length ? `${stu.length}명 응시 · 평균 ${avg}점` : "학생 응시 없음"}{staffN > 0 && ` · 선생님·관리자 ${staffN}명 응시(평균·문항 분석에서 뺌)`}
           </p>
-          {exam && <ItemAnalysis exam={exam} items={items} reports={reports} />}
+          {exam && <ItemAnalysis exam={exam} items={stu} reports={reports} />}
           <div style={{ fontSize: 15, fontWeight: 800, margin: "4px 0 6px" }}>응시자</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 14 }}>
             {items.map((r) => (
               <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 12px", background: C.lineSoft, borderRadius: 10, fontSize: 14.5 }}>
-                <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name || "이름 없음"}</span>
+                <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name || "이름 없음"}{r.staff && <> <Badge tone="neutral">{r.staff === "admin" ? "관리자" : "선생님"}</Badge></>}</span>
                 <span style={{ color: C.inkMid, fontWeight: 700 }}>
                   {r.score}/{r.total}
                 </span>
@@ -2496,6 +2505,8 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState(null);
+  const [aiLeft, setAiLeft] = useState(null);   // 오늘 남은 AI 횟수 { gen, job, photo } (관리자는 값이 null → 표시 안 함)
+  useEffect(() => { if (remote().kind !== "server") return; remote().aiUsage().then((u) => { if (u && u.ok) setAiLeft(Object.fromEntries(u.items.map((x) => [x.f, x.left]))); }).catch(() => {}); }, []);
   const [sel, setSel] = useState({});
 
   const sugIdx = pickTextbook(tbs, subject || scope, sc.grade);
@@ -2509,6 +2520,7 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
       const type = photos.length ? "photo" : "gen";
       const rq = await remote().jobCreate({ scope: scopeOrFiles(), material: material.trim(), count, difficulty, kind, kinds, subject: subject || "", textbook, explainLen }, type, photos.length);
       if (!rq.ok) { setBusy(false); setErr(errMsg(rq)); return; }
+      if (rq.left != null) setAiLeft((x) => ({ ...(x || {}), job: rq.left }));
       /* 사진 업로드가 중간에 실패하면 만들어 둔 작업을 취소해 uploading 상태로 남지 않게 한다(3개 한도 소진 방지) */
       const fail = (msg) => { setBusy(false); setProg(""); setErr(msg); remote().jobCancel(rq.job.id).catch(() => {}); };
       if (type === "photo") {
@@ -2519,6 +2531,7 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
           if (!b64) return fail("사진을 읽지 못했습니다. 다른 사진으로 해 보세요.");
           const up = await remote().jobPhoto(rq.job.id, `p${i + 1}.jpg`, "image/jpeg", b64);
           if (!up.ok) return fail(errMsg(up, { too_big: "사진이 너무 큽니다(9MB 이하)." }));
+          setAiLeft((x) => (x && x.photo != null ? { ...x, photo: Math.max(0, x.photo - 1) } : x));
         }
         const rd = await remote().jobReady(rq.job.id);
         if (!rd.ok) return fail(errMsg(rd));
@@ -2530,6 +2543,7 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
     const plan = kindPlan(count);
     const r = await genByPlan(plan);
     setBusy(false); setProg("");
+    if (r.remaining != null) setAiLeft((x) => ({ ...(x || {}), gen: r.remaining }));
     if (!r.ok) {
       setErr(errMsg(r));
       return;
@@ -2544,20 +2558,23 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
   };
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
-  const STOP_ERR = ["gen_user_limit", "gen_limit", "gen_quota", "bad_token", "gen_off", "forbidden"];   // 다음 유형도 같은 오류가 날 것: 한도를 헛되이 쓰지 않게 멈춤
+  const STOP_ERR = ["gen_user_limit", "gen_limit", "gen_quota", "ai_full", "bad_token", "gen_off", "forbidden"];   // 다음 유형도 같은 오류가 날 것: 한도를 헛되이 쓰지 않게 멈춤
   const KIND_KO = { single: "객관식", multi: "복수 정답", tf: "참·거짓", real: "실전형", short: "주관식", essay: "서술형" };
-  /* 빠른 생성: 서버 한 번의 응답 한도(약 100초) 때문에 유형마다 따로 요청하고 합친다. plan = [{kind, count}] → 유형별로 받은 수(got)를 기억 */
+  /* 빠른 생성: 서버 한 번의 응답 한도(약 100초) 때문에 유형마다 따로 요청하고 합친다. plan = [{kind, count}] → 유형별로 받은 수(got)를 기억
+     버튼 한 번 = AI 1회: 첫 요청에 전체 문항 수(planTotal)를 보내 받은 ticket 을 다음 유형 요청에 붙인다(서버가 다시 세지 않음) */
   const genByPlan = async (plan) => {
-    const all = [], done = [], bad = []; let title = "", remaining, quality = null, lastErr = null;
+    const all = [], done = [], bad = []; let title = "", remaining, quality = null, lastErr = null, ticket = "";
+    const planTotal = plan.reduce((s, p) => s + p.count, 0);
     for (let i = 0; i < plan.length; i++) {
       const p = plan[i];
       if (!alive.current || (lastErr && STOP_ERR.includes(lastErr.error))) { bad.push(KIND_KO[p.kind] || p.kind); done.push({ ...p, got: 0 }); continue; }
       if (plan.length > 1) setProg(`${KIND_KO[p.kind] || p.kind} ${p.count}문항 만드는 중… (${i + 1}/${plan.length})`);
-      const r = await remote().generate({ scope: scopeOrFiles(), material: material.trim(), count: p.count, difficulty, kind: p.kind, textbook, explainLen, subject: subject || "" });
+      const r = await remote().generate({ scope: scopeOrFiles(), material: material.trim(), count: p.count, difficulty, kind: p.kind, textbook, explainLen, subject: subject || "", ...(ticket ? { ticket } : plan.length > 1 ? { planTotal } : {}) });
+      if (r.ticket) ticket = r.ticket;   // 실패해도 서버가 센 경우 ticket 을 줌 → 다음 유형은 다시 세지 않음
       if (!r.ok) { lastErr = r; bad.push(KIND_KO[p.kind] || p.kind); done.push({ ...p, got: 0 }); continue; }
       const qs = (r.questions || []).map((q) => normalizeQuestion(q, 0)).filter((q) => q.text && (q.type === "essay" ? true : q.type === "short" ? !!q.answerText : q.options && q.answers.length));
       all.push(...qs); done.push({ ...p, got: qs.length });
-      title = title || asStr(r.title); remaining = r.remaining;
+      title = title || asStr(r.title); if (r.remaining != null) remaining = r.remaining;
       const qa = r.quality;
       if (qa) quality = !quality ? { ...qa } : { ...quality, verified: quality.verified === false || qa.verified === false ? false : qa.verified, verifyLevel: quality.verifyLevel === "weak" || qa.verifyLevel === "weak" ? "weak" : qa.verifyLevel,
         dropped: Object.entries(qa.dropped || {}).reduce((m, [k, n]) => ({ ...m, [k]: (m[k] || 0) + n }), { ...(quality.dropped || {}) }) };
@@ -2574,6 +2591,7 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
     const short = (result.plan || [{ kind, count: result.want, got: result.questions.length }]).map((p) => ({ kind: p.kind, count: Math.max(0, p.count - p.got) })).filter((p) => p.count > 0);
     const r = await genByPlan(short.length ? short : [{ kind, count: need }]);
     setBusy(false); setProg("");
+    if (r.remaining != null) setAiLeft((x) => ({ ...(x || {}), gen: r.remaining }));
     if (!r.ok) return setErr(errMsg(r));
     setErr(r.failed ? `일부 유형은 만들지 못했어요(${r.failed}).` : "");
     const qs = r.questions;
@@ -2596,7 +2614,7 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
             {mode === "pro"
               ? "서버의 Claude가 문제를 만들고, 다른 AI가 정답을 한 번 더 풀어 검증한 문항만 남깁니다. 완료되면 알림이 뜨고 새 시험지가 '내 시험지'에 추가됩니다(보통 10분 안). 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
               : genAvail
-                ? "무료 AI(Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
+                ? "AI(Claude Haiku, 안 되면 Gemini)가 바로 만들어 줍니다. 만든 문제는 고른 것만 이 시험지에 들어가고, 편집 화면에서 자유롭게 고칠 수 있습니다. 범위·자료·파일에 이름, 학교, 연락처 같은 개인정보는 넣지 마세요(파일 이름과 내용도 AI에 전달돼요)."
                 : "기본 방식은 지금 쓸 수 없습니다(서버에 Gemini 설정 없음). 고급 방식을 골라 주세요."}
           </p>
           <Field multiline rows={2} value={scope} onChange={setScope} placeholder={mode === "pro" ? "범위 또는 시험지 제목 (파일·사진을 올리면 비워도 됩니다)" : "범위 (예: 중2 과학 광합성 단원 — 파일을 올리면 비워도 됩니다)"} maxLength={500} autoFocus />
@@ -2654,6 +2672,12 @@ function GenerateModal({ onClose, onAdd, initScope, initFiles, genAvail, subject
           )}
 
           {err && <p role="alert" style={{ color: C.bad, fontSize: 14, margin: "10px 0 0", lineHeight: 1.5 }}>{err}</p>}
+          {aiLeft && (mode === "pro" ? aiLeft.job != null : aiLeft.gen != null) && (
+            <p style={{ fontSize: 13, color: (mode === "pro" ? aiLeft.job : aiLeft.gen) === 0 ? C.bad : C.sub, margin: "10px 0 0" }}>
+              오늘 남은 횟수 {mode === "pro" ? `${aiLeft.job}번${photos.length && aiLeft.photo != null ? ` · 사진 ${aiLeft.photo}장` : ""}` : `${aiLeft.gen}번`}
+              <span style={{ opacity: 0.85 }}> (한국 시각 0시에 다시 채워져요)</span>
+            </p>
+          )}
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
             <Btn onClick={run} disabled={busy || !!reading || (!scopeOrFiles() && !(mode === "pro" && photos.length)) || (mode === "fast" && !genAvail) || (mode === "pro" && !server)}>{busy ? (mode === "pro" ? prog || "요청하는 중…" : prog || (kinds.length > 1 ? "문제를 만드는 중…" : "문제를 만드는 중… (최대 1분)")) : reading ? "파일 읽는 중…" : mode === "pro" ? (photos.length ? `사진·쪽 ${photos.length}장으로 Claude에게 요청하기` : "Claude에게 요청하기") : "문제 만들기"}</Btn>
             <Btn kind={manual ? "soft" : "ghost"} onClick={onClose}>{manual ? "직접 문제 만들기" : "닫기"}</Btn>
@@ -3862,6 +3886,8 @@ function StudyScreen({ onBack, flash, toast, user }) {
   const [noteHtml, setNoteHtml] = useState(null);  // 오답노트 HTML(iframe)
   const fileRef = useRef(null);
   const r = remote();
+  const [photoLeft, setPhotoLeft] = useState(null);   // 오늘 남은 사진 장수(관리자 = null)
+  useEffect(() => { if (allowed && r.kind === "server") r.aiUsage().then((u) => { const x = u && u.ok && u.items.find((i) => i.f === "photo"); if (x) setPhotoLeft(x.left); }).catch(() => {}); }, []);
 
   const load = async () => {
     if (!allowed) return;
@@ -3878,13 +3904,15 @@ function StudyScreen({ onBack, flash, toast, user }) {
     const name = wsName.trim();
     if (!name) return flash("문제지 이름을 넣어 주세요.");
     if (!files.length) return flash("사진을 골라 주세요.");
+    if (photoLeft != null && files.length > photoLeft) return flash(photoLeft ? `오늘은 사진을 ${photoLeft}장까지 더 올릴 수 있어요. 사진 수를 줄여 주세요.` : ERR.ai_daily_limit);
     setBusy(true);
     let done = 0;
     for (const f of files) {
       setProgress(`${done + 1}/${files.length} 올리는 중…`);
       const data = await shrinkImage(f, 2200).catch(() => fileToBase64(f));   // 긴 변 2200px JPEG 로 줄여 전송(서버 한도·워커 읽기 부담)
       const res = await r.shUpload({ worksheet: name, filename: f.name, mime: "image/jpeg", data, subject: (wsSubj === null ? guessSubject(name) : wsSubj).trim(), scope: wsScope });
-      if (!res.ok) { setBusy(false); setProgress(""); return flash(errMsg(res, { too_big: "사진이 너무 큽니다(9MB 이하)." })); }
+      if (!res.ok) { setBusy(false); setProgress(""); if (res.error === "ai_daily_limit") setPhotoLeft(0); return flash(errMsg(res, { too_big: "사진이 너무 큽니다(9MB 이하)." }) + (done ? ` (앞의 ${done}장은 올라갔어요)` : "")); }
+      if (res.left != null) setPhotoLeft(res.left);
       done++;
     }
     setBusy(false); setProgress("");
@@ -4048,6 +4076,7 @@ function StudyScreen({ onBack, flash, toast, user }) {
         {files.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{files.map((f, i) => <img key={i} src={fileUrls[i]} alt={f.name} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: `1px solid ${C.line}` }} />)}</div>}
         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
           <Btn onClick={upload} disabled={busy}>{progress || "올리기"}</Btn>
+          {photoLeft != null && <span style={{ fontSize: 13, color: photoLeft === 0 ? C.bad : C.sub }}>오늘 남은 사진 {photoLeft}장</span>}
         </div>
       </Card>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 8px" }}>
@@ -4212,6 +4241,26 @@ function PushCard({ flash }) {
     </div>
   );
 }
+/* 오늘 AI 사용량(2026-10-22): 기능별 사용/한도와 다시 채워지는 시각(한국 시각 0시). 관리자는 한도 없음 */
+function AiUsageCard() {
+  const [u, setU] = useState(null);
+  useEffect(() => { if (remote().kind === "server") remote().aiUsage().then((r) => setU(r && r.ok ? r : false)).catch(() => setU(false)); }, []);
+  if (remote().kind !== "server" || u === null) return null;
+  if (u === false) return <p style={{ fontSize: 12.5, color: C.sub, margin: "0 0 12px" }}>오늘 AI 사용량을 불러오지 못했습니다.</p>;
+  const td = { padding: "6px 8px", fontSize: 13.5, borderTop: `1px solid ${C.line}` };
+  return (
+    <div style={{ background: C.field, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "0 0 12px" }}>
+      <div style={{ fontSize: 14.5, fontWeight: 700 }}>오늘 AI 사용량</div>
+      <div style={{ fontSize: 12.5, color: C.sub, margin: "2px 0 8px", lineHeight: 1.45 }}>{u.unlimited ? "관리자 계정은 한도가 없습니다." : `${fmtDateTime(u.resetAt)}(한국 시각 0시)에 다시 채워져요. 더 필요하면 관리자에게 말해 주세요.`}</div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><th style={{ ...td, borderTop: "none", textAlign: "left", color: C.sub, fontWeight: 600 }}>기능</th><th style={{ ...td, borderTop: "none", textAlign: "right", color: C.sub, fontWeight: 600 }}>사용 / 한도</th></tr></thead>
+        <tbody>{u.items.map((x) => (
+          <tr key={x.f}><td style={td}>{x.ko}</td><td style={{ ...td, textAlign: "right", fontWeight: 700, color: x.limit != null && x.left === 0 ? C.bad : C.ink, whiteSpace: "nowrap" }}>{x.used} / {x.limit == null ? "제한 없음" : x.limit}</td></tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
 function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   const [theme, setTheme] = useState(themeGet);
   const [subj, setSubj] = useState((user.subjects || []).join(", "));
@@ -4319,6 +4368,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
             <Btn kind="soft" onClick={saveProfile} disabled={pBusy || !can(user, "rename")} style={{ width: "auto", padding: "10px 14px", fontSize: 14, whiteSpace: "nowrap", flexShrink: 0 }}>저장</Btn>
           </div>
           <PushCard flash={flash} />
+          <AiUsageCard />
           <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>학습 범위 · 개인 맞춤 지시{can(user, "custom") ? "" : " (권한 없음)"} <span style={{ fontSize: 12 }}>(AI 문제 만들기에 자동으로 반영)</span></div>
           <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
             <Field value={pscope} onChange={setPscope} placeholder="범위 예: 고1 통합과학 2단원, 한국사 1-1" ariaLabel="학습 범위" maxLength={200} style={{ fontSize: 14.5 }} />
@@ -4921,7 +4971,7 @@ function SubmitGrid({ exams, students, flash }) {
       const fc = r.forCode || [];
       if (!fc.length) return;
       cols.push({ code: list[i].code, title: list[i].title || list[i].code });
-      fc.forEach((x) => { (rows[x.studentId] = rows[x.studentId] || { name: x.name })[list[i].code] = x; });
+      fc.forEach((x) => { (rows[x.studentId] = rows[x.studentId] || { name: x.name, staff: x.staff || "" })[list[i].code] = x; });
     });
     if (got.some((r) => r && !r.ok)) flash(errMsg(got.find((r) => r && !r.ok)));
     setData({ cols, rows });
@@ -4950,7 +5000,7 @@ function SubmitGrid({ exams, students, flash }) {
               const done = asg.filter((c) => row[c.code].done).length;
               return (
                 <tr key={id}>
-                  <td style={{ ...td, fontWeight: 700 }}>{nameOf(id)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{nameOf(id)}{row.staff && <span style={{ color: C.sub, fontWeight: 400, fontSize: 12.5 }}> · {row.staff === "admin" ? "관리자" : "선생님"}</span>}</td>
                   {data.cols.map((c) => {
                     const x = row[c.code];
                     if (!x) return <td key={c.code} style={{ ...td, color: C.sub }}>·</td>;
