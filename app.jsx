@@ -1675,6 +1675,44 @@ function AssignModal({ exam, onClose, flash }) {
 
 /* ── 홈: 알림(워커가 끝낸 일) ───────────────────── */
 const NOTE_ICON = { gen: "ai", note: "book", report: "book", perm: "book", admin: "book", assign: "book" };
+/* 알림 본문 다듬기: PC 가 보낸 오류 원문(터미널 색 코드 "[0m"·Cloudflare 주소)은 사람이 읽을 한 줄로 바꾸고 원문은 '원문 보기'로 펼친다 */
+const ANSI_RE = /\x1b\[[0-9;]*m|\x1b\[[0-9;]*$|\[[0-9;]+m/g;   // 색 코드(ESC 가 빠진 "[0m"·끝에서 잘린 것 포함), "[m]" 같은 대괄호 낱말은 그대로
+function noteBrief(body) {
+  const raw = String(body || "").trim();
+  let t = raw.replace(ANSI_RE, "").replace(/https?:\/\/\S+/g, "(주소)").replace(/\(?\/?accounts\/[0-9a-f]{16,}[^\s)]*\)?/g, "(주소)").replace(/\s+/g, " ").trim();
+  const m = /^(\d{4}-\d{2}-\d{2}) D1 백업 실패 (\d+)개/.exec(t);
+  if (m) {
+    const dbs = [...new Set(t.match(/\b[a-z]+-db(?=:)/g) || [])].join("·");
+    const why = /authen|\b10000\b/i.test(t) ? "Cloudflare 로그인(인증) 오류" : /time ?out|timed out/i.test(t) ? "시간 초과" : /ENOTFOUND|ECONN|network|fetch failed/i.test(t) ? "인터넷 연결 오류" : "";
+    t = `${m[1]} 서버 자료 백업 ${m[2]}개 실패${dbs ? `(${dbs})` : ""}${why ? ` — ${why}` : ""}. 다음 백업 때 다시 시도합니다.`;
+  } else if ([...t].length > 160) t = [...t].slice(0, 159).join("") + "…";   // 이모지가 반으로 잘리지 않게 글자 단위로
+  return { text: t, more: t !== raw };
+}
+function NoteRow({ n, onOpen }) {
+  const [raw, setRaw] = useState(false);
+  const b = noteBrief(n.body);
+  return (
+    <div className="em-row" style={{ minWidth: 0, background: n.seen ? C.card : C.accentSoft, border: `1px solid ${n.seen ? C.line : C.accent}`, borderRadius: 14, padding: "11px 14px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <button className="em-btn" onClick={() => onOpen(n)}
+          style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 12, textAlign: "left", background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: FONT }}>
+          <SubjThumb kind={NOTE_ICON[n.kind] || "book"} size={40} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: C.ink, overflowWrap: "anywhere" }}>{n.title}</span>
+            <span style={{ display: "block", fontSize: 13, color: C.sub, marginTop: 2, lineHeight: 1.45, overflowWrap: "anywhere" }}>{b.text} <span style={{ opacity: .8 }}>· {fmtDateTime(n.at)}</span></span>
+          </span>
+        </button>
+        {!n.seen && <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, background: C.accent, flex: "0 0 8px" }} />}
+      </div>
+      {b.more && (
+        <div style={{ marginLeft: 52 }}>
+          <TextBtn tone="sub" onClick={() => setRaw((v) => !v)} style={{ fontSize: 12.5, padding: "4px 0" }}>{raw ? "원문 접기" : "원문 보기"}</TextBtn>
+          {raw && <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.45, whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: C.lineSoft, borderRadius: 8, padding: "6px 8px", marginTop: 2 }}>{String(n.body || "").replace(ANSI_RE, "")}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 function NoteList({ notes, onOpen, onSeenAll }) {
   const [showAll, setShowAll] = useState(false);
   const unseen = notes.filter((n) => !n.seen);
@@ -1690,18 +1728,9 @@ function NoteList({ notes, onOpen, onSeenAll }) {
         </div>
       </div>
       {rows.length === 0 && <p style={{ color: C.sub, fontSize: 14, margin: 0 }}>새 알림이 없습니다.</p>}
-      <div style={{ display: "grid", gap: 8 }}>
-        {rows.map((n) => (
-          <button key={n.id} className="em-btn em-row" onClick={() => onOpen(n)}
-            style={{ display: "flex", alignItems: "center", gap: 12, textAlign: "left", background: n.seen ? C.card : C.accentSoft, border: `1px solid ${n.seen ? C.line : C.accent}`, borderRadius: 14, padding: "11px 14px", cursor: "pointer", fontFamily: FONT }}>
-            <SubjThumb kind={NOTE_ICON[n.kind] || "book"} size={40} />
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: C.ink }}>{n.title}</span>
-              <span style={{ display: "block", fontSize: 13, color: C.sub, marginTop: 2, lineHeight: 1.45 }}>{n.body} <span style={{ opacity: .8 }}>· {fmtDateTime(n.at)}</span></span>
-            </span>
-            {!n.seen && <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, background: C.accent, flex: "0 0 8px" }} />}
-          </button>
-        ))}
+      {/* minmax(0,1fr): 긴 글자가 칸을 밀어 화면보다 넓어지지 않게(휴대폰에서 화면 전체가 축소돼 보이던 원인) */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 8 }}>
+        {rows.map((n) => <NoteRow key={n.id} n={n} onOpen={onOpen} />)}
       </div>
     </div>
   );
@@ -1721,7 +1750,7 @@ function AssignList({ d, onOpen }) {
       </div>
       {d === null && <p style={{ color: C.sub, fontSize: 14, margin: 0 }}>불러오는 중…</p>}
       {d && rows.length === 0 && <p style={{ color: C.sub, fontSize: 14, margin: 0, lineHeight: 1.5 }}>{all.length ? "배정된 시험을 모두 풀었습니다." : "배정된 시험이 없습니다. 선생님이 배정하면 여기에 나타납니다."}</p>}
-      <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 8 }}>
         {rows.map((a) => {
           const st = assignStatus(a);
           return (
@@ -1730,12 +1759,12 @@ function AssignList({ d, onOpen }) {
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <SubjThumb subject={a.subject} size={46} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 15.5, fontWeight: 700, color: C.ink }}>{a.title || a.code}</div>
+                  <div style={{ fontSize: 15.5, fontWeight: 700, color: C.ink, overflowWrap: "anywhere" }}>{a.title || a.code}</div>
                   <div style={{ marginTop: 4 }}><Badge tone={st.tone}>{st.t}</Badge></div>
                   <div style={{ fontSize: 13, color: C.sub, marginTop: 3 }}>
                     {a.owner ? `${a.owner} 출제 · ` : ""}{a.subject ? `${a.subject} · ` : ""}문제 {a.questions || 0}개{a.timeLimit ? ` · ${a.timeLimit}분` : ""} · 코드 {a.code}
                   </div>
-                  {a.memo && <div style={{ fontSize: 13, color: C.inkMid, marginTop: 4, lineHeight: 1.45 }}>안내: {a.memo}</div>}
+                  {a.memo && <div style={{ fontSize: 13, color: C.inkMid, marginTop: 4, lineHeight: 1.45, overflowWrap: "anywhere" }}>안내: {a.memo}</div>}
                 </div>
               </div>
             </button>
