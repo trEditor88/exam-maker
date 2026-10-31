@@ -4131,34 +4131,16 @@ function idbPut(key, val) {
     req.onsuccess = () => { try { const tx = req.result.transaction("kv", "readwrite"); val == null ? tx.objectStore("kv").delete(key) : tx.objectStore("kv").put(val, key); } catch (e) {} };
   } catch (e) {}
 }
-/* ── 웹 푸시: 이 기기로 알림 받기 ── */
-const isIOS = () => /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
-const isStandalone = () => (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
-const b64uToU8 = (s) => { const p = "=".repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
-async function pushState() {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") return isIOS() && !isStandalone() ? "ios-home" : "unsupported";
-  if (Notification.permission === "denied") return "denied";
-  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && (await reg.pushManager.getSubscription()); return sub ? "on" : "off"; } catch (e) { return "off"; }
+/* 비밀번호 바꾸기·이 기기로 알림 받기·오늘 AI 사용량은 HEO Works 포털 '내 계정'으로 옮김(2026-10-31). 예전에 여기서 켠 알림 구독은 서버에 그대로 남아 계속 옴 */
+const HUB_URL = "https://heoworks.pages.dev/";
+/* 예전에 이 사이트에서 켠 알림만 끌 수 있게(켜기는 포털). 포털은 다른 주소라 이 구독을 못 끈다 */
+function OldPushOff({ flash }) {
+  const [sub, setSub] = useState(null);
+  useEffect(() => { (async () => { try { if (!("serviceWorker" in navigator)) return; const reg = await navigator.serviceWorker.getRegistration(); const s = reg && reg.pushManager && (await reg.pushManager.getSubscription()); if (s) setSub(s); } catch (e) {} })(); }, []);
+  if (!sub) return null;
+  const off = async () => { try { await remote().pushUnsubscribe(sub.endpoint); await sub.unsubscribe(); } catch (e) {} setSub(null); flash("이 기기의 시험지 알림을 껐습니다."); };
+  return <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.5, margin: "-6px 2px 12px" }}>이 기기에는 예전에 시험지 사이트에서 켠 알림이 켜져 있어요. <TextBtn onClick={off} style={{ fontSize: 13, padding: 0 }}>끄기</TextBtn></p>;
 }
-async function pushEnable() {
-  const st = await pushState();
-  if (st === "ios-home" || st === "unsupported" || st === "denied") return { ok: false, state: st };
-  const k = await remote().pushKey();
-  if (!k.ok) return { ok: false, msg: errMsg(k) };
-  const perm = await Notification.requestPermission();
-  if (perm !== "granted") return { ok: false, state: "denied" };
-  const reg = await navigator.serviceWorker.register("sw.js");
-  await navigator.serviceWorker.ready;
-  let sub = await reg.pushManager.getSubscription();
-  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToU8(k.key) });
-  const a = authGet(); idbPut("auth", a && a.token ? { api: syncUrl(), token: a.token } : null);
-  const r = await remote().pushSubscribe(sub.toJSON());
-  return r.ok ? { ok: true } : { ok: false, msg: errMsg(r) };
-}
-async function pushDisable() {
-  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && (await reg.pushManager.getSubscription()); if (sub) { await remote().pushUnsubscribe(sub.endpoint); await sub.unsubscribe(); } } catch (e) {}
-}
-const PUSH_MSG = { "ios-home": "아이폰·아이패드는 Safari 의 공유 → \"홈 화면에 추가\"로 앱을 깔고, 그 아이콘으로 연 뒤에 알림을 켤 수 있습니다.", unsupported: "이 브라우저는 알림을 지원하지 않습니다. 크롬·엣지·삼성 인터넷이나 홈 화면 앱에서 켜 주세요.", denied: "알림이 차단돼 있습니다. 브라우저 주소창의 자물쇠(사이트 설정)에서 알림을 허용한 뒤 다시 눌러 주세요." };
 const ROLE_KO = { admin: "관리자", teacher: "선생님", student: "학생" };
 /* 계정 권한: 관리자는 전부, 그 외는 서버가 준 perms */
 const PERM_KO = { custom: "맞춤 설정(범위·프롬프트)", gen: "문제 생성", solve: "문제 풀기", share: "문제 공유", rename: "이름·아이디·비밀번호 변경", genPlus: "확장 생성(사진 30장·문제 100개)", adminLite: "제한 관리자(열람)", liteResults: "제한: 결과 수정·삭제", liteAssign: "제한: 배정", liteUsers: "제한: 학생·선생님 계정", liteCopy: "제한: 시험지 복제", liteNotify: "제한: 개인 알림" };
@@ -4244,53 +4226,6 @@ function LoginScreen({ needSetup, onDone, toast, flash }) {
   );
 }
 
-function PushCard({ flash }) {
-  const [st, setSt] = useState(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { pushState().then(setSt); }, []);
-  if (remote().kind !== "server" || st === null) return null;
-  const on = st === "on";
-  const toggle = async () => {
-    setBusy(true);
-    try {
-      if (on) { await pushDisable(); setSt("off"); flash("이 기기의 알림을 껐습니다."); return; }
-      const r = await pushEnable();
-      if (r.ok) { setSt("on"); flash("이 기기로 알림을 받습니다. 배정·마감·결과 알림이 휴대폰·컴퓨터 알림으로 옵니다."); }
-      else { if (r.state) setSt(r.state); flash(r.msg || PUSH_MSG[r.state] || "알림을 켜지 못했습니다."); }
-    } finally { setBusy(false); }
-  };
-  return (
-    <div style={{ background: C.field, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "4px 0 12px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ display: "block", fontSize: 14.5, fontWeight: 700 }}>이 기기로 알림 받기</span>
-          <span style={{ display: "block", fontSize: 12.5, color: C.sub, lineHeight: 1.45 }}>{on ? "켜져 있음 · 앱을 닫아도 알림이 옵니다" : PUSH_MSG[st] || "배정·마감·결과 알림을 휴대폰·컴퓨터 알림으로 받습니다"}</span>
-        </span>
-        {st !== "unsupported" && st !== "ios-home" && <Btn kind={on ? "ghost" : "soft"} onClick={toggle} disabled={busy} style={{ width: "auto", padding: "9px 14px", fontSize: 14, flexShrink: 0 }}>{busy ? "…" : on ? "끄기" : "켜기"}</Btn>}
-      </div>
-    </div>
-  );
-}
-/* 오늘 AI 사용량(2026-10-22): 기능별 사용/한도와 다시 채워지는 시각(한국 시각 0시). 관리자는 한도 없음 */
-function AiUsageCard() {
-  const [u, setU] = useState(null);
-  useEffect(() => { if (remote().kind === "server") remote().aiUsage().then((r) => setU(r && r.ok ? r : false)).catch(() => setU(false)); }, []);
-  if (remote().kind !== "server" || u === null) return null;
-  if (u === false) return <p style={{ fontSize: 12.5, color: C.sub, margin: "0 0 12px" }}>오늘 AI 사용량을 불러오지 못했습니다.</p>;
-  const td = { padding: "6px 8px", fontSize: 13.5, borderTop: `1px solid ${C.line}` };
-  return (
-    <div style={{ background: C.field, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "0 0 12px" }}>
-      <div style={{ fontSize: 14.5, fontWeight: 700 }}>오늘 AI 사용량</div>
-      <div style={{ fontSize: 12.5, color: C.sub, margin: "2px 0 8px", lineHeight: 1.45 }}>{u.unlimited ? "관리자 계정은 한도가 없습니다." : `${fmtDateTime(u.resetAt)}(한국 시각 0시)에 다시 채워져요. 더 필요하면 관리자에게 말해 주세요.`}</div>
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr><th style={{ ...td, borderTop: "none", textAlign: "left", color: C.sub, fontWeight: 600 }}>기능</th><th style={{ ...td, borderTop: "none", textAlign: "right", color: C.sub, fontWeight: 600 }}>사용 / 한도</th></tr></thead>
-        <tbody>{u.items.map((x) => (
-          <tr key={x.f}><td style={td}>{x.ko}</td><td style={{ ...td, textAlign: "right", fontWeight: 700, color: x.limit != null && x.left === 0 ? C.bad : C.ink, whiteSpace: "nowrap" }}>{x.used} / {x.limit == null ? "제한 없음" : x.limit}</td></tr>
-        ))}</tbody>
-      </table>
-    </div>
-  );
-}
 function AccountModal({ user, onClose, onLogout, flash, onUser }) {
   const [theme, setTheme] = useState(themeGet);
   const [subj, setSubj] = useState((user.subjects || []).join(", "));
@@ -4355,17 +4290,6 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
     setReqMsg(""); setReqSel({});
     flash("관리자에게 요청을 보냈습니다. 하루에 한 번만 보낼 수 있습니다.");
   };
-  const [oldPw, setOldPw] = useState("");
-  const [newPw, setNewPw] = useState("");
-  const [busy, setBusy] = useState(false);
-  const change = async () => {
-    if (newPw.length < 4) return flash("새 비밀번호는 4자 이상입니다.");
-    setBusy(true);
-    const r = await remote().changePw({ oldPw, newPw });
-    setBusy(false);
-    if (!r.ok) return flash(errMsg(r));
-    setOldPw(""); setNewPw(""); flash("비밀번호를 바꿨습니다.");
-  };
   return (
     <Modal title="내 계정" onClose={onClose}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "0 0 14px" }}>
@@ -4397,8 +4321,8 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
             <Field value={pid} onChange={setPid} placeholder="아이디" ariaLabel="아이디" maxLength={30} style={{ fontSize: 14.5 }} />
             <Btn kind="soft" onClick={saveProfile} disabled={pBusy || !can(user, "rename")} style={{ width: "auto", padding: "10px 14px", fontSize: 14, whiteSpace: "nowrap", flexShrink: 0 }}>저장</Btn>
           </div>
-          <PushCard flash={flash} />
-          <AiUsageCard />
+          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5, background: C.field, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px", margin: "0 0 12px" }}>비밀번호 바꾸기 · 이 기기로 알림 받기 · 오늘 AI 사용량은 HEO Works 내 계정에서 할 수 있어요. <a href={HUB_URL} target="_blank" rel="noopener" style={{ color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>HEO Works 열기 ›</a></p>
+          <OldPushOff flash={flash} />
           <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>학습 범위 · 개인 맞춤 지시{can(user, "custom") ? "" : " (권한 없음)"} <span style={{ fontSize: 12 }}>(AI 문제 만들기에 자동으로 반영)</span></div>
           <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
             <Field value={pscope} onChange={setPscope} placeholder="범위 예: 고1 통합과학 2단원, 한국사 1-1" ariaLabel="학습 범위" maxLength={200} style={{ fontSize: 14.5 }} />
@@ -4427,11 +4351,7 @@ function AccountModal({ user, onClose, onLogout, flash, onUser }) {
             style={{ fontFamily: FONT, fontSize: 14, fontWeight: 600, padding: "10px 6px", borderRadius: 999, border: `1px solid ${theme === k ? C.accent : C.line}`, background: theme === k ? C.accentSoft : C.field, color: theme === k ? C.accent : C.sub, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
-      <div style={{ fontSize: 13.5, color: C.sub, margin: "4px 0 6px" }}>비밀번호 변경{can(user, "rename") ? " (현재 비밀번호 확인 후)" : " (권한 없음 · 관리자에게 요청)"}</div>
       <div style={{ display: "grid", gap: 8 }}>
-        <Field type="password" value={oldPw} onChange={setOldPw} placeholder="현재 비밀번호" ariaLabel="현재 비밀번호" />
-        <Field type="password" value={newPw} onChange={setNewPw} placeholder="새 비밀번호 (4자 이상)" ariaLabel="새 비밀번호" onEnter={change} />
-        <Btn kind="soft" onClick={change} disabled={busy}>비밀번호 변경</Btn>
         <Btn kind="ghost" onClick={onLogout}>로그아웃</Btn>
       </div>
     </Modal>
@@ -4590,13 +4510,6 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
   const [workerKey, setWorkerKey] = useState("");
-  const [genApi, setGenApi] = useState(null);   // 고급 생성 Claude API 대체: { cfg:{on,daily,waitMin}, hasKey, pcSeenAt, today, err, queued, running }
-  const loadGenApi = async () => { const r = await remote().genApiGet(); if (r.ok) setGenApi(r); };
-  const saveGenApi = async (patch) => {
-    const r = await remote().genApiSet(patch);
-    if (!r.ok) return flash(errMsg(r));
-    setGenApi((g) => ({ ...g, cfg: r.cfg })); flash("저장했습니다.");
-  };
   const [usage, setUsage] = useState(null);
   const loadUsage = async () => { const r = await remote().usage(); if (!r.ok) return flash(errMsg(r)); setUsage(r); };
   const teachers = (users || []).filter((u) => u.role === "teacher" || u.role === "admin");
@@ -4662,7 +4575,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
   return (
     <Shell back="홈으로" backTo={onBack} toast={toast}>
       <h2 style={{ fontSize: 24, fontWeight: 800, margin: "6px 0 12px" }}>관리자</h2>
-      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); if (v === "worker") loadGenApi(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ...(liteCan("liteCopy") || liteCan("liteAssign") ? [["exams", "시험지"]] : [])] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
+      <Seg value={tab} onChange={(v) => { setTab(v); if (v === "results" && results === null) loadResults(); if (v === "exams" && allExams === null) loadExams(); }} items={lite ? [["users", "계정"], ["results", "전체 기록"], ...(liteCan("liteCopy") || liteCan("liteAssign") ? [["exams", "시험지"]] : [])] : [["users", "계정"], ["results", "전체 기록"], ["exams", "시험지"], ["textbook", "교과서"], ["worker", "리포트 워커"], ["usage", "AI 사용량"]]} />
       {lite && <p style={{ fontSize: 13, color: C.sub, margin: "8px 0 0" }}>제한 관리자: 열람{LITE_KEYS.filter(liteCan).length ? " + " + LITE_KEYS.filter(liteCan).map((k) => PERM_KO[k].replace("제한: ", "")).join(" · ") : "만"} 할 수 있습니다.</p>}
       {tab === "exams" && (
         <div style={{ marginTop: 14 }}>
@@ -4813,6 +4726,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
         return (
           <Card style={{ marginTop: 14 }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>AI 문제 생성 사용량</div>
+            <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5, margin: "0 0 8px" }}>계정별 하루 AI 한도는 HEO Works 관리자 → AI 한도에서 바꿔요. <a href={HUB_URL + "#admin"} target="_blank" rel="noopener" style={{ color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>HEO Works 관리자 열기 ›</a></p>
             <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>Gemini(기본 방식)는 무료 등급이라 요금 0원, Claude(고급 방식·오답노트·리포트)는 서버의 구독 예약 작업이라 요금 0원입니다. "오늘"은 매일 0시(한국 시간)에 새로 셉니다.</p>
             {usage === null ? <Btn kind="soft" onClick={loadUsage}>불러오기</Btn> : (
               <>
@@ -4859,29 +4773,7 @@ function AdminScreen({ onBack, toast, flash, lite, user, onOpenExam, onCopyExam 
           <div style={{ marginTop: 10 }}><Btn kind="soft" onClick={setWorker}>등록</Btn></div>
         </Card>
       )}
-      {tab === "worker" && (
-        <Card style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>서버가 꺼져 있을 때 Claude API 로 고급 생성</div>
-          <p style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: "0 0 10px" }}>켜 두면, 서버(PC)가 정해 둔 시간 넘게 연결되지 않을 때 대기 중인 "AI 문제 생성(고급)"을 Claude API 가 대신 만듭니다(출제 → 다른 모델이 눈감고 풀기 → 답이 다르면 심판). 몇 분~수십 분 걸리고 API 요금이 듭니다. 사진으로 만들기·오답노트는 지금처럼 서버만 처리합니다. 꺼도 이미 API 가 맡은 작업은 끝까지 처리합니다.</p>
-          {!genApi ? <p style={{ color: C.sub, margin: 0 }}>불러오는 중…</p> : <>
-            {!genApi.hasKey && <p style={{ fontSize: 14, color: C.bad, margin: "0 0 10px" }}>API 키가 아직 등록되지 않았습니다. 키를 등록해야 켤 수 있습니다.</p>}
-            <CheckRow on={genApi.cfg.on} onToggle={() => genApi.hasKey && saveGenApi({ on: !genApi.cfg.on })}><span style={{ fontSize: 15, fontWeight: 700 }}>Claude API 사용</span></CheckRow>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
-              <label style={{ fontSize: 13, color: C.sub }}>하루 최대 작업 수
-                <select value={genApi.cfg.daily} onChange={(e) => saveGenApi({ daily: Number(e.target.value) })} style={{ ...sel, width: "100%", marginTop: 4 }}>{[1, 3, 5, 10, 20, 50].concat([1, 3, 5, 10, 20, 50].includes(genApi.cfg.daily) ? [] : [genApi.cfg.daily]).map((n) => <option key={n} value={n}>{n}건</option>)}</select>
-              </label>
-              <label style={{ fontSize: 13, color: C.sub }}>서버가 안 보이면 넘길 시간
-                <select value={genApi.cfg.waitMin} onChange={(e) => saveGenApi({ waitMin: Number(e.target.value) })} style={{ ...sel, width: "100%", marginTop: 4 }}>{[1, 3, 5, 10, 30].concat([1, 3, 5, 10, 30].includes(genApi.cfg.waitMin) ? [] : [genApi.cfg.waitMin]).map((n) => <option key={n} value={n}>{n}분</option>)}</select>
-              </label>
-            </div>
-            <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.6, margin: "10px 0 0" }}>
-              서버 마지막 연결: {genApi.pcSeenAt ? fmtDateTime(genApi.pcSeenAt) : "기록 없음"} · 오늘 API 작업 {genApi.today}/{genApi.cfg.daily}건 · 대기 {genApi.queued}건{genApi.skipped ? ` (API 오류로 PC 몫 ${genApi.skipped}건 따로)` : ""} · API 처리 중 {genApi.running}건
-              {genApi.err && <><br />마지막 오류({fmtDateTime(genApi.err.at)}): {genApi.err.msg}</>}
-            </p>
-            <div style={{ marginTop: 10 }}><Btn kind="ghost" onClick={loadGenApi}>새로 고침</Btn></div>
-          </>}
-        </Card>
-      )}
+      {tab === "worker" && <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.5, margin: "12px 2px 0" }}>PC 가 꺼졌을 때 Claude API 로 고급 생성하는 설정은 HEO Works 관리자 → 시험지에서 해요. <a href={HUB_URL + "#admin"} target="_blank" rel="noopener" style={{ color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>HEO Works 관리자 열기 ›</a></p>}
 
       {tempPw && (
         <Modal title="임시 비밀번호 (이번 한 번만 표시)" onClose={() => setTempPw(null)}>
